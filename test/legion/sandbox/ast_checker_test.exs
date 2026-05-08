@@ -29,6 +29,11 @@ defmodule Legion.Sandbox.ASTCheckerTest do
     assert :ok = ASTChecker.check(":math.sqrt(4.0)", [])
   end
 
+  test ":erlang module is not in the built-in allow-list" do
+    assert {:error, msg} = ASTChecker.check(":erlang.length([1, 2, 3])", [])
+    assert msg =~ ":erlang"
+  end
+
   test "caller-provided module is allowed" do
     assert :ok = ASTChecker.check("MyTool.run(1)", [MyTool])
   end
@@ -178,37 +183,82 @@ defmodule Legion.Sandbox.ASTCheckerTest do
 
   test ":erlang.spawn is forbidden" do
     assert {:error, msg} = ASTChecker.check(":erlang.spawn(fn -> :ok end)", [])
-    assert msg =~ ":erlang.spawn"
+    assert msg =~ ":erlang"
+  end
+
+  test ":erlang.spawn_opt is forbidden" do
+    assert {:error, msg} = ASTChecker.check(":erlang.spawn_opt(fn -> :ok end, [])", [])
+    assert msg =~ ":erlang"
   end
 
   test ":erlang.apply is forbidden" do
     assert {:error, msg} = ASTChecker.check(":erlang.apply(IO, :puts, [\"hi\"])", [])
-    assert msg =~ ":erlang.apply"
+    assert msg =~ ":erlang"
   end
 
   test ":erlang.get is forbidden" do
     assert {:error, msg} = ASTChecker.check(":erlang.get()", [])
-    assert msg =~ ":erlang.get"
+    assert msg =~ ":erlang"
   end
 
   test ":erlang.put is forbidden" do
     assert {:error, msg} = ASTChecker.check(":erlang.put(:key, :value)", [])
-    assert msg =~ ":erlang.put"
+    assert msg =~ ":erlang"
   end
 
   test ":erlang.process_flag is forbidden" do
     assert {:error, msg} = ASTChecker.check(":erlang.process_flag(:trap_exit, true)", [])
-    assert msg =~ ":erlang.process_flag"
+    assert msg =~ ":erlang"
   end
 
   test ":erlang.list_to_atom is forbidden" do
     assert {:error, msg} = ASTChecker.check(":erlang.list_to_atom(~c\"boom\")", [])
-    assert msg =~ ":erlang.list_to_atom"
+    assert msg =~ ":erlang"
   end
 
   test ":erlang.system_info is forbidden" do
     assert {:error, msg} = ASTChecker.check(":erlang.system_info(:process_count)", [])
-    assert msg =~ ":erlang.system_info"
+    assert msg =~ ":erlang"
+  end
+
+  test "String.to_atom is forbidden" do
+    assert {:error, msg} = ASTChecker.check("String.to_atom(\"hi\")", [])
+    assert msg =~ "String.to_atom"
+  end
+
+  test "String.to_existing_atom is forbidden (closes the fake-struct atom-reconstruction bypass)" do
+    assert {:error, msg} = ASTChecker.check("String.to_existing_atom(\"ok\")", [])
+    assert msg =~ "String.to_existing_atom"
+  end
+
+  test "List.to_atom is forbidden" do
+    assert {:error, msg} = ASTChecker.check("List.to_atom(~c\"hi\")", [])
+    assert msg =~ "List.to_atom"
+  end
+
+  test "List.to_existing_atom is forbidden (closes the fake-struct atom-reconstruction bypass)" do
+    assert {:error, msg} = ASTChecker.check("List.to_existing_atom(~c\"ok\")", [])
+    assert msg =~ "List.to_existing_atom"
+  end
+
+  test "node/0 is forbidden (denies sandbox the BEAM node atom)" do
+    assert {:error, msg} = ASTChecker.check("node()", [])
+    assert msg =~ "node"
+  end
+
+  test "node/1 is forbidden" do
+    assert {:error, msg} = ASTChecker.check("node(self())", [])
+    assert msg =~ "node"
+  end
+
+  test "Kernel.node is forbidden (qualified form)" do
+    assert {:error, msg} = ASTChecker.check("Kernel.node()", [])
+    assert msg =~ "Kernel.node"
+  end
+
+  test "Calendar.put_time_zone_database is forbidden" do
+    assert {:error, msg} = ASTChecker.check("Calendar.put_time_zone_database(Some.DB)", [Some.DB])
+    assert msg =~ "Calendar.put_time_zone_database"
   end
 
   test "__ENV__ is forbidden" do
@@ -226,11 +276,74 @@ defmodule Legion.Sandbox.ASTCheckerTest do
     assert msg =~ "defp"
   end
 
+  # --- Bypass attempts ---
+
+  test "variable-as-module dispatch to :erlang is forbidden" do
+    code = """
+    m = :erlang
+    m.spawn_opt(fn -> :ok end, [])
+    """
+
+    assert {:error, _} = ASTChecker.check(code, [])
+  end
+
+  test "variable-as-module dispatch to a disallowed module is forbidden" do
+    code = """
+    m = File
+    m.read!("/etc/passwd")
+    """
+
+    assert {:error, _} = ASTChecker.check(code, [])
+  end
+
+  test "variable-as-module dispatch even to an allowed module is forbidden" do
+    code = """
+    m = Enum
+    m.map([1, 2, 3], & &1 + 1)
+    """
+
+    assert {:error, _} = ASTChecker.check(code, [])
+  end
+
+  test "captured forbidden function is forbidden" do
+    assert {:error, _} = ASTChecker.check("f = &:erlang.spawn_opt/2", [])
+  end
+
+  test "captured forbidden Kernel function is forbidden" do
+    assert {:error, _} = ASTChecker.check("f = &Kernel.spawn/1", [])
+  end
+
+  test "map field access via dot syntax is rejected (use m[:key] instead)" do
+    assert {:error, _} = ASTChecker.check("m = %{a: 1}\nm.a", [])
+  end
+
+  test "nested dot map access is rejected (use m[:a][:b])" do
+    assert {:error, _} = ASTChecker.check("m = %{a: %{b: 2}}\nm.a.b", [])
+  end
+
+  test "map field access via Access protocol is allowed" do
+    assert :ok = ASTChecker.check("m = %{a: 1}\nm[:a]", [])
+  end
+
+  test "nested map field access via Access protocol is allowed" do
+    assert :ok = ASTChecker.check("m = %{a: %{b: 2}}\nm[:a][:b]", [])
+  end
+
+  test "Map.fetch! is allowed" do
+    assert :ok = ASTChecker.check("m = %{a: 1}\nMap.fetch!(m, :a)", [])
+  end
+
   # --- Edge cases ---
 
   test "syntax error returns parse error" do
     assert {:error, msg} = ASTChecker.check("def foo(", [])
     assert msg =~ "Parse error"
+  end
+
+  test "code exceeding the size cap is rejected" do
+    big = String.duplicate("x = 1\n", 20_000)
+    assert {:error, msg} = ASTChecker.check(big, [])
+    assert msg =~ "exceeds maximum size"
   end
 
   test "disallowed call nested inside allowed call is caught" do
@@ -239,5 +352,275 @@ defmodule Legion.Sandbox.ASTCheckerTest do
 
   test "multiple violations only returns one error" do
     assert {:error, _} = ASTChecker.check("File.read!(\"x\") || System.halt()", [])
+  end
+
+  # --- Default-deny: previously bypassable cases ---
+
+  describe "Kernel.* macro form bypasses" do
+    test "Kernel.def is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.def(foo, do: 1)", [])
+      assert msg =~ "Kernel.def"
+    end
+
+    test "Kernel.defp is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.defp(foo, do: 1)", [])
+      assert msg =~ "Kernel.defp"
+    end
+
+    test "Kernel.defmodule is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.defmodule(Foo, do: nil)", [])
+      assert msg =~ "Kernel.defmodule"
+    end
+
+    test "Kernel.defmacro is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.defmacro(foo, do: 1)", [])
+      assert msg =~ "Kernel.defmacro"
+    end
+
+    test "Kernel.defstruct is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.defstruct(foo: 1)", [])
+      assert msg =~ "Kernel.defstruct"
+    end
+
+    test "Kernel.use is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.use(GenServer)", [])
+      assert msg =~ "Kernel.use"
+    end
+
+    test "Kernel.alias! is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.alias!(File)", [])
+      assert msg =~ "Kernel.alias!"
+    end
+
+    test "Kernel.var! is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.var!(x)", [])
+      assert msg =~ "Kernel.var!"
+    end
+
+    test "Kernel.dbg is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.dbg(1 + 1)", [])
+      assert msg =~ "Kernel.dbg"
+    end
+
+    test "Kernel.binding is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.binding()", [])
+      assert msg =~ "Kernel.binding"
+    end
+  end
+
+  describe "Kernel.* atom-creation function bypasses" do
+    test "Kernel.binary_to_atom is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.binary_to_atom(\"x\", :utf8)", [])
+      assert msg =~ "Kernel.binary_to_atom"
+    end
+
+    test "Kernel.binary_to_existing_atom is forbidden" do
+      assert {:error, msg} =
+               ASTChecker.check("Kernel.binary_to_existing_atom(\"x\", :utf8)", [])
+
+      assert msg =~ "Kernel.binary_to_existing_atom"
+    end
+
+    test "Kernel.list_to_atom is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.list_to_atom(~c\"x\")", [])
+      assert msg =~ "Kernel.list_to_atom"
+    end
+
+    test "Kernel.list_to_existing_atom is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.list_to_existing_atom(~c\"x\")", [])
+      assert msg =~ "Kernel.list_to_existing_atom"
+    end
+  end
+
+  describe "Kernel.* process / dispatch function bypasses" do
+    test "Kernel.spawn_request is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.spawn_request(fn -> :ok end)", [])
+      assert msg =~ "Kernel.spawn_request"
+    end
+
+    test "Kernel.throw is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.throw(:bad)", [])
+      assert msg =~ "Kernel.throw"
+    end
+
+    test "Kernel.struct is forbidden because it can call __struct__/1 on any module atom" do
+      assert {:error, msg} = ASTChecker.check("Kernel.struct(Foo, %{})", [])
+      assert msg =~ "Kernel.struct"
+    end
+
+    test "Kernel.struct! is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.struct!(Foo, %{})", [])
+      assert msg =~ "Kernel.struct!"
+    end
+
+    test "Kernel.function_exported? is forbidden" do
+      assert {:error, msg} = ASTChecker.check("Kernel.function_exported?(File, :read, 1)", [])
+      assert msg =~ "Kernel.function_exported?"
+    end
+  end
+
+  describe "extra definition forms" do
+    test "defstruct is forbidden" do
+      assert {:error, msg} = ASTChecker.check("defstruct foo: 1", [])
+      assert msg =~ "defstruct"
+    end
+
+    test "defexception is forbidden" do
+      assert {:error, msg} = ASTChecker.check("defexception []", [])
+      assert msg =~ "defexception"
+    end
+
+    test "defmacrop is forbidden" do
+      assert {:error, msg} = ASTChecker.check("defmacrop foo, do: 1", [])
+      assert msg =~ "defmacrop"
+    end
+
+    test "defguard is forbidden" do
+      assert {:error, msg} = ASTChecker.check("defguard is_x(x) when x > 0", [])
+      assert msg =~ "defguard"
+    end
+
+    test "defguardp is forbidden" do
+      assert {:error, msg} = ASTChecker.check("defguardp is_x(x) when x > 0", [])
+      assert msg =~ "defguardp"
+    end
+
+    test "defdelegate is forbidden" do
+      assert {:error, msg} = ASTChecker.check("defdelegate read(p), to: File", [])
+      assert msg =~ "defdelegate"
+    end
+
+    test "defoverridable is forbidden" do
+      assert {:error, msg} = ASTChecker.check("defoverridable [foo: 0]", [])
+      assert msg =~ "defoverridable"
+    end
+
+    test "defimpl is forbidden" do
+      assert {:error, msg} = ASTChecker.check("defimpl Foo, for: List do end", [])
+      assert msg =~ "defimpl"
+    end
+  end
+
+  describe "context / reflection macros" do
+    test "__MODULE__ is forbidden" do
+      assert {:error, msg} = ASTChecker.check("__MODULE__", [])
+      assert msg =~ "__MODULE__"
+    end
+
+    test "__CALLER__ is forbidden" do
+      assert {:error, msg} = ASTChecker.check("__CALLER__", [])
+      assert msg =~ "__CALLER__"
+    end
+
+    test "__DIR__ is forbidden" do
+      assert {:error, msg} = ASTChecker.check("__DIR__", [])
+      assert msg =~ "__DIR__"
+    end
+
+    test "__STACKTRACE__ is forbidden" do
+      assert {:error, msg} = ASTChecker.check("__STACKTRACE__", [])
+      assert msg =~ "__STACKTRACE__"
+    end
+
+    test "binding is forbidden as a bare form" do
+      assert {:error, msg} = ASTChecker.check("binding()", [])
+      assert msg =~ "binding"
+    end
+  end
+
+  describe "default-deny on disallowed functions of allowed modules" do
+    test "Enum function not in allowlist is rejected" do
+      assert {:error, msg} = ASTChecker.check("Enum.zip3([1], [2], [3])", [])
+      assert msg =~ "Enum.zip3"
+    end
+
+    test "String.zzz_unknown is rejected" do
+      # the function name has to exist as an atom for the parser to accept it
+      _ = :length
+      assert {:error, msg} = ASTChecker.check("String.length_unknown_xx(\"x\")", [])
+      assert msg =~ "String."
+    end
+
+    test "Atom.to_string is allowed" do
+      assert :ok = ASTChecker.check("Atom.to_string(:foo)", [])
+    end
+
+    test "Atom.to_charlist is allowed" do
+      assert :ok = ASTChecker.check("Atom.to_charlist(:foo)", [])
+    end
+  end
+
+  describe "tools (caller-supplied modules) are unrestricted" do
+    test "any function on a tool module is allowed" do
+      assert :ok = ASTChecker.check("MyTool.anything_at_all(1, 2, 3)", [MyTool])
+    end
+
+    test "tool modules are matched by tail alias too" do
+      assert :ok = ASTChecker.check("MyTool.run(1)", [Some.Namespace.MyTool])
+    end
+  end
+
+  describe "anonymous function call forms" do
+    test "f.() invocation of a binding is allowed" do
+      assert :ok = ASTChecker.check("f = fn -> 1 end\nf.()", [])
+    end
+
+    test "fn returning a module then dispatch is rejected as dynamic dispatch" do
+      assert {:error, msg} =
+               ASTChecker.check("(fn -> :erlang end).().spawn(fn -> :ok end)", [])
+
+      assert msg =~ "dynamic module dispatch"
+    end
+  end
+
+  describe "RCE attack vectors" do
+    test "no-parens dot on a variable holding a module atom is rejected" do
+      code = """
+      m = :os
+      m.getenv
+      """
+
+      assert {:error, _} = ASTChecker.check(code, [])
+    end
+
+    test "no-parens dot via System binding is rejected" do
+      code = """
+      m = System
+      m.get_env
+      """
+
+      assert {:error, _} = ASTChecker.check(code, [])
+    end
+
+    test "capture &m.fun/n where m is a variable is rejected" do
+      code = """
+      m = :os
+      f = &m.cmd/1
+      f.(~c"id")
+      """
+
+      assert {:error, _} = ASTChecker.check(code, [])
+    end
+
+    test "alias-tail collision does not unlock the real System module" do
+      assert {:error, msg} =
+               ASTChecker.check(~s|:"Elixir.System".cmd("id", [])|, [LegionToolset.System])
+
+      assert msg =~ "System"
+    end
+
+    test "alias-tail collision does not unlock the real File module" do
+      assert {:error, _} =
+               ASTChecker.check(~s|:"Elixir.File".read!("/etc/passwd")|, [LegionToolset.File])
+    end
+
+    test "raise with a non-allowlisted module name is rejected" do
+      assert {:error, _} = ASTChecker.check("raise NotInSandbox.Anything", [])
+    end
+
+    test "reraise with a non-allowlisted module name is rejected" do
+      assert {:error, _} =
+               ASTChecker.check("reraise NotInSandbox.Anything, [], []", [])
+    end
   end
 end

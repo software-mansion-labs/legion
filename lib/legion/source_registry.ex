@@ -19,7 +19,7 @@ defmodule Legion.SourceRegistry do
 
   def sources, do: @sources
 
-  def source(module) do
+  def source(module) when is_map_key(@sources, module) do
     case Map.fetch(@sources, module) do
       {:ok, source} -> {:ok, source}
       :error -> {:error, :not_registered}
