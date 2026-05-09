@@ -178,8 +178,8 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
     end
 
     test ~S|rejects literal "__struct__" string| do
-      assert {:error, ~S|literal "__struct__" string is not allowed|} =
-               Sandbox.execute(~s|"__struct__"|, 5_000, [])
+      assert {:error, msg} = Sandbox.execute(~s|"__struct__"|, 5_000, [])
+      assert msg =~ ~S|literal binary containing "__struct__"|
     end
 
     test "blocks String.to_existing_atom bypass by dropping it from allowlist" do
@@ -246,6 +246,306 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
 
       assert {:error, %ArgumentError{}} =
                Sandbox.execute(~s|raise ArgumentError, "x"|, 5_000, [])
+    end
+  end
+
+  describe "raise/reraise via dynamic / indirected first argument (FIXED)" do
+    # The literal-only `raise Mod, ...` clauses fired only when the first
+    # argument was an `__aliases__` literal or an atom literal. Wrapping the
+    # module atom in any expression - variable, fn-call, list head, tuple
+    # element, tool-fn return - bypassed the safe-exceptions allowlist and
+    # let `Kernel.raise/2` force-load arbitrary modules at runtime
+    # (triggering `@on_load` and `exception/1` side-effects).
+
+    test "rejects raise <variable>" do
+      assert {:error, msg} = Sandbox.execute("v = :asn1rt_nif; raise v", 5_000, [])
+      assert msg =~ "raise requires a literal exception module"
+    end
+
+    test "rejects raise hd(list)" do
+      assert {:error, msg} =
+               Sandbox.execute("raise hd([Some.User.Module])", 5_000, [])
+
+      assert msg =~ "raise requires a literal exception module"
+    end
+
+    test "rejects raise from fn return" do
+      assert {:error, msg} =
+               Sandbox.execute("raise (fn -> Some.Mod end).()", 5_000, [])
+
+      assert msg =~ "raise requires a literal exception module"
+    end
+
+    test "rejects raise Map.get(...) result" do
+      assert {:error, msg} =
+               Sandbox.execute(
+                 "raise Map.get(%{a: Some.Mod}, :a)",
+                 5_000,
+                 []
+               )
+
+      assert msg =~ "raise requires a literal exception module"
+    end
+
+    test "rejects reraise <variable>, [...], stacktrace" do
+      assert {:error, msg} =
+               Sandbox.execute(
+                 "v = :asn1rt_nif; reraise v, [message: \"x\"], []",
+                 5_000,
+                 []
+               )
+
+      assert msg =~ "reraise requires a literal exception module"
+    end
+
+    test "still allows raise \"string\" (RuntimeError shorthand)" do
+      assert {:error, %RuntimeError{message: "boom"}} =
+               Sandbox.execute(~s|raise "boom"|, 5_000, [])
+    end
+
+    test "still allows raise \"interpolated #{}\"" do
+      assert {:error, %RuntimeError{message: "x=42"}} =
+               Sandbox.execute(~S|x = 42; raise "x=#{x}"|, 5_000, [])
+    end
+  end
+
+  describe "raise/reraise capture (FIXED)" do
+    # `&raise/n` and `&reraise/n` wrap `Kernel.raise` so the first argument is
+    # supplied at runtime, completely bypassing the static safe-exceptions
+    # gate. Verified to load `:asn1rt_nif` and run its NIF on_load before
+    # the fix.
+
+    test "rejects &raise/1" do
+      assert {:error, msg} =
+               Sandbox.execute("(&raise/1).(:asn1rt_nif)", 5_000, [])
+
+      assert msg =~ "&raise/1 is not allowed"
+    end
+
+    test "rejects &raise/2" do
+      assert {:error, msg} = ASTChecker.check("&raise/2", [])
+      assert msg =~ "&raise/2 is not allowed"
+    end
+
+    test "rejects &reraise/2" do
+      assert {:error, msg} = ASTChecker.check("&reraise/2", [])
+      assert msg =~ "&reraise/2 is not allowed"
+    end
+
+    test "rejects &reraise/3" do
+      assert {:error, msg} = ASTChecker.check("&reraise/3", [])
+      assert msg =~ "&reraise/3 is not allowed"
+    end
+
+    test "rejects &Kernel.raise/1 (qualified capture)" do
+      assert {:error, msg} =
+               Sandbox.execute("(&Kernel.raise/1).(:asn1rt_nif)", 5_000, [])
+
+      assert msg =~ "Kernel.raise is not allowed"
+    end
+
+    test "rejects &Kernel.reraise/2 (qualified capture)" do
+      assert {:error, msg} =
+               ASTChecker.check("&Kernel.reraise/2", [])
+
+      assert msg =~ "Kernel.reraise is not allowed"
+    end
+
+    test "still allows &Map.get/2 (a non-raise capture)" do
+      assert :ok = ASTChecker.check("&Map.get/2", [])
+    end
+
+    test "still allows &(&1 + 1)" do
+      assert :ok = ASTChecker.check("&(&1 + 1)", [])
+    end
+  end
+
+  describe "Map.keys / Map.to_list leak of :__struct__ (FIXED)" do
+    # `Map.keys(struct)` returns `[:__struct__, ...]` directly, materialising
+    # the literal atom that the static `:__struct__` rejection was meant to
+    # prevent. Same for `Map.to_list/1` (returns `[{:__struct__, M}, ...]`).
+    # Both removed from `@map_allowed`.
+
+    test "Map.keys is rejected" do
+      assert {:error, "Map.keys is not allowed"} =
+               Sandbox.execute("Map.keys(1..3)", 5_000, [])
+    end
+
+    test "Map.to_list is rejected" do
+      assert {:error, "Map.to_list is not allowed"} =
+               Sandbox.execute("Map.to_list(1..3)", 5_000, [])
+    end
+
+    test "Map.from_struct is still allowed (it strips :__struct__)" do
+      assert {:ok, {%{first: 1, last: 3, step: 1}, _}} =
+               Sandbox.execute("Map.from_struct(1..3)", 5_000, [])
+    end
+  end
+
+  describe "sigil_w / sigil_W with `a` modifier materialising :__struct__ (FIXED)" do
+    # `~w(_a __struct__)a` parses to a sigil call whose literal argument is
+    # a binary that *contains* "__struct__" but is not equal to it. The old
+    # exact-equality check on the binary literal let it through. At
+    # macro-expansion time (which `Code.eval_string` performs), `sigil_w`
+    # with the `a` modifier maps tokens through `String.to_atom/1`, producing
+    # the atom `:__struct__` despite both `String.to_atom` and the literal
+    # atom being denied. Substring match closes every source-string path.
+
+    test "rejects ~w(_a __struct__)a" do
+      assert {:error, msg} =
+               Sandbox.execute(~S[~w(_a __struct__)a] <> " |> List.last()", 5_000, [])
+
+      assert msg =~ ~S|literal binary containing "__struct__"|
+    end
+
+    test "rejects ~W(_a __struct__)a (no-interp variant)" do
+      assert {:error, msg} =
+               Sandbox.execute(~S[~W(_a __struct__)a] <> " |> List.last()", 5_000, [])
+
+      assert msg =~ ~S|literal binary containing "__struct__"|
+    end
+
+    test "rejects ~w(__struct__)a (single-token variant)" do
+      assert {:error, msg} =
+               Sandbox.execute(~S[~w(__struct__)a] <> " |> hd()", 5_000, [])
+
+      assert msg =~ ~S|literal binary containing "__struct__"|
+    end
+
+    test "rejects any binary literal containing __struct__" do
+      assert {:error, msg} =
+               Sandbox.execute(~s|"prefix __struct__ suffix"|, 5_000, [])
+
+      assert msg =~ ~S|literal binary containing "__struct__"|
+    end
+
+    test "still allows benign ~w / ~W sigils" do
+      assert {:ok, {[:foo, :bar, :baz], _}} =
+               Sandbox.execute("~w(foo bar baz)a", 5_000, [])
+    end
+  end
+
+  describe "calendar-module argument loading (FIXED)" do
+    # Date / DateTime / NaiveDateTime / Time / Calendar functions take a
+    # `Calendar` (or time-zone-database) module argument that is dispatched
+    # at runtime. `Date.new(2026, 1, 1, EvilCal)` triggered the BEAM module
+    # loader to load `EvilCal`, running its `@on_load`. Conservative gate:
+    # any literal alias / atom-literal in arg position to a calendar module
+    # function must point at `Calendar.ISO`, `Calendar.UTCOnlyTimeZoneDatabase`,
+    # another calendar module, or a tool module.
+
+    test "rejects Date.new with a non-safe calendar literal" do
+      assert {:error, msg} =
+               Sandbox.execute(
+                 "Date.new(2026, 1, 1, EvilCal)",
+                 5_000,
+                 []
+               )
+
+      assert msg =~ "passed to a calendar function would be dispatched"
+    end
+
+    test "rejects DateTime.shift_zone with a non-safe TZ-DB literal" do
+      assert {:error, msg} =
+               Sandbox.execute(
+                 ~s|DateTime.shift_zone(DateTime.utc_now(), "Europe/Warsaw", EvilTZ)|,
+                 5_000,
+                 []
+               )
+
+      assert msg =~ "passed to a calendar function"
+    end
+
+    test "rejects Date.utc_today with non-safe calendar literal" do
+      assert {:error, msg} =
+               Sandbox.execute("Date.utc_today(EvilCal)", 5_000, [])
+
+      assert msg =~ "passed to a calendar function"
+    end
+
+    test "rejects atom-form calendar atom :\"Elixir.EvilCal\"" do
+      assert {:error, msg} =
+               Sandbox.execute(
+                 ~s|Date.new(2026, 1, 1, :"Elixir.EvilCal")|,
+                 5_000,
+                 []
+               )
+
+      assert msg =~ "passed to a calendar function"
+    end
+
+    test "still allows Date.new with Calendar.ISO" do
+      assert {:ok, {{:ok, %Date{}}, _}} =
+               Sandbox.execute("Date.new(2026, 1, 1, Calendar.ISO)", 5_000, [])
+    end
+
+    test "still allows Date.new with no calendar arg (default)" do
+      assert {:ok, {{:ok, %Date{}}, _}} =
+               Sandbox.execute("Date.new(2026, 1, 1)", 5_000, [])
+    end
+
+    test "still allows DateTime.utc_now()" do
+      assert {:ok, {%DateTime{}, _}} =
+               Sandbox.execute("DateTime.utc_now()", 5_000, [])
+    end
+
+    test "still allows DateTime.from_iso8601 with default" do
+      assert {:ok, {{:ok, %DateTime{}, 0}, _}} =
+               Sandbox.execute(
+                 ~s|DateTime.from_iso8601("2026-01-01T00:00:00Z")|,
+                 5_000,
+                 []
+               )
+    end
+  end
+
+  describe "tool-tail collision with safe-exceptions allowlist (FIXED)" do
+    # When a tool is named `Mallory.RuntimeError`, its tail alias `RuntimeError`
+    # collides with the stdlib safe exception. After Sandbox.execute prepends
+    # `alias Mallory.RuntimeError`, `raise RuntimeError, "x"` compiles to
+    # `raise Mallory.RuntimeError, "x"`, calling the tool's `exception/1` and
+    # force-loading the tool module — confused-deputy RCE if the tool author
+    # is malicious. Same for any of the 19 entries in @safe_exceptions.
+
+    defmodule Mallory.RuntimeError do
+      defexception [:message]
+    end
+
+    defmodule Mallory.ArgumentError do
+      defexception [:message]
+    end
+
+    test "rejects allowed_modules containing Mallory.RuntimeError" do
+      assert {:error, msg} =
+               ASTChecker.check(
+                 ~s|raise RuntimeError, "x"|,
+                 [Mallory.RuntimeError]
+               )
+
+      assert msg =~ "shadows stdlib safe-exception"
+      assert msg =~ "Mallory.RuntimeError"
+    end
+
+    test "rejects allowed_modules containing Mallory.ArgumentError" do
+      assert {:error, msg} = ASTChecker.check("1 + 1", [Mallory.ArgumentError])
+      assert msg =~ "shadows stdlib safe-exception"
+    end
+
+    test "rejection happens before parse — no AST is walked" do
+      # The collision check fires before Code.string_to_quoted, so even a
+      # syntactically broken code string returns the collision error.
+      assert {:error, msg} =
+               ASTChecker.check("this is (((( not valid", [Mallory.RuntimeError])
+
+      assert msg =~ "shadows stdlib safe-exception"
+    end
+
+    test "still allows tools whose tail does not collide" do
+      assert :ok =
+               ASTChecker.check(
+                 ~s|raise RuntimeError, "x"|,
+                 [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.FakeTool]
+               )
     end
   end
 
