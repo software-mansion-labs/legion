@@ -92,30 +92,36 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
 
   describe "literal-atom call to a global with colliding tool tail (FIXED)" do
     test "rejects :\"Elixir.System\".cmd even when a tool's tail is System" do
-      assert {:error, "Module System is not allowed"} =
+      assert {:error, msg} =
                Sandbox.execute(
                  ~s|:"Elixir.System".cmd("printf", ["pwned"])|,
                  5_000,
                  [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.System]
                )
+
+      assert msg =~ "Module System is not allowed"
     end
 
     test "rejects :\"Elixir.Code\".eval_string even when a tool's tail is Code" do
-      assert {:error, "Module Code is not allowed"} =
+      assert {:error, msg} =
                Sandbox.execute(
                  ~s|:"Elixir.Code".eval_string("1 + 1")|,
                  5_000,
                  [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.Code]
                )
+
+      assert msg =~ "Module Code is not allowed"
     end
 
     test "rejects :\"Elixir.File\".read! even when a tool's tail is File" do
-      assert {:error, "Module File is not allowed"} =
+      assert {:error, msg} =
                Sandbox.execute(
                  ~s|:"Elixir.File".read!("/etc/hostname")|,
                  5_000,
                  [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.File]
                )
+
+      assert msg =~ "Module File is not allowed"
     end
 
     test "tail-alias matching still works for the legitimate alias form" do
@@ -183,13 +189,17 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
     end
 
     test "blocks String.to_existing_atom bypass by dropping it from allowlist" do
-      assert {:error, "String.to_existing_atom is not allowed"} =
+      assert {:error, msg} =
                Sandbox.execute(~s|String.to_existing_atom("foo")|, 5_000, [])
+
+      assert msg =~ "String.to_existing_atom is not allowed"
     end
 
     test "blocks List.to_existing_atom bypass by dropping it from allowlist" do
-      assert {:error, "List.to_existing_atom is not allowed"} =
+      assert {:error, msg} =
                Sandbox.execute(~s|List.to_existing_atom(~c"foo")|, 5_000, [])
+
+      assert msg =~ "List.to_existing_atom is not allowed"
     end
 
     test "control: the equivalent literal struct expression %File.Stream{...} is rejected" do
@@ -197,12 +207,15 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
       %File.Stream{path: "/tmp/x", modes: [:write], line_or_bytes: :line, raw: true, node: node()}
       """
 
-      assert {:error, "% is not allowed"} = Sandbox.execute(code, 5_000, [])
+      assert {:error, msg} = Sandbox.execute(code, 5_000, [])
+      assert msg =~ "%File.Stream{} is not allowed"
     end
 
     test "control: a direct File.open call is rejected (File not in allowlist)" do
-      assert {:error, "Module File is not allowed"} =
+      assert {:error, msg} =
                Sandbox.execute(~s|File.open("/tmp/x", [:write])|, 5_000, [])
+
+      assert msg =~ "Module File is not allowed"
     end
 
     test "control: a plain map literal without :__struct__ still works" do
@@ -367,13 +380,13 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
     # Both removed from `@map_allowed`.
 
     test "Map.keys is rejected" do
-      assert {:error, "Map.keys is not allowed"} =
-               Sandbox.execute("Map.keys(1..3)", 5_000, [])
+      assert {:error, msg} = Sandbox.execute("Map.keys(1..3)", 5_000, [])
+      assert msg =~ "Map.keys is not allowed"
     end
 
     test "Map.to_list is rejected" do
-      assert {:error, "Map.to_list is not allowed"} =
-               Sandbox.execute("Map.to_list(1..3)", 5_000, [])
+      assert {:error, msg} = Sandbox.execute("Map.to_list(1..3)", 5_000, [])
+      assert msg =~ "Map.to_list is not allowed"
     end
 
     test "Map.from_struct is still allowed (it strips :__struct__)" do
@@ -705,7 +718,6 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
   describe "fake structs via %{__struct__: ...}" do
     test "all blocked" do
       assert_outcomes([
-        {"%URI{} struct literal", ~s|%URI{}|, [], :blocked},
         {"%{} map with __struct__ key", ~s|%{__struct__: URI, host: "x"}|, [], :blocked},
         {"fake URI struct", ~s|%{__struct__: URI, host: "x"}|, [], :blocked},
         {"fake struct passed to inspect",

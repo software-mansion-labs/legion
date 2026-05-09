@@ -176,9 +176,8 @@ defmodule Legion.Sandbox.ASTCheckerTest do
     assert msg =~ "Kernel.apply"
   end
 
-  test "Kernel.exit is forbidden" do
-    assert {:error, msg} = ASTChecker.check("Kernel.exit(:normal)", [])
-    assert msg =~ "Kernel.exit"
+  test "Kernel.exit is allowed (mirrors bare exit; the host already isolates execution)" do
+    assert :ok = ASTChecker.check("Kernel.exit(:normal)", [])
   end
 
   test ":erlang.spawn is forbidden" do
@@ -438,9 +437,8 @@ defmodule Legion.Sandbox.ASTCheckerTest do
       assert msg =~ "Kernel.spawn_request"
     end
 
-    test "Kernel.throw is forbidden" do
-      assert {:error, msg} = ASTChecker.check("Kernel.throw(:bad)", [])
-      assert msg =~ "Kernel.throw"
+    test "Kernel.throw is allowed (mirrors bare throw)" do
+      assert :ok = ASTChecker.check("Kernel.throw(:bad)", [])
     end
 
     test "Kernel.struct is forbidden because it can call __struct__/1 on any module atom" do
@@ -621,6 +619,152 @@ defmodule Legion.Sandbox.ASTCheckerTest do
     test "reraise with a non-allowlisted module name is rejected" do
       assert {:error, _} =
                ASTChecker.check("reraise NotInSandbox.Anything, [], []", [])
+    end
+  end
+
+  describe "guards / when clauses" do
+    test "when guard in fn is allowed" do
+      assert :ok = ASTChecker.check("fn x when is_integer(x) -> x * 2 end", [])
+    end
+
+    test "when guard in case is allowed" do
+      assert :ok = ASTChecker.check("case x do y when is_atom(y) -> :ok end", [])
+    end
+
+    test "multi-clause fn with when is allowed" do
+      code = "fn x when is_integer(x) -> x; x when is_atom(x) -> :atom end"
+      assert :ok = ASTChecker.check(code, [])
+    end
+
+    test "is_struct/2 guard with literal alias is allowed" do
+      assert :ok = ASTChecker.check("fn x when is_struct(x, ArgumentError) -> :ok end", [])
+    end
+  end
+
+  describe "struct literals" do
+    test "%Date{} is allowed" do
+      assert :ok = ASTChecker.check("%Date{year: 2024, month: 1, day: 1, calendar: Calendar.ISO}", [])
+    end
+
+    test "%MapSet{} is allowed" do
+      assert :ok = ASTChecker.check("%MapSet{}", [])
+    end
+
+    test "stdlib exception struct is allowed" do
+      assert :ok = ASTChecker.check(~s|%ArgumentError{message: "x"}|, [])
+    end
+
+    test "tool struct is allowed" do
+      assert :ok = ASTChecker.check("%MyTool.Result{}", [MyTool.Result])
+    end
+
+    test "struct of unknown module is rejected" do
+      assert {:error, msg} = ASTChecker.check("%Unknown.Mod{}", [])
+      assert msg =~ "%Unknown.Mod{} is not allowed"
+    end
+
+    test "struct of File.Stream is rejected (not on safe list)" do
+      assert {:error, msg} = ASTChecker.check("%File.Stream{}", [])
+      assert msg =~ "%File.Stream{} is not allowed"
+    end
+
+    test "pattern-matching against safe struct is allowed" do
+      code = "fn %Date{day: d} -> d end"
+      assert :ok = ASTChecker.check(code, [])
+    end
+
+    test "struct in case branch is allowed" do
+      code = "case x do %ArgumentError{} -> :err; _ -> :ok end"
+      assert :ok = ASTChecker.check(code, [])
+    end
+  end
+
+  describe "qualified Kernel forms" do
+    test "Kernel.exit is allowed" do
+      assert :ok = ASTChecker.check("Kernel.exit(:normal)", [])
+    end
+
+    test "Kernel.throw is allowed" do
+      assert :ok = ASTChecker.check("Kernel.throw(:foo)", [])
+    end
+
+    test "Kernel.send is still rejected" do
+      assert {:error, msg} = ASTChecker.check("Kernel.send(self(), :x)", [])
+      assert msg =~ "Kernel.send is not allowed"
+    end
+
+    test "Kernel.spawn is still rejected" do
+      assert {:error, msg} = ASTChecker.check("Kernel.spawn(fn -> :ok end)", [])
+      assert msg =~ "Kernel.spawn is not allowed"
+    end
+
+    test "Kernel.apply is still rejected" do
+      assert {:error, msg} = ASTChecker.check("Kernel.apply(Enum, :map, [[], &(&1)])", [])
+      assert msg =~ "Kernel.apply is not allowed"
+    end
+
+    test "Kernel.raise is still rejected" do
+      assert {:error, msg} = ASTChecker.check(~s|Kernel.raise("x")|, [])
+      assert msg =~ "Kernel.raise is not allowed"
+    end
+  end
+
+  describe "added stdlib allowances" do
+    test "Map.values is allowed" do
+      assert :ok = ASTChecker.check("Map.values(%{a: 1})", [])
+    end
+
+    test "JSON.decode! is allowed" do
+      assert :ok = ASTChecker.check(~s|JSON.decode!("[1,2,3]")|, [])
+    end
+
+    test "JSON.encode! is allowed" do
+      assert :ok = ASTChecker.check("JSON.encode!(%{a: 1})", [])
+    end
+
+    test "URI.parse is allowed" do
+      assert :ok = ASTChecker.check(~s|URI.parse("https://example.com")|, [])
+    end
+
+    test "URI.encode is allowed" do
+      assert :ok = ASTChecker.check(~s|URI.encode("hello world")|, [])
+    end
+
+    test "URI.default_port is rejected (mutation via /2 form)" do
+      assert {:error, msg} = ASTChecker.check(~s|URI.default_port("http")|, [])
+      assert msg =~ "URI.default_port is not allowed"
+    end
+
+    test ":erlang.float_to_binary is allowed" do
+      assert :ok = ASTChecker.check(":erlang.float_to_binary(1.5, decimals: 2)", [])
+    end
+
+    test ":erlang.spawn is still rejected" do
+      assert {:error, msg} = ASTChecker.check(":erlang.spawn(fn -> :ok end)", [])
+      assert msg =~ ":erlang.spawn is not allowed"
+    end
+  end
+
+  describe "improved error messages" do
+    test "IO module hints to return values" do
+      assert {:error, msg} = ASTChecker.check("IO.puts(\"x\")", [])
+      assert msg =~ "return values"
+    end
+
+    test "dynamic dispatch hints to use Map.get" do
+      assert {:error, msg} = ASTChecker.check("user.name", [])
+      assert msg =~ "Map.get"
+    end
+
+    test "struct literal lists the safe modules" do
+      assert {:error, msg} = ASTChecker.check("%Foo{}", [])
+      assert msg =~ "Date"
+      assert msg =~ "MapSet"
+    end
+
+    test "defmodule mentions anonymous functions" do
+      assert {:error, msg} = ASTChecker.check("defmodule X do end", [])
+      assert msg =~ "anonymous functions"
     end
   end
 end
