@@ -6,32 +6,36 @@ defmodule Legion.Sandbox.ASTChecker do
   violation found. The check is **default-deny** for built-in modules: every
   module/function call must be explicitly listed.
 
-  Three categories are validated:
+  Categories validated:
 
-  - **Bare forms** - things written without a module prefix (`if`, `case`, `+`,
-    `fn`, `<<>>`, `is_atom`, `raise`, `to_string`, ...) must be in
-    `@allowed_bare_forms`. Anything else (`def`, `defstruct`, `__MODULE__`,
-    `apply`, `spawn`, `send`, `receive`, ...) is rejected.
-  - **`Module.function/n` calls** - the module must be either built-in
-    (and the function must appear in that module's allowlist) or supplied by
-    the caller in `allowed_modules`. Caller-supplied modules are treated as
-    *tools* and any function on them is allowed. Tail aliases (`Helper` for
-    `MyApp.Helper`) are recognised only for `__aliases__` AST nodes, never
-    for atom-literal module dispatch (`:"Elixir.Helper".fun(...)`), to prevent
-    a tail collision (e.g. tool `MyApp.System`) from unlocking the real
-    stdlib module.
-  - **Dynamic dispatch** - any `expr.fun` form (with or without parens, with
-    or without args) where the dot's base is not a literal module is rejected.
-    If `expr` evaluates to a module atom at runtime, the call dispatches to
-    arbitrary code on that module. This includes `m.key` map field access:
-    use `Map.fetch!(m, :key)` or `Map.get(m, :key)` instead.
-  - **`raise` / `reraise`** - the module argument (if any) must be in a small
-    allowlist of safe stdlib exceptions; otherwise raise resolves and loads
-    arbitrary modules at runtime via `Mod.exception/1`.
-  - **Fake structs** - the literal atom `:__struct__` and the literal string
-    `"__struct__"` are rejected. A map with an `__struct__` key is treated as
-    a struct by every protocol in the BEAM, and the map literal `:%{}` form
-    sidesteps the `:%` struct-form check.
+  - **Bare forms** - non-prefixed calls/identifiers (`if`, `case`, `+`, `fn`,
+    `is_atom`, `raise`, ...) must be in `@allowed_bare_forms`. Anything else
+    (`def`, `defstruct`, `apply`, `spawn`, `send`, `receive`, `__MODULE__`,
+    ...) is rejected.
+  - **`Module.function/arity` calls** - the module must be a built-in (with
+    the function in that module's allowlist, and the arity within its cap)
+    or a caller-supplied tool. Tail aliases match for `__aliases__` nodes
+    only, never for atom-literal dispatch (`:"Elixir.Helper".fun(...)`),
+    so a tool tail like `System` cannot unlock the real stdlib module.
+  - **Arity caps on calendar functions** - the higher arities of `Date.new`,
+    `DateTime.shift_zone`, `Time.utc_now`, etc. take a calendar / time-zone
+    database module that is dispatched at runtime. The allowlist caps each
+    such function at its safe arity; sandboxed code must use the lower-arity
+    form or a sigil (`~D`, `~T`, `~U`, `~N`).
+  - **Dynamic dispatch** - `expr.fun` / `expr.fun(...)` is rejected unless
+    the dot's base is a literal module. `m.key` map access goes through this
+    check too — use `Map.fetch!(m, :key)` or `Map.get(m, :key)`.
+  - **`raise` / `reraise`** - the first argument must be a literal alias /
+    atom-literal exception module (in `@safe_exceptions`), a binary literal,
+    or a string-interpolation. Anything else would force-load an arbitrary
+    module at runtime via `mod.exception/1`.
+  - **Struct literals** - `%Mod{...}` is rejected unless `Mod` is in
+    `@safe_struct_modules`, `@safe_exceptions`, or a tool. The runtime
+    force-loads `Mod` and runs its `@on_load`.
+  - **Fake structs** - the literal atom `:__struct__` and any binary
+    containing the substring `"__struct__"` are rejected. A map with an
+    `__struct__` key is dispatched as a struct by every BEAM protocol; the
+    binary check covers the `~w(... __struct__)a` materialisation path.
 
   Built-in modules and their allowed functions are defined in this file.
   Functions that can break out of the sandbox (atom-table churn, dynamic code
@@ -61,7 +65,7 @@ defmodule Legion.Sandbox.ASTChecker do
     __aliases__ __block__ -> <- |
     {} %{} <<>>
     fn case cond if unless for with try when
-    = ^ :: ..  ..// & \\
+    = ^ :: .. ..// \\ &
   )a
 
   @allowed_kernel_operators ~w(
@@ -74,6 +78,12 @@ defmodule Legion.Sandbox.ASTChecker do
     is_number is_pid is_port is_reference is_struct is_tuple
   )a
 
+  # Note: `sigil_w` and `sigil_W` are listed here so non-`a` modifier uses
+  # (`~w(foo bar)`, `~w(foo bar)s`, `~w(foo bar)c`) pass the bare-form check.
+  # The `a` modifier is intercepted by a dedicated clause below — interpolation
+  # is rejected outright (the resulting atoms would be built from runtime
+  # strings, defeating literal-atom inspection); non-interpolated tokens are
+  # validated each as if they were bare atom / alias literals.
   @allowed_kernel_macros_and_funs ~w(
     abs binary_part binary_slice bit_size byte_size ceil div elem floor
     get_and_update_in get_in hd inspect length make_ref map_size max min
@@ -86,11 +96,11 @@ defmodule Legion.Sandbox.ASTChecker do
   )a
 
   @allowed_bare_forms MapSet.new(
-                       @allowed_special_forms ++
-                         @allowed_kernel_operators ++
-                         @allowed_kernel_guards ++
-                         @allowed_kernel_macros_and_funs
-                     )
+                        @allowed_special_forms ++
+                          @allowed_kernel_operators ++
+                          @allowed_kernel_guards ++
+                          @allowed_kernel_macros_and_funs
+                      )
 
   # Built-in modules with per-function allowlists.
 
@@ -207,39 +217,130 @@ defmodule Legion.Sandbox.ASTChecker do
     uniq uniq_by with_index zip zip_with
   )a
 
-  @date_allowed ~w(
-    add after? before? beginning_of_month beginning_of_week compare convert
-    convert! day_of_era day_of_week day_of_year days_in_month diff
-    end_of_month end_of_week from_erl from_erl! from_gregorian_days
-    from_iso8601 from_iso8601! leap_year? months_in_year new new!
-    quarter_of_year range shift to_erl to_gregorian_days to_iso8601
-    to_iso_days to_string utc_today year_of_era
-  )a
+  # Calendar-module functions need per-arity caps: the higher arity often
+  # takes a calendar / time-zone-database module that is dispatched at
+  # runtime, force-loading the module (and running its `@on_load`). The
+  # `{:func, max_arity}` form caps `func` at that arity; bare atoms allow
+  # any arity. `convert/2` and `compatible_calendars?/2` are entirely absent
+  # because every arity of those takes a calendar module.
+  @date_allowed [
+    :after?,
+    :before?,
+    :beginning_of_month,
+    :beginning_of_week,
+    :compare,
+    :day_of_era,
+    :day_of_week,
+    :day_of_year,
+    :days_in_month,
+    :diff,
+    :end_of_month,
+    :end_of_week,
+    :leap_year?,
+    :months_in_year,
+    :quarter_of_year,
+    :range,
+    :shift,
+    :to_erl,
+    :to_gregorian_days,
+    :to_iso8601,
+    :to_iso_days,
+    :to_string,
+    :year_of_era,
+    :add,
+    {:from_erl, 1},
+    {:from_erl!, 1},
+    {:from_gregorian_days, 1},
+    {:from_iso8601, 1},
+    {:from_iso8601!, 1},
+    {:new, 3},
+    {:new!, 3},
+    {:utc_today, 0}
+  ]
 
-  @datetime_allowed ~w(
-    add after? before? compare convert convert! diff from_gregorian_seconds
-    from_iso8601 from_naive from_naive! from_unix from_unix! new new! now
-    now! shift shift_zone shift_zone! to_date to_gregorian_seconds to_iso8601
-    to_naive to_string to_time to_unix truncate utc_now
-  )a
+  @datetime_allowed [
+    :after?,
+    :before?,
+    :compare,
+    :diff,
+    :to_date,
+    :to_gregorian_seconds,
+    :to_iso8601,
+    :to_naive,
+    :to_string,
+    :to_time,
+    :to_unix,
+    :truncate,
+    {:add, 3},
+    {:from_gregorian_seconds, 2},
+    {:from_iso8601, 1},
+    {:from_naive, 2},
+    {:from_naive!, 2},
+    {:from_unix, 2},
+    {:from_unix!, 2},
+    {:new, 3},
+    {:new!, 3},
+    {:now, 1},
+    {:now!, 1},
+    {:shift, 2},
+    {:shift_zone, 2},
+    {:shift_zone!, 2},
+    {:utc_now, 0}
+  ]
 
-  @naive_datetime_allowed ~w(
-    add after? before? beginning_of_day compare convert convert! diff
-    end_of_day from_erl from_erl! from_gregorian_seconds from_iso8601
-    from_iso8601! local_now new new! shift to_date to_erl
-    to_gregorian_seconds to_iso8601 to_string to_time truncate utc_now
-  )a
+  @naive_datetime_allowed [
+    :after?,
+    :before?,
+    :beginning_of_day,
+    :compare,
+    :diff,
+    :end_of_day,
+    :shift,
+    :to_date,
+    :to_erl,
+    :to_gregorian_seconds,
+    :to_iso8601,
+    :to_string,
+    :to_time,
+    :truncate,
+    :add,
+    {:from_erl, 2},
+    {:from_erl!, 2},
+    {:from_gregorian_seconds, 2},
+    {:from_iso8601, 1},
+    {:from_iso8601!, 1},
+    {:local_now, 0},
+    {:new, 7},
+    {:new!, 7},
+    {:utc_now, 0}
+  ]
 
-  @time_allowed ~w(
-    add after? before? compare convert convert! diff from_erl from_erl!
-    from_iso8601 from_iso8601! from_seconds_after_midnight new new! shift
-    to_erl to_iso8601 to_seconds_after_midnight to_string truncate utc_now
-  )a
+  @time_allowed [
+    :after?,
+    :before?,
+    :compare,
+    :diff,
+    :shift,
+    :to_erl,
+    :to_iso8601,
+    :to_seconds_after_midnight,
+    :to_string,
+    :truncate,
+    :add,
+    {:from_erl, 2},
+    {:from_erl!, 2},
+    {:from_iso8601, 1},
+    {:from_iso8601!, 1},
+    {:from_seconds_after_midnight, 2},
+    {:new, 4},
+    {:new!, 4},
+    {:utc_now, 0}
+  ]
 
-  # Calendar: read-only only — `put_time_zone_database` mutates global env.
-  @calendar_allowed ~w(
-    compatible_calendars? get_time_zone_database strftime truncate
-  )a
+  # Calendar: read-only and module-arg-free. `compatible_calendars?/2` is
+  # absent (both args are calendar modules); `put_time_zone_database/1`
+  # mutates global env.
+  @calendar_allowed ~w(get_time_zone_database strftime truncate)a
 
   @math_allowed ~w(
     acos acosh asin asinh atan atan2 atanh ceil cos cosh erf erfc exp floor
@@ -260,12 +361,6 @@ defmodule Legion.Sandbox.ASTChecker do
   # Only `:erlang.float_to_binary/2` (fixed-precision float formatting); other
   # erlang BIFs are blocked.
   @erlang_allowed ~w(float_to_binary)a
-
-  # Modules whose functions take a Calendar / time-zone-DB module argument
-  # that's dispatched at runtime — see `check_calendar_args/3`.
-  @calendar_modules MapSet.new([Date, DateTime, NaiveDateTime, Time, Calendar])
-
-  @safe_calendar_modules MapSet.new([Calendar.ISO, Calendar.UTCOnlyTimeZoneDatabase])
 
   # Stdlib struct modules safe in the `%Mod{...}` form. Any other module would
   # be force-loaded at runtime (running its `@on_load`). All listed modules
@@ -307,31 +402,41 @@ defmodule Legion.Sandbox.ASTChecker do
                      WithClauseError
                    ])
 
+  # Per-module allowlist: function -> :any (any arity) or non_neg_integer
+  # (max allowed arity). Source format mixes bare atoms (any arity) and
+  # `{atom, max_arity}` tuples; both are normalised at compile time.
+  build_allowlist = fn entries ->
+    Map.new(entries, fn
+      func when is_atom(func) -> {func, :any}
+      {func, max_arity} when is_atom(func) and is_integer(max_arity) -> {func, max_arity}
+    end)
+  end
+
   @builtin_module_functions %{
-    Kernel => MapSet.new(@kernel_allowed),
-    String => MapSet.new(@string_allowed),
-    Enum => MapSet.new(@enum_allowed),
-    Map => MapSet.new(@map_allowed),
-    MapSet => MapSet.new(@mapset_allowed),
-    List => MapSet.new(@list_allowed),
-    Keyword => MapSet.new(@keyword_allowed),
-    Tuple => MapSet.new(@tuple_allowed),
-    Integer => MapSet.new(@integer_allowed),
-    Float => MapSet.new(@float_allowed),
-    Atom => MapSet.new(@atom_allowed),
-    Regex => MapSet.new(@regex_allowed),
-    Range => MapSet.new(@range_allowed),
-    Access => MapSet.new(@access_allowed),
-    Stream => MapSet.new(@stream_allowed),
-    Date => MapSet.new(@date_allowed),
-    DateTime => MapSet.new(@datetime_allowed),
-    NaiveDateTime => MapSet.new(@naive_datetime_allowed),
-    Time => MapSet.new(@time_allowed),
-    Calendar => MapSet.new(@calendar_allowed),
-    JSON => MapSet.new(@json_allowed),
-    URI => MapSet.new(@uri_allowed),
-    :math => MapSet.new(@math_allowed),
-    :erlang => MapSet.new(@erlang_allowed)
+    Kernel => build_allowlist.(@kernel_allowed),
+    String => build_allowlist.(@string_allowed),
+    Enum => build_allowlist.(@enum_allowed),
+    Map => build_allowlist.(@map_allowed),
+    MapSet => build_allowlist.(@mapset_allowed),
+    List => build_allowlist.(@list_allowed),
+    Keyword => build_allowlist.(@keyword_allowed),
+    Tuple => build_allowlist.(@tuple_allowed),
+    Integer => build_allowlist.(@integer_allowed),
+    Float => build_allowlist.(@float_allowed),
+    Atom => build_allowlist.(@atom_allowed),
+    Regex => build_allowlist.(@regex_allowed),
+    Range => build_allowlist.(@range_allowed),
+    Access => build_allowlist.(@access_allowed),
+    Stream => build_allowlist.(@stream_allowed),
+    Date => build_allowlist.(@date_allowed),
+    DateTime => build_allowlist.(@datetime_allowed),
+    NaiveDateTime => build_allowlist.(@naive_datetime_allowed),
+    Time => build_allowlist.(@time_allowed),
+    Calendar => build_allowlist.(@calendar_allowed),
+    JSON => build_allowlist.(@json_allowed),
+    URI => build_allowlist.(@uri_allowed),
+    :math => build_allowlist.(@math_allowed),
+    :erlang => build_allowlist.(@erlang_allowed)
   }
 
   @max_code_size 64 * 1024
@@ -378,23 +483,50 @@ defmodule Legion.Sandbox.ASTChecker do
     end
   end
 
-  # A tool whose tail alias matches a stdlib safe-exception name would
-  # confused-deputy the `raise StdlibName, ...` rule: after the host prepends
-  # `alias MyApp.RuntimeError`, `raise RuntimeError` compiles to `raise
-  # MyApp.RuntimeError`, force-loading the tool. Refuse such tool lists.
+  # A tool whose tail alias collides with any stdlib namespace the AST
+  # checker treats specially confused-deputies that namespace's check: after
+  # the host prepends `alias MyApp.<Tail>`, source-level references to the
+  # stdlib name route to the tool. Refuse the entire namespace family
+  # (built-in modules, safe structs, safe exceptions, calendar modules)
+  # rather than just the exceptions subset.
   defp check_tool_collisions(allowed_modules) do
-    safe_tails = MapSet.new(Enum.map(@safe_exceptions, &alias_tail/1))
+    reserved = reserved_stdlib_tails()
 
     Enum.find_value(allowed_modules, :ok, fn mod ->
       tail = alias_tail(mod)
 
-      if MapSet.member?(safe_tails, tail) and mod != tail do
+      if MapSet.member?(reserved, tail) and mod != tail do
         {:error,
-         "tool module #{inspect(mod)} shadows stdlib safe-exception #{inspect(tail)}; " <>
+         "tool module #{inspect(mod)} shadows stdlib module/exception #{inspect(tail)}; " <>
            "rename the tool to avoid the collision"}
       end
     end)
   end
+
+  defp reserved_stdlib_tails do
+    builtins =
+      @builtin_module_functions
+      |> Map.keys()
+      |> Enum.filter(&elixir_module_atom?/1)
+
+    [
+      MapSet.to_list(@safe_exceptions),
+      MapSet.to_list(@safe_struct_modules),
+      builtins
+    ]
+    |> Enum.concat()
+    |> Enum.map(&alias_tail/1)
+    |> MapSet.new()
+  end
+
+  defp elixir_module_atom?(atom) when is_atom(atom) do
+    case Atom.to_string(atom) do
+      "Elixir." <> _ -> true
+      _ -> false
+    end
+  end
+
+  defp elixir_module_atom?(_), do: false
 
   defp alias_tail(module) do
     module |> Module.split() |> List.last() |> List.wrap() |> Module.concat()
@@ -408,14 +540,16 @@ defmodule Legion.Sandbox.ASTChecker do
 
   # `Foo.bar(args)` - alias form. Tail aliases match (callers can write a
   # tool's short name).
-  defp check_node({{:., _, [{:__aliases__, _, parts}, func]}, _, _} = node, :ok, tools) do
-    check_module_call(node, Module.concat(parts), func, tools, :alias_form)
+  defp check_node({{:., _, [{:__aliases__, _, parts}, func]}, _, args} = node, :ok, tools)
+       when is_list(args) do
+    check_module_call(node, Module.concat(parts), func, length(args), tools, :alias_form)
   end
 
   # `:atom_mod.bar(args)` - atom-literal form. Tail aliases do *not* match,
   # so a tool tail like `System` cannot unlock `:"Elixir.System"`.
-  defp check_node({{:., _, [module, func]}, _, _} = node, :ok, tools) when is_atom(module) do
-    check_module_call(node, module, func, tools, :atom_form)
+  defp check_node({{:., _, [module, func]}, _, args} = node, :ok, tools)
+       when is_atom(module) and is_list(args) do
+    check_module_call(node, module, func, length(args), tools, :atom_form)
   end
 
   # `var.fun(args)` / `m.key` / `&m.fun/n` - dynamic dispatch. If `var` is a
@@ -495,6 +629,31 @@ defmodule Legion.Sandbox.ASTChecker do
     {node, check_raise_arg(form, arg)}
   end
 
+  # `~w(...)a` / `~W(...)a` — atom-list sigils. The `a` modifier maps each
+  # split token through `String.to_atom/1` at macro-expansion time (which
+  # runs AFTER the AST check, inside `Code.eval_string`).
+  #
+  # With INTERPOLATION, the resulting atoms are built from runtime strings
+  # the static check can't see — verified RCE chain:
+  #
+  #     s = "_" <> "_str" <> "uct__"; ~w(#{s})a   # produces :__struct__
+  #     ~w(Elixir.File.Stream)a                    # produces File.Stream
+  #
+  # Combined via `Map.put`, these forge a `%File.Stream{}` map, which
+  # `for ..., into:` turns into arbitrary file write. Reject interpolated
+  # forms outright.
+  #
+  # Without interpolation, the literal tokens are visible: validate each
+  # one as if it were a bare atom / alias literal.
+  defp check_node({sigil, _, [{:<<>>, _, segments}, modifiers]} = node, :ok, tools)
+       when sigil in [:sigil_w, :sigil_W] and is_list(modifiers) and is_list(segments) do
+    if ?a in modifiers do
+      {node, check_atom_sigil(segments, tools)}
+    else
+      {node, :ok}
+    end
+  end
+
   # Bare-form call - catches `def`, `defstruct`, `apply`, `spawn`, `send`,
   # `receive`, `binding`, `var!`, `dbg`, ... (anything not in
   # `@allowed_bare_forms`).
@@ -530,23 +689,63 @@ defmodule Legion.Sandbox.ASTChecker do
 
   defp check_node(node, acc, _tools), do: {node, acc}
 
-  defp check_module_call(node, module, func, {tool_modules, tool_aliases}, form) do
+  # Interpolated `~w(...)a` is rejected outright (the resulting atoms are
+  # built from runtime strings the static check can't see). Non-interpolated
+  # is checked token-by-token: only `"__struct__"` is rejected — every other
+  # token's resulting atom is just an inert value with nowhere dangerous to
+  # flow (raise / struct / dot-call positions all reject non-literal args,
+  # and the calendar arity gate eliminates the calendar-arg flow).
+  defp check_atom_sigil(segments, _tools) do
     cond do
-      MapSet.member?(tool_modules, module) ->
-        {node, check_calendar_args(node, module, tool_modules)}
+      Enum.any?(segments, &(not is_binary(&1))) ->
+        {:error,
+         "~w/~W with the `a` modifier and interpolation is not allowed - the " <>
+           "resulting atoms are built from runtime strings, bypassing the static " <>
+           "`:__struct__` literal check. Use a list literal (`[:foo, :bar]`) or " <>
+           "a non-`a` sigil (`~w(foo bar)`)."}
 
-      form == :alias_form and MapSet.member?(tool_aliases, module) ->
-        {node, check_calendar_args(node, module, tool_modules)}
+      "__struct__" in (segments |> Enum.join() |> String.split()) ->
+        {:error,
+         ~S|~w/~W token "__struct__" is not allowed - the `a` modifier would | <>
+           "materialise the `:__struct__` atom, which is the literal needed to " <>
+           "forge a fake struct via `Map.put`."}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp check_module_call(node, module, func, arity, {tool_modules, tool_aliases}, form) do
+    in_tools? =
+      MapSet.member?(tool_modules, module) or
+        (form == :alias_form and MapSet.member?(tool_aliases, module))
+
+    cond do
+      in_tools? ->
+        {node, :ok}
 
       not Map.has_key?(@builtin_module_functions, module) ->
         {node, {:error, module_denied_error(module)}}
 
-      not MapSet.member?(@builtin_module_functions[module], func) ->
-        {node, {:error, function_denied_error(module, func)}}
-
       true ->
-        {node, check_calendar_args(node, module, tool_modules)}
+        {node, check_builtin_call(module, func, arity)}
     end
+  end
+
+  defp check_builtin_call(module, func, arity) do
+    case Map.fetch(@builtin_module_functions[module], func) do
+      :error -> {:error, function_denied_error(module, func)}
+      {:ok, :any} -> :ok
+      {:ok, max_arity} when arity <= max_arity -> :ok
+      {:ok, _max_arity} -> {:error, arity_capped_error(module, func, arity)}
+    end
+  end
+
+  defp arity_capped_error(module, func, arity) do
+    "#{inspect(module)}.#{func}/#{arity} is not allowed in the sandbox - " <>
+      "this arity takes a calendar / time-zone-database module argument that " <>
+      "would be force-loaded at runtime. Use a lower-arity form, or build " <>
+      "dates / times via sigils (`~D`, `~T`, `~U`, `~N`)."
   end
 
   defp check_struct_literal(node, module, {tool_modules, tool_aliases}, form) do
@@ -585,10 +784,12 @@ defmodule Legion.Sandbox.ASTChecker do
   end
 
   @module_hint %{
-    IO => "return values from your code instead of printing them; the host displays them automatically",
+    IO =>
+      "return values from your code instead of printing them; the host displays them automatically",
     Code => "dynamic code evaluation is not permitted",
     Process => "process / message manipulation is not permitted",
-    File => "file I/O is not permitted (ask the caller for a tool that exposes the data you need)",
+    File =>
+      "file I/O is not permitted (ask the caller for a tool that exposes the data you need)",
     System => "host introspection / shell-out is not permitted",
     :erlang => "only :erlang.float_to_binary/2 is exposed; other erlang BIFs are blocked"
   }
@@ -654,13 +855,16 @@ defmodule Legion.Sandbox.ASTChecker do
   @macro_forms ~w(quote unquote unquote_splicing)a
 
   defp bare_form_hint(name) when name in @def_forms,
-    do: "module / function definitions are not permitted. Use anonymous functions (`fn x -> ... end`) and `Enum.reduce/3` for stateful or recursive logic."
+    do:
+      "module / function definitions are not permitted. Use anonymous functions (`fn x -> ... end`) and `Enum.reduce/3` for stateful or recursive logic."
 
   defp bare_form_hint(name) when name in @directive_forms,
-    do: "module directives are managed by the sandbox host. Tools are already aliased; reference them directly."
+    do:
+      "module directives are managed by the sandbox host. Tools are already aliased; reference them directly."
 
   defp bare_form_hint(:apply),
-    do: "dynamic dispatch on a runtime module/function atom is not permitted. Call the function directly: `Module.fun(arg1, arg2)`."
+    do:
+      "dynamic dispatch on a runtime module/function atom is not permitted. Call the function directly: `Module.fun(arg1, arg2)`."
 
   defp bare_form_hint(name) when name in @spawn_forms,
     do: "process creation is not permitted in the sandbox."
@@ -669,7 +873,8 @@ defmodule Legion.Sandbox.ASTChecker do
     do: "inter-process messaging is not permitted in the sandbox."
 
   defp bare_form_hint(:binding),
-    do: "the sandbox host displays available bindings to you separately; reference variables by name."
+    do:
+      "the sandbox host displays available bindings to you separately; reference variables by name."
 
   defp bare_form_hint(:dbg),
     do: "debug printing is not available; return values from your code instead."
@@ -678,52 +883,9 @@ defmodule Legion.Sandbox.ASTChecker do
     do: "macro / AST manipulation is not permitted in the sandbox."
 
   defp bare_form_hint(name),
-    do: "if this is a function name, prefix it with its module (e.g. `Kernel.#{name}/1`); otherwise it is not permitted."
+    do:
+      "if this is a function name, prefix it with its module (e.g. `Kernel.#{name}/1`); otherwise it is not permitted."
 
   defp bare_form_denied_error(name),
     do: "#{name} is not allowed in the sandbox - #{bare_form_hint(name)}"
-
-  # Calendar functions dispatch a Calendar / time-zone-DB module argument at
-  # runtime (`module.day_of_week/3`, ...). That dispatch loads the module and
-  # runs its `@on_load`, so reject any literal module reference in those
-  # positions unless it's a known-safe calendar or a tool.
-  defp check_calendar_args({_dot, _meta, args}, module, tool_modules) when is_list(args) do
-    if MapSet.member?(@calendar_modules, module) do
-      Enum.reduce_while(args, :ok, fn arg, :ok ->
-        case calendar_arg_disposition(arg, tool_modules) do
-          :ok -> {:cont, :ok}
-          {:error, _} = err -> {:halt, err}
-        end
-      end)
-    else
-      :ok
-    end
-  end
-
-  defp check_calendar_args(_node, _module, _tool_modules), do: :ok
-
-  defp calendar_arg_disposition({:__aliases__, _, parts}, tool_modules),
-    do: classify_calendar_module(Module.concat(parts), tool_modules)
-
-  defp calendar_arg_disposition(atom, tool_modules) when is_module_atom(atom) do
-    case Atom.to_string(atom) do
-      "Elixir." <> _ -> classify_calendar_module(atom, tool_modules)
-      _ -> :ok
-    end
-  end
-
-  defp calendar_arg_disposition(_other, _tool_modules), do: :ok
-
-  defp classify_calendar_module(module, tool_modules) do
-    if MapSet.member?(@safe_calendar_modules, module) or
-         MapSet.member?(@calendar_modules, module) or
-         MapSet.member?(tool_modules, module) do
-      :ok
-    else
-      {:error,
-       "module #{inspect(module)} passed to a calendar function would be " <>
-         "dispatched at runtime; only #{inspect(MapSet.to_list(@safe_calendar_modules))} " <>
-         "or tool modules are allowed in calendar argument positions"}
-    end
-  end
 end

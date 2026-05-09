@@ -643,7 +643,8 @@ defmodule Legion.Sandbox.ASTCheckerTest do
 
   describe "struct literals" do
     test "%Date{} is allowed" do
-      assert :ok = ASTChecker.check("%Date{year: 2024, month: 1, day: 1, calendar: Calendar.ISO}", [])
+      assert :ok =
+               ASTChecker.check("%Date{year: 2024, month: 1, day: 1, calendar: Calendar.ISO}", [])
     end
 
     test "%MapSet{} is allowed" do

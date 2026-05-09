@@ -271,7 +271,22 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
     # (triggering `@on_load` and `exception/1` side-effects).
 
     test "rejects raise <variable>" do
+      # Two layers of defense both reject this:
+      #   * the standalone bare-atom clause rejects `:asn1rt_nif` itself
+      #     (NIF-loading erlang module atom in source), AND
+      #   * the raise-with-non-literal-first-arg clause rejects `raise v`.
+      # Either rejection satisfies the test; pin on whichever fires first.
       assert {:error, msg} = Sandbox.execute("v = :asn1rt_nif; raise v", 5_000, [])
+
+      assert msg =~ "raise requires a literal exception module" or
+               msg =~ "literal erlang-module atom :asn1rt_nif is not allowed"
+    end
+
+    test "rejects raise <variable> when value is not on the dangerous list" do
+      # If the literal isn't one of the small denylist of NIF loaders, the
+      # bare-atom clause doesn't fire — the raise-with-non-literal clause
+      # is what protects us. This pins THAT path specifically.
+      assert {:error, msg} = Sandbox.execute("v = :something_random; raise v", 5_000, [])
       assert msg =~ "raise requires a literal exception module"
     end
 
@@ -308,7 +323,9 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
                  []
                )
 
-      assert msg =~ "reraise requires a literal exception module"
+      # See `rejects raise <variable>` for the two-layers-of-defense rationale.
+      assert msg =~ "reraise requires a literal exception module" or
+               msg =~ "literal erlang-module atom :asn1rt_nif is not allowed"
     end
 
     test "still allows raise \"string\" (RuntimeError shorthand)" do
@@ -329,10 +346,16 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
     # the fix.
 
     test "rejects &raise/1" do
+      # The capture form alone is rejected even without the dangerous atom:
+      assert {:error, msg} = ASTChecker.check("&raise/1", [])
+      assert msg =~ "&raise/1 is not allowed"
+
+      # Combined with a NIF atom, two clauses block it (whichever fires first):
       assert {:error, msg} =
                Sandbox.execute("(&raise/1).(:asn1rt_nif)", 5_000, [])
 
-      assert msg =~ "&raise/1 is not allowed"
+      assert msg =~ "&raise/1 is not allowed" or
+               msg =~ "literal erlang-module atom :asn1rt_nif is not allowed"
     end
 
     test "rejects &raise/2" do
@@ -351,10 +374,16 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
     end
 
     test "rejects &Kernel.raise/1 (qualified capture)" do
+      # Qualified-capture path is blocked outright:
+      assert {:error, msg} = ASTChecker.check("&Kernel.raise/1", [])
+      assert msg =~ "Kernel.raise is not allowed"
+
+      # Combined with a NIF atom, two clauses block it (whichever fires first):
       assert {:error, msg} =
                Sandbox.execute("(&Kernel.raise/1).(:asn1rt_nif)", 5_000, [])
 
-      assert msg =~ "Kernel.raise is not allowed"
+      assert msg =~ "Kernel.raise is not allowed" or
+               msg =~ "literal erlang-module atom :asn1rt_nif is not allowed"
     end
 
     test "rejects &Kernel.reraise/2 (qualified capture)" do
@@ -395,46 +424,138 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
     end
   end
 
-  describe "sigil_w / sigil_W with `a` modifier materialising :__struct__ (FIXED)" do
-    # `~w(_a __struct__)a` parses to a sigil call whose literal argument is
-    # a binary that *contains* "__struct__" but is not equal to it. The old
-    # exact-equality check on the binary literal let it through. At
-    # macro-expansion time (which `Code.eval_string` performs), `sigil_w`
-    # with the `a` modifier maps tokens through `String.to_atom/1`, producing
-    # the atom `:__struct__` despite both `String.to_atom` and the literal
-    # atom being denied. Substring match closes every source-string path.
+  describe "sigil_w / sigil_W with `a` modifier materialising atoms (FIXED)" do
+    # The `a` modifier on `~w` / `~W` maps each split token through
+    # `String.to_atom/1` at macro-expansion time (after the AST check). Two
+    # related sandbox escapes were possible:
+    #
+    #   1. ARBITRARY MODULE ATOMS: `~w(Elixir.File.Stream)a` yields
+    #      `:"Elixir.File.Stream"`, which combined with `Map.put` builds a
+    #      fake `%File.Stream{}` and reaches arbitrary file write through
+    #      `for ..., into: fake`.
+    #   2. `:__struct__` ATOM via interpolation: the literal-binary
+    #      substring guard for `"__struct__"` only inspects AST string
+    #      literals; `~w(#{"_" <> "_str" <> "uct__"})a` builds the binary
+    #      at runtime and `String.to_atom/1` materialises `:__struct__`,
+    #      defeating the gate that protects every protocol-dispatch path.
+    #
+    # The fix is a dedicated `check_node` clause that:
+    #   * REJECTS interpolated forms (`~w(#{x})a`) outright — runtime-built
+    #     atoms are invisible to the static check.
+    #   * For non-interpolated forms, validates each literal token as if it
+    #     were a bare atom / alias literal: rejects `"__struct__"`, rejects
+    #     unsafe Elixir-module atoms (`Elixir.System`, `Elixir.File.Stream`),
+    #     rejects dangerous erlang-module atoms (`asn1rt_nif`, `crypto`),
+    #     and accepts everything else (`~w(red green blue)a` is fine).
+    #
+    # Other modifiers (default string list, `s`, `c`) are unaffected.
 
-    test "rejects ~w(_a __struct__)a" do
+    test "rejects ~w(_a __struct__)a (token __struct__)" do
       assert {:error, msg} =
                Sandbox.execute(~S[~w(_a __struct__)a] <> " |> List.last()", 5_000, [])
 
-      assert msg =~ ~S|literal binary containing "__struct__"|
+      assert msg =~ ~S|token "__struct__" is not allowed|
     end
 
     test "rejects ~W(_a __struct__)a (no-interp variant)" do
       assert {:error, msg} =
                Sandbox.execute(~S[~W(_a __struct__)a] <> " |> List.last()", 5_000, [])
 
-      assert msg =~ ~S|literal binary containing "__struct__"|
+      assert msg =~ ~S|token "__struct__" is not allowed|
     end
 
     test "rejects ~w(__struct__)a (single-token variant)" do
       assert {:error, msg} =
                Sandbox.execute(~S[~w(__struct__)a] <> " |> hd()", 5_000, [])
 
-      assert msg =~ ~S|literal binary containing "__struct__"|
+      assert msg =~ ~S|token "__struct__" is not allowed|
+    end
+
+    test "rejects interpolated ~w with `a` (defeats substring guard)" do
+      code = ~S|s = "_" <> "_str" <> "uct__"; ~w(#{s})a|
+      assert {:error, msg} = Sandbox.execute(code, 5_000, [])
+      assert msg =~ "interpolation is not allowed"
+    end
+
+    test "rejects any interpolated ~w with `a`, even with safe-looking content" do
+      # Interpolation defeats static inspection regardless of what the
+      # interpolated value LOOKS like at parse time. This pins the
+      # interpolation check rather than per-token classification.
+      code = ~S|x = String.upcase("foo"); ~w(#{x})a|
+      assert {:error, msg} = Sandbox.execute(code, 5_000, [])
+      assert msg =~ "interpolation is not allowed"
     end
 
     test "rejects any binary literal containing __struct__" do
+      # The substring guard on AST string literals is unchanged.
       assert {:error, msg} =
                Sandbox.execute(~s|"prefix __struct__ suffix"|, 5_000, [])
 
       assert msg =~ ~S|literal binary containing "__struct__"|
     end
 
-    test "still allows benign ~w / ~W sigils" do
-      assert {:ok, {[:foo, :bar, :baz], _}} =
-               Sandbox.execute("~w(foo bar baz)a", 5_000, [])
+    test "still allows ~w(foo bar baz) (default — string list)" do
+      assert {:ok, {["foo", "bar", "baz"], _}} =
+               Sandbox.execute("~w(foo bar baz)", 5_000, [])
+    end
+
+    test "still allows ~w(foo bar baz)s (explicit string list)" do
+      assert {:ok, {["foo", "bar", "baz"], _}} =
+               Sandbox.execute("~w(foo bar baz)s", 5_000, [])
+    end
+
+    test "still allows ~w(foo bar baz)c (charlist list)" do
+      assert {:ok, {[~c"foo", ~c"bar", ~c"baz"], _}} =
+               Sandbox.execute("~w(foo bar baz)c", 5_000, [])
+    end
+
+    test "still allows ~W(foo bar)s (uppercase no-interp variant)" do
+      assert {:ok, {["foo", "bar"], _}} =
+               Sandbox.execute("~W(foo bar)s", 5_000, [])
+    end
+
+    test "still allows ~w(red green blue)a (benign atom list, no interpolation)" do
+      # The relaxed rule allows atom-list sigils as long as (a) there is no
+      # interpolation and (b) every token is a benign atom (not `__struct__`,
+      # not an unsafe Elixir-module atom, not a dangerous erlang-module atom).
+      assert {:ok, {[:red, :green, :blue], _}} =
+               Sandbox.execute("~w(red green blue)a", 5_000, [])
+    end
+
+    test "still allows ~W(ok error)a (uppercase atom-list, no interpolation)" do
+      assert {:ok, {[:ok, :error], _}} =
+               Sandbox.execute("~W(ok error)a", 5_000, [])
+    end
+
+    test "still allows ~w(microsecond second nanosecond)a (calendar-unit atoms)" do
+      assert {:ok, {[:microsecond, :second, :nanosecond], _}} =
+               Sandbox.execute("~w(microsecond second nanosecond)a", 5_000, [])
+    end
+  end
+
+  describe "full sandbox escape via sigil-built :__struct__ + fake File.Stream (FIXED)" do
+    # The end-to-end RCE that combined #1 and #2 above with `Map.put` and
+    # `for ..., into:` to write arbitrary files.
+
+    test "rejects the full file-write chain" do
+      witness = "/tmp/legion_rce_witness_#{System.unique_integer([:positive])}"
+      File.rm(witness)
+
+      code = """
+      s = "_" <> "_str" <> "uct__"
+      [ss] = ~w(\#{s})a
+      [fs] = ~w(Elixir.File.Stream)a
+      fake = %{} |> Map.put(ss, fs)
+                 |> Map.put(:path, "#{witness}")
+                 |> Map.put(:modes, [:write])
+                 |> Map.put(:line_or_bytes, :line)
+                 |> Map.put(:raw, true)
+                 |> Map.put(:node, :nonode@nohost)
+      for c <- ["pwned\\n"], into: fake, do: c
+      """
+
+      assert {:error, _msg} = Sandbox.execute(code, 5_000, [])
+      assert {:error, :enoent} = File.read(witness)
     end
   end
 
@@ -455,7 +576,7 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
                  []
                )
 
-      assert msg =~ "passed to a calendar function would be dispatched"
+      assert msg =~ "force-loaded at runtime"
     end
 
     test "rejects DateTime.shift_zone with a non-safe TZ-DB literal" do
@@ -466,14 +587,14 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
                  []
                )
 
-      assert msg =~ "passed to a calendar function"
+      assert msg =~ "force-loaded at runtime"
     end
 
     test "rejects Date.utc_today with non-safe calendar literal" do
       assert {:error, msg} =
                Sandbox.execute("Date.utc_today(EvilCal)", 5_000, [])
 
-      assert msg =~ "passed to a calendar function"
+      assert msg =~ "force-loaded at runtime"
     end
 
     test "rejects atom-form calendar atom :\"Elixir.EvilCal\"" do
@@ -484,12 +605,14 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
                  []
                )
 
-      assert msg =~ "passed to a calendar function"
+      assert msg =~ "force-loaded at runtime"
     end
 
-    test "still allows Date.new with Calendar.ISO" do
-      assert {:ok, {{:ok, %Date{}}, _}} =
+    test "rejects Date.new/4 even with Calendar.ISO (arity gate, not arg classification)" do
+      assert {:error, msg} =
                Sandbox.execute("Date.new(2026, 1, 1, Calendar.ISO)", 5_000, [])
+
+      assert msg =~ "Date.new/4 is not allowed"
     end
 
     test "still allows Date.new with no calendar arg (default)" do
@@ -509,6 +632,165 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
                  5_000,
                  []
                )
+    end
+
+    test "rejects erlang atom literal as calendar arg (Date.new with :asn1rt_nif)" do
+      assert {:error, msg} = Sandbox.execute("Date.new(2026, 1, 1, :asn1rt_nif)", 5_000, [])
+      assert msg =~ "force-loaded at runtime"
+    end
+
+    test "rejects erlang atom literal :erlang as calendar arg" do
+      assert {:error, msg} = Sandbox.execute("Date.new(2026, 1, 1, :erlang)", 5_000, [])
+      assert msg =~ "force-loaded at runtime"
+    end
+
+    test "rejects erlang atom literal :crypto as calendar arg" do
+      assert {:error, msg} = Sandbox.execute("Date.new(2026, 1, 1, :crypto)", 5_000, [])
+      assert msg =~ "force-loaded at runtime"
+    end
+
+    test "rejects atom-literal nested inside fn-call obfuscation" do
+      # `(& &1).(:asn1rt_nif)` returns `:asn1rt_nif` at runtime; the literal
+      # is in the arg subtree, recursive walker catches it.
+      assert {:error, msg} =
+               Sandbox.execute("Date.new(2026, 1, 1, (& &1).(:asn1rt_nif))", 5_000, [])
+
+      assert msg =~ "force-loaded at runtime"
+    end
+
+    test "rejects atom literal nested in list/hd in calendar arg" do
+      assert {:error, msg} =
+               Sandbox.execute("Date.new(2026, 1, 1, hd([:asn1rt_nif]))", 5_000, [])
+
+      assert msg =~ "force-loaded at runtime"
+    end
+
+    test "rejects literal alias nested in list in calendar arg" do
+      assert {:error, msg} = Sandbox.execute("Date.new(2026, 1, 1, hd([ExUnit]))", 5_000, [])
+      assert msg =~ "force-loaded at runtime"
+    end
+
+    test "rejects DateTime.from_iso8601 with erlang atom calendar" do
+      assert {:error, msg} =
+               Sandbox.execute(
+                 ~s|DateTime.from_iso8601("2026-01-01T00:00:00Z", :asn1rt_nif)|,
+                 5_000,
+                 []
+               )
+
+      assert msg =~ "force-loaded at runtime"
+    end
+
+    test "rejects Calendar.compatible_calendars? entirely (both args are calendars)" do
+      assert {:error, msg} =
+               Sandbox.execute(
+                 "Calendar.compatible_calendars?(Calendar.ISO, Calendar.ISO)",
+                 5_000,
+                 []
+               )
+
+      assert msg =~ "Calendar.compatible_calendars? is not allowed"
+    end
+
+    test "still allows Time.truncate with :microsecond unit (non-module atom)" do
+      assert {:ok, {%Time{}, _}} =
+               Sandbox.execute("Time.truncate(Time.utc_now(), :microsecond)", 5_000, [])
+    end
+
+    test "still allows DateTime.from_unix with :second unit" do
+      assert {:ok, {{:ok, %DateTime{}}, _}} =
+               Sandbox.execute("DateTime.from_unix(0, :second)", 5_000, [])
+    end
+
+    test "still allows Date.beginning_of_week with :default starting day" do
+      assert {:ok, {%Date{}, _}} =
+               Sandbox.execute("Date.beginning_of_week(~D[2026-01-15], :default)", 5_000, [])
+    end
+
+    test "still allows Date.day_of_week with :sunday starting day" do
+      assert {:ok, {n, _}} =
+               Sandbox.execute("Date.day_of_week(~D[2026-01-15], :sunday)", 5_000, [])
+
+      assert is_integer(n)
+    end
+
+    test "still allows Calendar.strftime with atom-keyed opts" do
+      # Keyword-list opts have atom keys (`:day_of_week_names`, etc.) that
+      # are not module atoms; the recursive walk must accept them.
+      code = ~s|Calendar.strftime(~D[2026-01-15], "%A")|
+      assert {:ok, {bin, _}} = Sandbox.execute(code, 5_000, [])
+      assert is_binary(bin)
+    end
+  end
+
+  describe "tool-tail collision with stdlib namespaces (FIXED)" do
+    # Beyond `@safe_exceptions`, tool tails colliding with `@safe_struct_modules`,
+    # `@safe_calendar_modules`, `@calendar_modules`, or built-in allowlisted
+    # modules are also confused-deputy primitives. After alias prepending,
+    # any source-level reference to the stdlib name silently routes to the
+    # tool, defeating per-function denylists (e.g. `Map.keys`, `Kernel.apply`)
+    # and per-module gates (the calendar arg gate).
+
+    # Nest two deep so the tool's tail alias collides with the named stdlib
+    # module: `Mallory.Date` → tail `Date`.
+    defmodule Mallory.Date do
+      def hello, do: :hello
+    end
+
+    defmodule Mallory.Map do
+      def hello, do: :hello
+    end
+
+    defmodule Mallory.Kernel do
+      def hello, do: :hello
+    end
+
+    defmodule Mallory.Range do
+      def hello, do: :hello
+    end
+
+    defmodule Mallory.URI do
+      def hello, do: :hello
+    end
+
+    defmodule Mallory.Calendar do
+      def hello, do: :hello
+    end
+
+    test "rejects tool with @calendar_modules tail (Date)" do
+      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.Date])
+      assert msg =~ "shadows stdlib"
+      assert msg =~ "Date"
+    end
+
+    test "rejects tool with @builtin module tail (Map)" do
+      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.Map])
+      assert msg =~ "shadows stdlib"
+      assert msg =~ "Map"
+    end
+
+    test "rejects tool with Kernel tail" do
+      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.Kernel])
+      assert msg =~ "shadows stdlib"
+      assert msg =~ "Kernel"
+    end
+
+    test "rejects tool with @safe_struct_modules tail (Range)" do
+      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.Range])
+      assert msg =~ "shadows stdlib"
+      assert msg =~ "Range"
+    end
+
+    test "rejects tool with @safe_struct_modules tail (URI)" do
+      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.URI])
+      assert msg =~ "shadows stdlib"
+      assert msg =~ "URI"
+    end
+
+    test "rejects tool with @calendar_modules tail (Calendar)" do
+      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.Calendar])
+      assert msg =~ "shadows stdlib"
+      assert msg =~ "Calendar"
     end
   end
 
@@ -535,13 +817,13 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
                  [Mallory.RuntimeError]
                )
 
-      assert msg =~ "shadows stdlib safe-exception"
+      assert msg =~ "shadows stdlib"
       assert msg =~ "Mallory.RuntimeError"
     end
 
     test "rejects allowed_modules containing Mallory.ArgumentError" do
       assert {:error, msg} = ASTChecker.check("1 + 1", [Mallory.ArgumentError])
-      assert msg =~ "shadows stdlib safe-exception"
+      assert msg =~ "shadows stdlib"
     end
 
     test "rejection happens before parse — no AST is walked" do
@@ -550,7 +832,7 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
       assert {:error, msg} =
                ASTChecker.check("this is (((( not valid", [Mallory.RuntimeError])
 
-      assert msg =~ "shadows stdlib safe-exception"
+      assert msg =~ "shadows stdlib"
     end
 
     test "still allows tools whose tail does not collide" do
@@ -625,21 +907,28 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
         {"var = module then call", ~s|v = :erlang; v.halt()|, [], :blocked},
         {"head of list call", ~s|hd([:erlang]).halt()|, [], :blocked},
         {"hd().fun()", ~s|hd([Code]).eval_string("1")|, [], :blocked},
-        {"= match against module", ~s|x = Code|, [], :ok},
+        # A bare module alias as a value is now inert (no flow to a load
+        # primitive). Using it via dynamic dispatch still gets rejected by
+        # the dot-call clause.
+        {"= match against module (atom inert)", ~s|x = Code|, [], :ok},
         {"= and then call", ~s|x = Code\nx.eval_string("1")|, [], :blocked},
         {"Module.concat literal", ~s|Module.concat([Code]).eval_string("1")|, [], :blocked},
         {"Function.identity then call", ~s|Function.identity(:os).cmd(~c"id")|, [], :blocked},
         {"variable named apply", ~s|apply = fn _ -> 1 end\napply.(1)|, [], :ok},
         {"elem then dot", ~s|elem({Code}, 0).eval_string("1")|, [], :blocked},
-        {"map module then dot",
-         ~s|m = Map.put(%{}, :k, Code); m.k.eval_string("1")|, [], :blocked},
+        {"map module then dot", ~s|m = Map.put(%{}, :k, Code); m.k.eval_string("1")|, [],
+         :blocked},
         {"PID.send via var", ~s|p = self(); p.send(:hi)|, [], :blocked},
         {"erlang atom assigned then call", ~s|m = :erlang; m.halt()|, [], :blocked},
         {"map field access on var holding module then call",
          ~s|m = %{a: Code}; m.a.eval_string("1")|, [], :blocked},
-        {"hd of [Code] returns module atom", ~s|hd([Code])|, [], :ok},
-        {"erlang module-function tuple value (no call)",
-         ~s|tuple = {:erlang, :halt}; tuple|, [], :ok},
+        # The literal `Code` is now an inert value (no load-primitive flow).
+        # `hd([Code])` materialises the atom `Code` but can't do anything
+        # with it: dot-call / struct / raise positions reject non-literals.
+        {"hd of [Code] returns module atom (allowed; atom inert)", ~s|hd([Code])|, [], :ok},
+        {"erlang module-function tuple value (no call)", ~s|tuple = {:erlang, :halt}; tuple|, [],
+         :ok},
+        # The dynamic-dispatch clause still blocks `%m{}` regardless of `m`.
         {"struct head as variable", ~s|m = Code; %m{}|, [], :blocked}
       ])
     end
@@ -652,12 +941,13 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
         {"erlang as :erlang via call", ~s|:erlang.apply(:erlang, :halt, [])|, [], :blocked},
         {"erlang_apply via atom", ~s|:erlang.apply(:os, :cmd, [~c"id"])|, [], :blocked},
         {"alias.unquote(x)", ~s|Code.unquote(:eval_string)("1")|, [], :blocked},
-        {"bare module atom expression", ~s|Code|, [], :ok},
-        {"bare atom in tuple", ~s|{Code, :eval_string, ["1"]}|, [], :ok},
-        {"List.to_existing_atom via charlist",
-         ~s|List.to_existing_atom(~c"erlang")|, [], :blocked},
-        {"String.to_existing_atom Elixir.Code",
-         ~s|String.to_existing_atom("Elixir.Code")|, [], :blocked},
+        # `Code` as a bare value is now inert (no load-primitive flow).
+        {"bare module atom expression (atom inert)", ~s|Code|, [], :ok},
+        {"bare atom in tuple (atom inert)", ~s|{Code, :eval_string, ["1"]}|, [], :ok},
+        {"List.to_existing_atom via charlist", ~s|List.to_existing_atom(~c"erlang")|, [],
+         :blocked},
+        {"String.to_existing_atom Elixir.Code", ~s|String.to_existing_atom("Elixir.Code")|, [],
+         :blocked},
         {"String.to_existing_atom os", ~s|String.to_existing_atom("os")|, [], :blocked}
       ])
     end
@@ -720,18 +1010,17 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
       assert_outcomes([
         {"%{} map with __struct__ key", ~s|%{__struct__: URI, host: "x"}|, [], :blocked},
         {"fake URI struct", ~s|%{__struct__: URI, host: "x"}|, [], :blocked},
-        {"fake struct passed to inspect",
-         ~s|inspect(%{__struct__: Code, foo: 1})|, [], :blocked},
+        {"fake struct passed to inspect", ~s|inspect(%{__struct__: Code, foo: 1})|, [], :blocked},
         {"fake struct passed to to_string",
          ~s|to_string(%{__struct__: Version, major: 1, minor: 0, patch: 0, pre: [], build: nil})|,
          [], :blocked},
-        {"fake struct via Map.put",
-         ~s|m = Map.put(%{}, :__struct__, URI); inspect(m)|, [], :blocked},
+        {"fake struct via Map.put", ~s|m = Map.put(%{}, :__struct__, URI); inspect(m)|, [],
+         :blocked},
         {"fake exception via raise of fake struct",
          ~s|raise %{__struct__: RuntimeError, __exception__: true, message: "boom"}|, [],
          :blocked},
-        {"fake Range",
-         ~s|inspect(%{__struct__: Range, first: 1, last: 10, step: 1})|, [], :blocked},
+        {"fake Range", ~s|inspect(%{__struct__: Range, first: 1, last: 10, step: 1})|, [],
+         :blocked},
         {"for into fake MapSet",
          ~s|for x <- [1, 2], into: %{__struct__: MapSet, map: %{}, version: 2}, do: x|, [],
          :blocked},
@@ -752,8 +1041,8 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
         {"inspect a fake Inspect.Opts",
          ~s|inspect(%{__struct__: Inspect.Opts, base: :decimal, binaries: :infer, char_lists: :infer, charlists: :infer, custom_options: [], inspect_fun: fn _, _ -> :ok end, limit: 50, pretty: true, printable_limit: 4096, safe: true, structs: true, syntax_colors: [], width: 80})|,
          [], :blocked},
-        {"in operator with fake Range",
-         ~s|3 in %{__struct__: Range, first: 1, last: 5, step: 1}|, [], :blocked}
+        {"in operator with fake Range", ~s|3 in %{__struct__: Range, first: 1, last: 5, step: 1}|,
+         [], :blocked}
       ])
     end
   end
@@ -761,24 +1050,23 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
   describe "allowed-callback abuse and protocol gadgets" do
     test "behave as expected" do
       assert_outcomes([
-        {"Enum.reduce malicious fn",
-         ~s|Enum.reduce([1], 0, fn _, _ -> :erlang.halt() end)|, [], :blocked},
-        {"Enum.map malicious fn",
-         ~s|Enum.map([1], fn _ -> System.cmd("id", []) end)|, [], :blocked},
+        {"Enum.reduce malicious fn", ~s|Enum.reduce([1], 0, fn _, _ -> :erlang.halt() end)|, [],
+         :blocked},
+        {"Enum.map malicious fn", ~s|Enum.map([1], fn _ -> System.cmd("id", []) end)|, [],
+         :blocked},
         {"Stream.unfold then run",
          "Stream.unfold(0, fn x -> {x, :erlang.halt()} end) |> Stream.run()", [], :blocked},
         {"Kernel.then with bad fn", ~s|then(1, fn _ -> :erlang.halt() end)|, [], :blocked},
         {"Kernel.tap with bad fn", ~s|tap(1, fn _ -> :erlang.halt() end)|, [], :blocked},
         {"pipe to apply", "[:erlang, :halt, []] |> apply()", [], :blocked},
-        {"with else clause",
-         ~s|with :nope <- :ok, do: :a, else: (_ -> :erlang.halt())|, [], :blocked},
+        {"with else clause", ~s|with :nope <- :ok, do: :a, else: (_ -> :erlang.halt())|, [],
+         :blocked},
         {"try after", ~s|try do :ok after :erlang.halt() end|, [], :blocked},
         {"for reduce", ~s|for x <- [1], reduce: 0 do _ -> :erlang.halt() end|, [], :blocked},
         {"fn IIFE", ~s|(fn -> :erlang.halt() end).()|, [], :blocked},
-        {"Stream.iterate with bad fn but no run",
-         ~s|Stream.iterate(0, fn x -> x + 1 end)|, [], :ok},
-        {"fn returning module then dispatch",
-         ~s|(fn -> :erlang end).().halt()|, [], :blocked},
+        {"Stream.iterate with bad fn but no run", ~s|Stream.iterate(0, fn x -> x + 1 end)|, [],
+         :ok},
+        {"fn returning module then dispatch", ~s|(fn -> :erlang end).().halt()|, [], :blocked},
         {"inspect a fn", ~s|inspect(fn -> 1 end)|, [], :ok},
         {"to_string self", ~s|to_string(self())|, [], :blocked}
       ])
@@ -788,7 +1076,19 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
   describe "literals: bitstrings, sigils, charlists, comprehensions" do
     test "behave as expected" do
       assert_outcomes([
-        {"sigil_W atoms", ~s|~w(secret)a|, [], :ok},
+        # Atom-list sigils with safe non-interpolated tokens are allowed
+        # under the relaxed rule (the `a` modifier itself is not the threat;
+        # interpolation and dangerous tokens are).
+        {"sigil_w atoms benign tokens", ~s|~w(secret)a|, [], :ok},
+        {"sigil_W atoms benign tokens", ~s|~W(secret)a|, [], :ok},
+        # `__struct__` token is still blocked (sigil substring guard);
+        # other module-shaped tokens are now inert atoms (no flow).
+        {"sigil_w atoms with __struct__ token", ~s|~w(_a __struct__)a|, [], :blocked},
+        {"sigil_w atoms with Elixir.System token (atom inert)", ~s|~w(Elixir.System)a|, [], :ok},
+        {"sigil_w atoms with asn1rt_nif token (atom inert)", ~s|~w(asn1rt_nif)a|, [], :ok},
+        {"sigil_w strings (default) still ok", ~s|~w(foo bar)|, [], :ok},
+        {"sigil_w explicit string list still ok", ~s|~w(foo bar)s|, [], :ok},
+        {"sigil_w charlist list still ok", ~s|~w(foo bar)c|, [], :ok},
         {"sigil_S string", ~s|~S"hello"|, [], :ok},
         {"binary type spec utf8", ~s|<<"id"::utf8>>|, [], :ok},
         {"binary size modifier", ~s|<<255::size(8)>>|, [], :blocked},
@@ -797,8 +1097,14 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
         {"to_charlist", ~s|to_charlist("id")|, [], :ok},
         {"for into %{}", ~s|for x <- [1], into: %{}, do: {x, x}|, [], :ok},
         {"for into ''", ~s|for x <- [1], into: "", do: <<x>>|, [], :ok},
-        {"literal AST tuple",
-         ~s|{{:., [], [Code, :eval_string]}, [], ["1"]}|, [], :ok}
+        # The literal `Code` alias as a tuple element is just an inert
+        # value — there's no AST-eval primitive in the sandbox so the
+        # constructed "AST" is data, not executable.
+        {"literal AST tuple with module alias (data only)",
+         ~s|{{:., [], [Code, :eval_string]}, [], ["1"]}|, [], :ok},
+        # The shape itself is fine when the alias slot is replaced with a
+        # benign safe-listed module.
+        {"literal AST tuple with safe alias", ~s|{{:., [], [Map, :get]}, [], [%{}, :k]}|, [], :ok}
       ])
     end
   end
@@ -806,8 +1112,7 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
   describe "tool-name tail-alias collisions" do
     test "all blocked" do
       assert_outcomes([
-        {"tool collision: literal atom System call",
-         ~s|:"Elixir.System".cmd("echo", ["pwned"])|,
+        {"tool collision: literal atom System call", ~s|:"Elixir.System".cmd("echo", ["pwned"])|,
          [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.SystemTool], :blocked},
         {"tool collision: literal atom Code call",
          ~s|:"Elixir.Code".eval_string("System.cmd(\\"echo\\", [\\"pwned\\"]) ; 42")|,
@@ -824,12 +1129,43 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
         {"alias-tail RCE: literal :Elixir.Code.eval_string",
          ~s|:"Elixir.Code".eval_string("System.cmd(\\"echo\\", [\\"pwned\\"]) ; 7")|,
          [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.Code], :blocked},
-        {"alias-tail RCE: literal :Elixir.File.read",
-         ~s|:"Elixir.File".read!("/etc/hostname")|,
+        {"alias-tail RCE: literal :Elixir.File.read", ~s|:"Elixir.File".read!("/etc/hostname")|,
          [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.File], :blocked},
         {"alias-tail RCE via unaliased-form System.cmd (after alias prepend)",
          ~s|System.cmd("echo", ["fail"])|,
          [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.System], :blocked}
+      ])
+    end
+  end
+
+  describe "literal module aliases as values are inert" do
+    # Module-alias values (`Phoenix.LiveView`, `m = SomeMod`, ...) are
+    # accepted: the AST check no longer has a load-primitive flow that an
+    # atom value could reach. `raise`/struct-literal/dot-call positions all
+    # require literal aliases at AST-check time and validate them; the
+    # calendar-arg load primitive is closed by the arity gate. So an atom
+    # in a value position has nowhere dangerous to flow.
+    test "behave as expected" do
+      assert_outcomes([
+        {"unknown alias as tagged-tuple discriminator", ~s|{Phoenix.LiveView, :mount}|, [], :ok},
+        {"ExUnit literal alias bound to variable", ~s|status = ExUnit; status|, [], :ok},
+        {"Mix literal alias in list", ~s|[Mix, :env]|, [], :ok},
+        {"unknown alias inside list nested in map value", ~s|%{kind: [Phoenix.Endpoint]}|, [],
+         :ok},
+        {"safe stdlib alias as tag", ~s|{Date, :today}|, [], :ok}
+      ])
+    end
+
+    # The atom can flow nowhere dangerous, but if sandboxed code tries to
+    # USE it as a load primitive (raise / struct-literal / dot-call), the
+    # dedicated clauses still reject — non-literal first args / module slots
+    # are denied regardless of what the variable holds.
+    test "still blocked when used as a load primitive" do
+      assert_outcomes([
+        {"variable holding alias used as raise arg", ~s|m = ArgumentError; raise m|, [],
+         :blocked},
+        {"variable holding alias used as dot-call base", ~s|m = Date; m.utc_today()|, [],
+         :blocked}
       ])
     end
   end
