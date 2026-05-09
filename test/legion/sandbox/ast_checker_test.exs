@@ -567,7 +567,7 @@ defmodule Legion.Sandbox.ASTCheckerTest do
       assert {:error, msg} =
                ASTChecker.check("(fn -> :erlang end).().spawn(fn -> :ok end)", [])
 
-      assert msg =~ "dynamic module dispatch"
+      assert msg =~ "dynamic dispatch"
     end
   end
 
@@ -751,9 +751,9 @@ defmodule Legion.Sandbox.ASTCheckerTest do
       assert msg =~ "return values"
     end
 
-    test "dynamic dispatch hints to use Map.get" do
+    test "dynamic dispatch hints to use Map.fetch!" do
       assert {:error, msg} = ASTChecker.check("user.name", [])
-      assert msg =~ "Map.get"
+      assert msg =~ "Map.fetch!"
     end
 
     test "struct literal lists the safe modules" do
