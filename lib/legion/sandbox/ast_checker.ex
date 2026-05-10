@@ -69,7 +69,7 @@ defmodule Legion.Sandbox.ASTChecker do
   )a
 
   @allowed_kernel_operators ~w(
-    + - * / ** ++ -- <> == != === !== =~ < > <= >= && || ! and or not in |> @
+    + - * / ** ++ -- <> == != === !== =~ < > <= >= && || ! and or not in |>
   )a
 
   @allowed_kernel_guards ~w(
@@ -573,11 +573,35 @@ defmodule Legion.Sandbox.ASTChecker do
     {node, {:error, "#{form} is not allowed"}}
   end
 
+  # `&Mod.fun/arity` - qualified remote capture. The inner dot node is also
+  # visited by the prewalk, but it sees `arity = length(args) = 0`, so the
+  # arity caps on calendar functions (`Date.new/4`, `DateTime.shift_zone/3`,
+  # ...) would slip through and the captured function could later be invoked
+  # via `f.(..., MyCalendar)`. Re-run the module-call check with the
+  # *captured* arity to plug that. The variable-base form (`&v.fun/n`) is
+  # rejected by the dynamic-dispatch clause when the inner dot is visited.
+  defp check_node(
+         {:&, _, [{:/, _, [{{:., _, [{:__aliases__, _, parts}, func]}, _, []}, arity]}]} = node,
+         :ok,
+         tools
+       )
+       when is_integer(arity) do
+    check_module_call(node, Module.concat(parts), func, arity, tools, :alias_form)
+  end
+
+  defp check_node(
+         {:&, _, [{:/, _, [{{:., _, [module, func]}, _, []}, arity]}]} = node,
+         :ok,
+         tools
+       )
+       when is_atom(module) and is_integer(arity) do
+    check_module_call(node, module, func, arity, tools, :atom_form)
+  end
+
   # `&name/arity` - local/imported capture. Must precede the variable clause:
   # the inner `{name, _, ctx}` would otherwise match it (since `is_atom(nil)`
   # is true), letting captures of denied imports (`&apply/3`, `&send/2`,
-  # `&binding/0`, `&dbg/1`, ...) become invokable via `f.(...)`. Qualified
-  # captures (`&Foo.bar/2`) are handled by the module-call clauses above.
+  # `&binding/0`, `&dbg/1`, ...) become invokable via `f.(...)`.
   #
   # `&raise/n` / `&reraise/n` are explicitly denied even though they're in
   # `@allowed_bare_forms`: the capture form passes its first argument at
@@ -639,8 +663,11 @@ defmodule Legion.Sandbox.ASTChecker do
   # `for ..., into:` turns into arbitrary file write. Reject interpolated
   # forms outright.
   #
-  # Without interpolation, the literal tokens are visible: validate each
-  # one as if it were a bare atom / alias literal.
+  # Without interpolation, only the `"__struct__"` token needs rejection:
+  # every other resulting atom is an inert value with nowhere dangerous to
+  # flow. The dot-call, struct-literal, and raise positions all reject
+  # non-literal module/exception args, so a runtime atom can't reach them;
+  # the calendar arity caps eliminate the calendar-arg flow.
   defp check_node({sigil, _, [{:<<>>, _, segments}, modifiers]} = node, :ok, tools)
        when sigil in [:sigil_w, :sigil_W] and is_list(modifiers) and is_list(segments) do
     if ?a in modifiers do

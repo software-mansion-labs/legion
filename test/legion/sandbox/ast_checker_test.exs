@@ -620,6 +620,31 @@ defmodule Legion.Sandbox.ASTCheckerTest do
       assert {:error, _} =
                ASTChecker.check("reraise NotInSandbox.Anything, [], []", [])
     end
+
+    test "remote capture at the arity cap is allowed" do
+      assert :ok = ASTChecker.check("&Date.new/3", [])
+      assert :ok = ASTChecker.check("&DateTime.shift_zone/2", [])
+    end
+
+    test "remote capture above the arity cap is rejected" do
+      assert {:error, msg} = ASTChecker.check("&Date.new/4", [])
+      assert msg =~ "Date.new/4"
+      assert msg =~ "calendar"
+    end
+
+    test "captured calendar function cannot be invoked with a runtime calendar arg" do
+      assert {:error, _} =
+               ASTChecker.check("f = &Date.new/4\nf.(2026, 1, 1, Calendar.ISO)", [])
+    end
+
+    test "atom-form remote capture above the arity cap is rejected" do
+      assert {:error, msg} = ASTChecker.check("&DateTime.shift_zone/3", [])
+      assert msg =~ "shift_zone/3"
+    end
+
+    test "remote capture of a tool function at any arity is allowed" do
+      assert :ok = ASTChecker.check("&MyTool.x/9", [MyTool])
+    end
   end
 
   describe "guards / when clauses" do
@@ -766,6 +791,11 @@ defmodule Legion.Sandbox.ASTCheckerTest do
     test "defmodule mentions anonymous functions" do
       assert {:error, msg} = ASTChecker.check("defmodule X do end", [])
       assert msg =~ "anonymous functions"
+    end
+
+    test "@ module attribute reads are rejected at AST time" do
+      assert {:error, msg} = ASTChecker.check("@something", [])
+      assert msg =~ "@"
     end
   end
 end
