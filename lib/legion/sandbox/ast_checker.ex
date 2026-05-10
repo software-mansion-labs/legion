@@ -554,13 +554,9 @@ defmodule Legion.Sandbox.ASTChecker do
 
   # `var.fun(args)` / `m.key` / `&m.fun/n` - dynamic dispatch. If `var` is a
   # module atom at runtime, this calls arbitrary code on that module.
-  defp check_node({{:., _, [_base, _func]}, _meta, args} = node, :ok, _tools)
+  defp check_node({{:., _, [base, func]}, meta, args} = node, :ok, _tools)
        when is_list(args) do
-    {node,
-     {:error,
-      "dynamic dispatch (`expr.fun` / `expr.fun(...)`) is not allowed - if " <>
-        "`expr` is a module atom, this calls arbitrary code on that module. " <>
-        "Use `Map.fetch!(map, :field)` or `Map.get(map, :field)` for map / struct fields."}}
+    {node, {:error, dynamic_dispatch_error(base, func, args, meta)}}
   end
 
   # `f.(args)` anonymous-function invocation, and the bare `:.` dot head that
@@ -846,6 +842,29 @@ defmodule Legion.Sandbox.ASTChecker do
       "exceptions, and tool modules. For pattern matching, use a plain map " <>
       "pattern (`%{key: val}`)."
   end
+
+  defp dynamic_dispatch_error(base, func, args, meta) do
+    location = if line = meta[:line], do: " on line #{line}", else: ""
+    base_description = describe_dispatch_base(base)
+    no_parens? = Keyword.get(meta, :no_parens, false)
+
+    expression =
+      cond do
+        no_parens? -> "#{base_description}.#{func}"
+        args == [] -> "#{base_description}.#{func}()"
+        true -> "#{base_description}.#{func}(...)"
+      end
+
+    "dynamic dispatch `#{expression}`#{location} is not allowed - if " <>
+      "#{base_description} is a module atom at runtime, this calls arbitrary " <>
+      "code on that module. Use `Map.fetch!(#{base_description}, :#{func})` " <>
+      "or `Map.get(#{base_description}, :#{func})` for map / struct fields."
+  end
+
+  defp describe_dispatch_base({name, _, context}) when is_atom(name) and is_atom(context),
+    do: Atom.to_string(name)
+
+  defp describe_dispatch_base(_), do: "expression"
 
   @def_forms ~w(def defp defmodule defmacro defmacrop defstruct defexception
                 defprotocol defimpl defdelegate defguard defguardp defoverridable)a
