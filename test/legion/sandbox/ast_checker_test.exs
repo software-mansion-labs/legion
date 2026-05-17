@@ -556,6 +556,25 @@ defmodule Legion.Sandbox.ASTCheckerTest do
     test "tool modules are matched by tail alias too" do
       assert :ok = ASTChecker.check("MyTool.run(1)", [Some.Namespace.MyTool])
     end
+
+    test "tool whose tail collides with a stdlib module is allowed (shadows stdlib at runtime)" do
+      # After the host prepends `alias MyApp.Date`, source-level `Date.utc_today()`
+      # routes to the tool, not stdlib Date. Not an RCE escalation (tool functions
+      # are callable directly anyway), but can produce surprising semantics.
+      # Documented in the module's `## Tools` section; not enforced.
+      assert :ok = ASTChecker.check("Date.utc_today()", [MyApp.Date])
+
+      assert :ok =
+               ASTChecker.check(~s|raise ArgumentError, "x"|, [MyApp.ArgumentError])
+    end
+
+    test "passing a stdlib module as a tool unlocks the entire module (caller's responsibility)" do
+      # Documenting intended behavior: per-function allowlists only apply when
+      # the module is NOT in the tools list. Callers must vet what they expose.
+      assert :ok = ASTChecker.check("File.read!(\"/etc/passwd\")", [File])
+      assert :ok = ASTChecker.check("System.cmd(\"id\", [])", [System])
+      assert :ok = ASTChecker.check("Map.keys(%{a: 1})", [Map])
+    end
   end
 
   describe "anonymous function call forms" do
@@ -645,6 +664,51 @@ defmodule Legion.Sandbox.ASTCheckerTest do
     test "remote capture of a tool function at any arity is allowed" do
       assert :ok = ASTChecker.check("&MyTool.x/9", [MyTool])
     end
+
+    test "map literal with explicit __struct__ key (=>) is rejected" do
+      assert {:error, msg} = ASTChecker.check("%{:__struct__ => :os, foo: 1}", [])
+      assert msg =~ ":__struct__"
+    end
+
+    test "map literal with __struct__ keyword shorthand is rejected" do
+      assert {:error, msg} = ASTChecker.check("%{__struct__: :os, foo: 1}", [])
+      assert msg =~ ":__struct__"
+    end
+
+    test "map update %{m | __struct__: X} is rejected" do
+      assert {:error, msg} = ASTChecker.check("%{m | __struct__: File.Stream}", [])
+      assert msg =~ ":__struct__"
+    end
+
+    test "Map.put with literal :__struct__ key is rejected" do
+      code = "%{} |> Map.put(:__struct__, File.Stream) |> Map.put(:path, \"/tmp/x\")"
+      assert {:error, msg} = ASTChecker.check(code, [])
+      assert msg =~ ":__struct__"
+    end
+
+    test "binary literal containing \"__struct__\" is rejected" do
+      assert {:error, msg} = ASTChecker.check(~s|<<"__struct__"::binary>>|, [])
+      assert msg =~ "__struct__"
+    end
+
+    test "string literal containing \"__struct__\" via string-key map is rejected" do
+      assert {:error, msg} = ASTChecker.check(~s|%{"__struct__" => 1}|, [])
+      assert msg =~ "__struct__"
+    end
+
+    test "~w(__struct__)a token is rejected" do
+      assert {:error, msg} = ASTChecker.check("~w(foo __struct__ bar)a", [])
+      assert msg =~ "__struct__"
+    end
+
+    test "interpolated ~w(...)a is rejected" do
+      assert {:error, msg} = ASTChecker.check(~S|s = "foo"; ~w(#{s})a|, [])
+      assert msg =~ "interpolation"
+    end
+
+    test "rescue _e in Mod does not force-load Mod (allowed)" do
+      assert :ok = ASTChecker.check(~s|try do raise "x" rescue _e in File -> :hit end|, [])
+    end
   end
 
   describe "guards / when clauses" do
@@ -702,6 +766,37 @@ defmodule Legion.Sandbox.ASTCheckerTest do
     test "struct in case branch is allowed" do
       code = "case x do %ArgumentError{} -> :err; _ -> :ok end"
       assert :ok = ASTChecker.check(code, [])
+    end
+
+    test "unsafe struct in fn head is rejected" do
+      assert {:error, msg} = ASTChecker.check("fn %File.Stream{} -> 1 end", [])
+      assert msg =~ "%File.Stream{}"
+    end
+
+    test "unsafe struct in case branch is rejected" do
+      assert {:error, msg} = ASTChecker.check("case x do %File.Stream{} -> 1 end", [])
+      assert msg =~ "%File.Stream{}"
+    end
+
+    test "unsafe struct in with clause is rejected" do
+      assert {:error, msg} = ASTChecker.check("with %File.Stream{} <- x do x end", [])
+      assert msg =~ "%File.Stream{}"
+    end
+
+    test "unsafe struct in match is rejected" do
+      assert {:error, msg} = ASTChecker.check("%File.Stream{} = x", [])
+      assert msg =~ "%File.Stream{}"
+    end
+
+    test "unsafe struct as for/into target is rejected" do
+      assert {:error, msg} =
+               ASTChecker.check("for x <- [1, 2], into: %File.Stream{}, do: x", [])
+
+      assert msg =~ "%File.Stream{}"
+    end
+
+    test "for/into with a plain variable is allowed (Enumerable / Collectable on inert data)" do
+      assert :ok = ASTChecker.check("m = %{}\nfor x <- [1, 2], into: m, do: {x, x}", [])
     end
   end
 
@@ -796,6 +891,24 @@ defmodule Legion.Sandbox.ASTCheckerTest do
     test "@ module attribute reads are rejected at AST time" do
       assert {:error, msg} = ASTChecker.check("@something", [])
       assert msg =~ "@"
+    end
+  end
+
+  describe "bitstring segments" do
+    test "<<x::size(8)>> is allowed" do
+      assert :ok = ASTChecker.check("<<1::size(8)>>", [])
+    end
+
+    test "<<x::size(n)>> with variable size is allowed" do
+      assert :ok = ASTChecker.check("n = 8\n<<1::size(n)>>", [])
+    end
+
+    test "<<x::size(8)-unit(4)>> is allowed" do
+      assert :ok = ASTChecker.check("<<1::size(8)-unit(4)>>", [])
+    end
+
+    test "<<x::big-integer-size(32)>> is allowed" do
+      assert :ok = ASTChecker.check("<<1::big-integer-size(32)>>", [])
     end
   end
 end

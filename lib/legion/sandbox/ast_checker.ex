@@ -22,9 +22,11 @@ defmodule Legion.Sandbox.ASTChecker do
     database module that is dispatched at runtime. The allowlist caps each
     such function at its safe arity; sandboxed code must use the lower-arity
     form or a sigil (`~D`, `~T`, `~U`, `~N`).
-  - **Dynamic dispatch** - `expr.fun` / `expr.fun(...)` is rejected unless
-    the dot's base is a literal module. `m.key` map access goes through this
-    check too — use `Map.fetch!(m, :key)` or `Map.get(m, :key)`.
+  - **Dynamic dispatch** - `expr.fun` / `expr.fun(...)` is rejected outright.
+    Literal-module forms (`Mod.fun(...)` and `:mod.fun(...)`) are handled by
+    the preceding clauses, so anything reaching the dynamic-dispatch clause
+    has a non-literal base. `m.key` map access goes through this check too —
+    use `Map.fetch!(m, :key)` or `Map.get(m, :key)`.
   - **`raise` / `reraise`** - the first argument must be a literal alias /
     atom-literal exception module (in `@safe_exceptions`), a binary literal,
     or a string-interpolation. Anything else would force-load an arbitrary
@@ -41,6 +43,23 @@ defmodule Legion.Sandbox.ASTChecker do
   Functions that can break out of the sandbox (atom-table churn, dynamic code
   evaluation, code definition, process / message manipulation, time-zone DB
   mutation, ...) are simply not in any allowlist.
+
+  ## Tools (caller-supplied modules)
+
+  Caller-supplied tool modules are **fully trusted**: every function on every
+  arity is allowed, and `%Tool{...}` struct literals are allowed. The host is
+  responsible for vetting whatever it exposes — if you hand `File`, `System`,
+  `Code`, or any other stdlib module to `Legion.Sandbox.execute/4` as a
+  "tool", you have opted out of the sandbox for that module. Expose a thin
+  facade module that wraps only the operations you actually want available.
+
+  Tail-alias collisions are not rejected. A tool named `MyApp.Date` shadows
+  stdlib `Date` after the host prepends `alias MyApp.Date`: source-level
+  `Date.utc_today()` then routes to the tool, and `raise ArgumentError, "x"`
+  with a tool named `MyApp.ArgumentError` routes to the tool's `exception/1`
+  instead of stdlib. This is not an RCE escalation (the tool's functions
+  are callable directly anyway), but it can produce surprising semantics —
+  prefer non-colliding names for tools.
 
   ## Known limitations
 
@@ -84,6 +103,10 @@ defmodule Legion.Sandbox.ASTChecker do
   # is rejected outright (the resulting atoms would be built from runtime
   # strings, defeating literal-atom inspection); non-interpolated tokens are
   # validated each as if they were bare atom / alias literals.
+  # `size` and `unit` appear in the AST as bare-form calls inside `<<>>`
+  # bitstring segments (e.g. `<<x::size(8)-unit(4)>>`). Outside `<<>>` they
+  # don't resolve to anything (no `Kernel.size/1`), so allowing them is a
+  # no-op for non-bitstring code.
   @allowed_kernel_macros_and_funs ~w(
     abs binary_part binary_slice bit_size byte_size ceil div elem floor
     get_and_update_in get_in hd inspect length make_ref map_size max min
@@ -91,6 +114,7 @@ defmodule Legion.Sandbox.ASTChecker do
     to_string to_timeout trunc tuple_size update_in
     raise reraise throw exit
     match? if unless tap then
+    size unit
     sigil_C sigil_D sigil_N sigil_R sigil_S sigil_T sigil_U
     sigil_c sigil_r sigil_s sigil_w sigil_W
   )a
@@ -465,71 +489,33 @@ defmodule Legion.Sandbox.ASTChecker do
   end
 
   def check(code_string, allowed_modules) do
-    with :ok <- check_tool_collisions(allowed_modules) do
-      case Code.string_to_quoted(code_string) do
-        {:ok, ast} ->
-          tools = {
-            MapSet.new(allowed_modules),
-            MapSet.new(Enum.map(allowed_modules, &alias_tail/1))
-          }
+    case Code.string_to_quoted(code_string) do
+      {:ok, ast} ->
+        tools = {
+          MapSet.new(allowed_modules),
+          MapSet.new(Enum.map(allowed_modules, &alias_tail/1))
+        }
 
-          {_ast, result} = Macro.prewalk(ast, :ok, &check_node(&1, &2, tools))
+        {_ast, result} = Macro.prewalk(ast, :ok, &check_node(&1, &2, tools))
 
-          result
+        result
 
-        {:error, {_meta, message, token}} ->
-          {:error, "Parse error: #{message}#{token}"}
-      end
+      {:error, {_meta, message, token}} ->
+        {:error, "Parse error: #{message}#{token}"}
     end
   end
 
-  # A tool whose tail alias collides with any stdlib namespace the AST
-  # checker treats specially confused-deputies that namespace's check: after
-  # the host prepends `alias MyApp.<Tail>`, source-level references to the
-  # stdlib name route to the tool. Refuse the entire namespace family
-  # (built-in modules, safe structs, safe exceptions, calendar modules)
-  # rather than just the exceptions subset.
-  defp check_tool_collisions(allowed_modules) do
-    reserved = reserved_stdlib_tails()
-
-    Enum.find_value(allowed_modules, :ok, fn mod ->
-      tail = alias_tail(mod)
-
-      if MapSet.member?(reserved, tail) and mod != tail do
-        {:error,
-         "tool module #{inspect(mod)} shadows stdlib module/exception #{inspect(tail)}; " <>
-           "rename the tool to avoid the collision"}
-      end
-    end)
-  end
-
-  defp reserved_stdlib_tails do
-    builtins =
-      @builtin_module_functions
-      |> Map.keys()
-      |> Enum.filter(&elixir_module_atom?/1)
-
-    [
-      MapSet.to_list(@safe_exceptions),
-      MapSet.to_list(@safe_struct_modules),
-      builtins
-    ]
-    |> Enum.concat()
-    |> Enum.map(&alias_tail/1)
-    |> MapSet.new()
-  end
-
-  defp elixir_module_atom?(atom) when is_atom(atom) do
-    case Atom.to_string(atom) do
-      "Elixir." <> _ -> true
-      _ -> false
-    end
-  end
-
-  defp elixir_module_atom?(_), do: false
-
+  # Non-Elixir module atoms (e.g. `:erlang`, `:math`) have no alias tail to
+  # match against; return the atom itself so the tool-aliases MapSet just
+  # contains a non-matching entry.
   defp alias_tail(module) do
-    module |> Module.split() |> List.last() |> List.wrap() |> Module.concat()
+    case Atom.to_string(module) do
+      "Elixir." <> _ ->
+        module |> Module.split() |> List.last() |> List.wrap() |> Module.concat()
+
+      _ ->
+        module
+    end
   end
 
   # AST walker. Clause order is load-bearing: the capture clause must precede

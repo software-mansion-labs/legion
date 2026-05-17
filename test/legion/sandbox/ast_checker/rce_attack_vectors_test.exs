@@ -723,127 +723,6 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
     end
   end
 
-  describe "tool-tail collision with stdlib namespaces (FIXED)" do
-    # Beyond `@safe_exceptions`, tool tails colliding with `@safe_struct_modules`,
-    # `@safe_calendar_modules`, `@calendar_modules`, or built-in allowlisted
-    # modules are also confused-deputy primitives. After alias prepending,
-    # any source-level reference to the stdlib name silently routes to the
-    # tool, defeating per-function denylists (e.g. `Map.keys`, `Kernel.apply`)
-    # and per-module gates (the calendar arg gate).
-
-    # Nest two deep so the tool's tail alias collides with the named stdlib
-    # module: `Mallory.Date` → tail `Date`.
-    defmodule Mallory.Date do
-      def hello, do: :hello
-    end
-
-    defmodule Mallory.Map do
-      def hello, do: :hello
-    end
-
-    defmodule Mallory.Kernel do
-      def hello, do: :hello
-    end
-
-    defmodule Mallory.Range do
-      def hello, do: :hello
-    end
-
-    defmodule Mallory.URI do
-      def hello, do: :hello
-    end
-
-    defmodule Mallory.Calendar do
-      def hello, do: :hello
-    end
-
-    test "rejects tool with @calendar_modules tail (Date)" do
-      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.Date])
-      assert msg =~ "shadows stdlib"
-      assert msg =~ "Date"
-    end
-
-    test "rejects tool with @builtin module tail (Map)" do
-      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.Map])
-      assert msg =~ "shadows stdlib"
-      assert msg =~ "Map"
-    end
-
-    test "rejects tool with Kernel tail" do
-      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.Kernel])
-      assert msg =~ "shadows stdlib"
-      assert msg =~ "Kernel"
-    end
-
-    test "rejects tool with @safe_struct_modules tail (Range)" do
-      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.Range])
-      assert msg =~ "shadows stdlib"
-      assert msg =~ "Range"
-    end
-
-    test "rejects tool with @safe_struct_modules tail (URI)" do
-      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.URI])
-      assert msg =~ "shadows stdlib"
-      assert msg =~ "URI"
-    end
-
-    test "rejects tool with @calendar_modules tail (Calendar)" do
-      assert {:error, msg} = ASTChecker.check("1 + 1", [__MODULE__.Mallory.Calendar])
-      assert msg =~ "shadows stdlib"
-      assert msg =~ "Calendar"
-    end
-  end
-
-  describe "tool-tail collision with safe-exceptions allowlist (FIXED)" do
-    # When a tool is named `Mallory.RuntimeError`, its tail alias `RuntimeError`
-    # collides with the stdlib safe exception. After Sandbox.execute prepends
-    # `alias Mallory.RuntimeError`, `raise RuntimeError, "x"` compiles to
-    # `raise Mallory.RuntimeError, "x"`, calling the tool's `exception/1` and
-    # force-loading the tool module — confused-deputy RCE if the tool author
-    # is malicious. Same for any of the 19 entries in @safe_exceptions.
-
-    defmodule Mallory.RuntimeError do
-      defexception [:message]
-    end
-
-    defmodule Mallory.ArgumentError do
-      defexception [:message]
-    end
-
-    test "rejects allowed_modules containing Mallory.RuntimeError" do
-      assert {:error, msg} =
-               ASTChecker.check(
-                 ~s|raise RuntimeError, "x"|,
-                 [Mallory.RuntimeError]
-               )
-
-      assert msg =~ "shadows stdlib"
-      assert msg =~ "Mallory.RuntimeError"
-    end
-
-    test "rejects allowed_modules containing Mallory.ArgumentError" do
-      assert {:error, msg} = ASTChecker.check("1 + 1", [Mallory.ArgumentError])
-      assert msg =~ "shadows stdlib"
-    end
-
-    test "rejection happens before parse — no AST is walked" do
-      # The collision check fires before Code.string_to_quoted, so even a
-      # syntactically broken code string returns the collision error.
-      assert {:error, msg} =
-               ASTChecker.check("this is (((( not valid", [Mallory.RuntimeError])
-
-      assert msg =~ "shadows stdlib"
-    end
-
-    test "still allows tools whose tail does not collide" do
-      assert :ok =
-               ASTChecker.check(
-                 ~s|raise RuntimeError, "x"|,
-                 [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.FakeTool]
-               )
-    end
-  end
-
   # ===========================================================================
   # Attack-vector batches.
   # ===========================================================================
@@ -1091,8 +970,8 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
         {"sigil_w charlist list still ok", ~s|~w(foo bar)c|, [], :ok},
         {"sigil_S string", ~s|~S"hello"|, [], :ok},
         {"binary type spec utf8", ~s|<<"id"::utf8>>|, [], :ok},
-        {"binary size modifier", ~s|<<255::size(8)>>|, [], :blocked},
-        {"bitstring with custom unit", ~s|<<255::8-unit(1)>>|, [], :blocked},
+        {"binary size modifier", ~s|<<255::size(8)>>|, [], :ok},
+        {"bitstring with custom unit", ~s|<<255::8-unit(1)>>|, [], :ok},
         {"charlist sigil_c", ~s|~c"id"|, [], :ok},
         {"to_charlist", ~s|to_charlist("id")|, [], :ok},
         {"for into %{}", ~s|for x <- [1], into: %{}, do: {x, x}|, [], :ok},
