@@ -56,46 +56,55 @@ defmodule Legion.Tool do
     module_header = "defmodule #{inspect(module)} do"
     lines = String.split(code, "\n")
 
-    case Enum.find_index(lines, &String.contains?(&1, module_header)) do
-      nil ->
+    start_index =
+      Enum.find_index(lines, &String.contains?(&1, module_header)) ||
         raise "Could not find #{module_header} in source file"
 
-      start_index ->
-        lines
-        |> Enum.drop(start_index)
-        |> extract_do_end_block()
-        |> Enum.join("\n")
+    end_line = find_matching_end_line(code, start_index + 1)
+
+    lines
+    |> Enum.slice(start_index, end_line - start_index)
+    |> Enum.join("\n")
+  end
+
+  defp find_matching_end_line(code, start_line) do
+    tokens = tokenize!(code)
+
+    tokens
+    |> Enum.reverse()
+    |> Enum.reduce_while({0, nil}, fn token, {depth, _last_end_line} ->
+      case token_line(token, start_line) do
+        {:open, _line} -> {:cont, {depth + 1, nil}}
+        {:close, line} when depth == 1 -> {:halt, {0, line}}
+        {:close, line} -> {:cont, {depth - 1, line}}
+        :skip -> {:cont, {depth, nil}}
+      end
+    end)
+    |> case do
+      {0, line} when is_integer(line) -> line
+      _ -> raise "Could not find matching `end` for module starting on line #{start_line}"
     end
   end
 
-  defp extract_do_end_block(lines) do
-    Enum.reduce_while(lines, {[], 0}, fn line, {acc, depth} ->
-      depth = depth + count_opens(line) - count_closes(line)
+  defp token_line({:do, {line, _, _}}, start_line) when line >= start_line, do: {:open, line}
+  defp token_line({:fn, {line, _, _}}, start_line) when line >= start_line, do: {:open, line}
+  defp token_line({:end, {line, _, _}}, start_line) when line >= start_line, do: {:close, line}
+  defp token_line(_token, _start_line), do: :skip
 
-      if depth == 0 and acc != [] do
-        {:halt, {Enum.reverse([line | acc]), depth}}
-      else
-        {:cont, {[line | acc], depth}}
-      end
-    end)
-    |> elem(0)
+  defp tokenize!(code) do
+    case :elixir_tokenizer.tokenize(String.to_charlist(code), 1, []) do
+      result when elem(result, 0) == :ok ->
+        result
+        |> Tuple.to_list()
+        |> Enum.find([], &token_list?/1)
+
+      {:error, reason, _, _, _} ->
+        raise "Failed to tokenize source: #{inspect(reason)}"
+    end
   end
 
-  defp count_opens(line) do
-    line = strip_strings_and_comments(line)
-    dos = length(Regex.scan(~r/\bdo\s*$/, line))
-    fns = length(Regex.scan(~r/\bfn\b/, line))
-    dos + fns
-  end
+  defp token_list?([head | _]) when is_tuple(head) and tuple_size(head) >= 2,
+    do: is_atom(elem(head, 0))
 
-  defp count_closes(line) do
-    line = strip_strings_and_comments(line)
-    length(Regex.scan(~r/\bend\b/, line))
-  end
-
-  defp strip_strings_and_comments(line) do
-    line
-    |> String.replace(~r/#.*$/, "")
-    |> String.replace(~r/"(?:[^"\\]|\\.)*"/, "")
-  end
+  defp token_list?(_), do: false
 end

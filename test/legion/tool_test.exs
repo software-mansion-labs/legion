@@ -113,5 +113,38 @@ defmodule Legion.ToolTest do
 
       assert Legion.Tool.extract_module_source(code, MyApp.Strings) == code
     end
+
+    test "ignores do/end inside heredocs" do
+      code =
+        String.trim_trailing("""
+        defmodule MyApp.Heredoc do
+          @moduledoc \"\"\"
+          Use this tool to end the session.
+          You can also do things with it.
+          \"\"\"
+
+          def hello, do: :hi
+        end
+        """)
+
+      assert Legion.Tool.extract_module_source(code, MyApp.Heredoc) == code
+    end
+
+    test "ignores do/end inside single-quoted heredocs" do
+      code =
+        String.trim_trailing("""
+        defmodule MyApp.CharHeredoc do
+          @moduledoc \"\"\"
+          wrapper
+          \"\"\"
+
+          def chars do
+            'this end should not count'
+          end
+        end
+        """)
+
+      assert Legion.Tool.extract_module_source(code, MyApp.CharHeredoc) == code
+    end
   end
 end
