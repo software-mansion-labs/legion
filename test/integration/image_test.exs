@@ -18,6 +18,12 @@ defmodule Legion.Integration.ImageTest do
     use Legion.Agent
 
     def config, do: %{model: "openai:gpt-4o-mini"}
+
+    def system_prompt do
+      "You describe images. For every user message, return a one-sentence " <>
+        "description of the dominant color and contents of the image via the " <>
+        "`return` action. Never use the `done` action."
+    end
   end
 
   setup do
