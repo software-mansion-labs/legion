@@ -102,7 +102,8 @@ defmodule Legion.Sandbox.ASTChecker do
   # The `a` modifier is intercepted by a dedicated clause below — interpolation
   # is rejected outright (the resulting atoms would be built from runtime
   # strings, defeating literal-atom inspection); non-interpolated tokens are
-  # validated each as if they were bare atom / alias literals.
+  # only checked for the `"__struct__"` literal, since every other resulting
+  # atom is inert (see the `check_atom_sigil/2` clause for why).
   # `size` and `unit` appear in the AST as bare-form calls inside `<<>>`
   # bitstring segments (e.g. `<<x::size(8)-unit(4)>>`). Outside `<<>>` they
   # don't resolve to anything (no `Kernel.size/1`), so allowing them is a
@@ -483,6 +484,10 @@ defmodule Legion.Sandbox.ASTChecker do
 
   Returns `:ok` or `{:error, reason}` on the first violation (or parse error).
   """
+  def check(code_string, _allowed_modules) when not is_binary(code_string) do
+    {:error, "code must be a binary, got: #{inspect(code_string)}"}
+  end
+
   def check(code_string, _allowed_modules)
       when byte_size(code_string) > @max_code_size do
     {:error, "code exceeds maximum size of #{@max_code_size} bytes"}

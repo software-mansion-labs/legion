@@ -9,6 +9,13 @@ defmodule Legion.Sandbox.ASTCheckerTest do
     assert :ok = ASTChecker.check("1 + 2 * 3", [])
   end
 
+  test "non-binary input is rejected" do
+    assert {:error, msg} = ASTChecker.check(nil, [])
+    assert msg =~ "must be a binary"
+    assert {:error, _} = ASTChecker.check(42, [])
+    assert {:error, _} = ASTChecker.check([], [])
+  end
+
   test "variable assignment and reuse" do
     assert :ok = ASTChecker.check("x = 10\nx * 2", [])
   end

@@ -19,10 +19,6 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
   alias Legion.Sandbox
   alias Legion.Sandbox.ASTChecker
 
-  defmodule FakeTool do
-    def hello, do: :hello
-  end
-
   defmodule SystemTool do
     def hello, do: :hello
   end
@@ -442,11 +438,12 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
     # The fix is a dedicated `check_node` clause that:
     #   * REJECTS interpolated forms (`~w(#{x})a`) outright — runtime-built
     #     atoms are invisible to the static check.
-    #   * For non-interpolated forms, validates each literal token as if it
-    #     were a bare atom / alias literal: rejects `"__struct__"`, rejects
-    #     unsafe Elixir-module atoms (`Elixir.System`, `Elixir.File.Stream`),
-    #     rejects dangerous erlang-module atoms (`asn1rt_nif`, `crypto`),
-    #     and accepts everything else (`~w(red green blue)a` is fine).
+    #   * For non-interpolated forms, rejects only the `"__struct__"` token.
+    #     Other module-shaped tokens (`Elixir.System`, `asn1rt_nif`) yield
+    #     inert atoms: the dot-call, struct-literal, and raise positions all
+    #     require literal aliases / atom literals at AST-check time, and the
+    #     calendar arity caps close the calendar-arg load primitive, so a
+    #     runtime-materialised atom has nowhere dangerous to flow.
     #
     # Other modifiers (default string list, `s`, `c`) are unaffected.
 
