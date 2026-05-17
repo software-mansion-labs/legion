@@ -105,7 +105,11 @@ defmodule Legion.Tools.AgentTool do
   end
 
   @doc """
-  Starts a long-lived sub-agent process and returns `{:ok, pid}`.
+  Starts a long-lived sub-agent process and dispatches `task` to it asynchronously
+  via `cast/2`. Returns `{:ok, pid}` once the process is started — the task runs
+  in the background and its result is not returned. Use `call/2` if you need the
+  result, or `start_link/2` followed by additional `cast/2` calls to queue more
+  messages on the same process.
 
   Raises if the agent is not in the allowed list.
   """

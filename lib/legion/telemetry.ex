@@ -6,19 +6,27 @@ defmodule Legion.Telemetry do
 
   ## Agent Lifecycle Events
 
-  - `[:legion, :agent, :started]` — agent process initialized
+  - `[:legion, :agent, :started]` — agent process finished `init/1`
     - Measurements: `%{system_time: integer}`
-    - Metadata: `%{agent: module, run_id: reference, parent_run_id: reference | nil}`
+    - Metadata: `%{agent: module, run_id: reference, parent_run_id: reference}`
+    - `parent_run_id` is only present when the agent was started inside another
+      agent's run. Not emitted if `init/1` itself crashes (e.g. while building
+      the system prompt) — in that case `:stopped` is not emitted either,
+      since GenServer does not call `terminate/2` on init failure.
 
-  - `[:legion, :agent, :stopped]` — agent process terminated
+  - `[:legion, :agent, :stopped]` — agent process terminated via `terminate/2`
     - Measurements: `%{system_time: integer}`
-    - Metadata: `%{agent: module, run_id: reference}`
+    - Metadata: `%{agent: module, run_id: reference}` (plus `parent_run_id`
+      when the parent's run is still on the process Vault)
 
   ## Agent Message Events (spans)
 
   - `[:legion, :agent, :message, :start | :stop | :exception]` — agent handling a message
     - Metadata includes: `agent`, `run_id`, `message`
-    - Stop adds: `result`, `iterations`
+    - Stop adds: `iterations` (count of assistant turns in this message),
+      `status` (`:ok` or `:cancel`), `result` (the value returned, or the
+      cancellation reason such as `:reached_max_iterations`), and `bindings`
+      (the variable bindings carried out of the turn)
 
   ## Iteration Events (spans)
 
