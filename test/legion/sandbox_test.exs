@@ -29,7 +29,7 @@ defmodule Legion.SandboxTest do
 
   test "compile error surfaces diagnostics instead of the generic wrapper message" do
     code = ~S|x = 1
-"track: #{t.track}"|
+String.upcase(t)|
 
     assert {:error, msg} = Legion.Sandbox.execute(code, 15_000)
     assert is_binary(msg)

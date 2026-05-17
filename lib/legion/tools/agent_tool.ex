@@ -78,6 +78,28 @@ defmodule Legion.Tools.AgentTool do
 
     Returns `{:ok, [result1, result2, ...]}` or the first `{:cancel, reason}`.
 
+    ## Split spawning from post-processing across turns
+
+    Prefer one turn to spawn sub-agents and bind results, and a separate turn
+    to shape those results. Combining both in one script makes the script long
+    and brittle: a single sandbox rejection (e.g. `item.field` instead of
+    `Map.fetch!(item, :field)`) discards the whole script and the sub-agent
+    work has to be redone. Bindings persist across turns, so this costs
+    nothing.
+
+    Turn 1 - spawn and bind:
+
+        {:ok, results} =
+          AgentTool.parallel(
+            for input <- inputs do
+              {SomeAgent, input}
+            end
+          )
+
+    Turn 2 - shape the bound `results`:
+
+        Enum.map(results, fn r -> Map.fetch!(r, :title) end)
+
     ## Sequential pipeline
 
     `AgentTool.pipeline/1` threads each step's result into the next:
@@ -87,6 +109,29 @@ defmodule Legion.Tools.AgentTool do
             {ResearchAgent, "find X"},
             {WriterAgent, fn research -> "summarize: \#{research}" end}
           ])
+
+    ## Long-lived sub-agent (multi-turn conversation)
+
+    `call/2` and `parallel/1` run the sub-agent to completion and discard it.
+    Use `start_link/2` when you need to keep talking to the same sub-agent
+    across follow-up messages - it preserves the sub-agent's conversation
+    history, so each subsequent message is interpreted in context.
+
+    Reach for this only when later messages genuinely depend on earlier ones
+    (refining a draft, asking follow-ups about the same data). For independent
+    tasks, prefer one-shot `call/2` or parallel fan-out.
+
+    Turn 1 - spawn and bind the pid:
+
+        {:ok, pid} = AgentTool.start_link(WriterAgent, "Draft a release note for v2.")
+
+    Later turn - send a follow-up and block for the reply:
+
+        reply = AgentTool.call(pid, "Tighten the second paragraph.")
+
+    Or fire-and-forget when you don't need the reply right now:
+
+        AgentTool.cast(pid, "Also drop the marketing line.")
     """
   end
 

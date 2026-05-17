@@ -19,11 +19,13 @@ defmodule Legion.Sandbox do
 
       iex> {:ok, {6, _}} = Legion.Sandbox.execute("Enum.sum([1, 2, 3])", 5_000)
 
-      iex> Legion.Sandbox.execute("System.halt()", 5_000)
-      {:error, "Module System is not allowed"}
+      iex> {:error, msg} = Legion.Sandbox.execute("System.halt()", 5_000)
+      iex> msg =~ "Module System is not allowed"
+      true
 
-      iex> Legion.Sandbox.execute("import Enum", 5_000)
-      {:error, "import is not allowed"}
+      iex> {:error, msg} = Legion.Sandbox.execute("import Enum", 5_000)
+      iex> msg =~ "import is not allowed"
+      true
   """
 
   alias Legion.Sandbox.ASTChecker

@@ -16,7 +16,7 @@ defmodule Legion.MixProject do
       # Hex
       package: package(),
       description: """
-      Legion is an Elixir framework for building multi-agent AI systems.
+      Legion is an Elixir-native framework for building AI agents
       """,
       # Docs
       name: "Legion",
