@@ -98,7 +98,7 @@ Add `legion` to your dependencies:
 ```elixir
 def deps do
   [
-    {:legion, "~> 0.3"}
+    {:legion, "~> 0.4"}
   ]
 end
 ```
@@ -109,6 +109,12 @@ Configure your LLM provider ([all options](https://hexdocs.pm/req_llm/ReqLLM.htm
 # config/runtime.exs
 config :req_llm, openai_api_key: System.get_env("OPENAI_API_KEY")
 ```
+
+## Web Dashboard
+
+[`legion_web`](https://github.com/dimamik/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
+
+![Legion Web Dashboard](https://raw.githubusercontent.com/dimamik/legion_web/main/img/preview.png)
 
 ## Long-lived Agents
 
@@ -309,12 +315,6 @@ Events emitted at every level:
 - `[:legion, :iteration, :start | :stop | :exception]` - each execution step
 - `[:legion, :llm, :request, :start | :stop | :exception]` - LLM API calls
 - `[:legion, :sandbox, :eval, :start | :stop | :exception]` - code evaluation
-
-## Web Dashboard
-
-[`legion_web`](https://github.com/dimamik/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
-
-![Legion Web Dashboard](https://raw.githubusercontent.com/dimamik/legion_web/main/img/preview.png)
 
 ## Limitations
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.0 - 2026-05-17
+
+### Security
+
+- Harden `Legion.Sandbox.ASTChecker` against a class of RCE paths. After this release, most (if not all) RCE vectors should be closed. Legion is still vulnerable to DoS kinds of attacks, but we assume that having a system prompt instruction to behave well AND improving sandbox should be enough for now.
+
+### Changes
+
+- Broaden the sandbox surface for common LLM idioms: allow `Map.values/1`, `JSON`, `URI`, `:erlang.float_to_binary/2`, additional `String`/`Enum`/`Date`/`DateTime` functions, and the `Access` protocol (`map[:k]`)
+- Document the sandbox constraints with concrete idioms in the system prompt
+- Fix tool source extraction breaking on heredocs and charlists
+- Correct documentation for telemetry events, source registry, and `AgentTool.start_link/2`
+
 ## v0.3.0 - 2026-04-21
 
 ### Changes
