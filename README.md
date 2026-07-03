@@ -1,7 +1,7 @@
 # Legion
 
-[![CI](https://github.com/dimamik/legion/actions/workflows/ci.yml/badge.svg)](https://github.com/dimamik/legion/actions/workflows/ci.yml)
-[![License](https://img.shields.io/hexpm/l/legion.svg)](https://github.com/dimamik/legion/blob/main/LICENSE)
+[![CI](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml/badge.svg)](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml)
+[![License](https://img.shields.io/hexpm/l/legion.svg)](https://github.com/software-mansion-labs/legion/blob/main/LICENSE)
 [![Version](https://img.shields.io/hexpm/v/legion.svg)](https://hex.pm/packages/legion)
 [![Hex Docs](https://img.shields.io/badge/documentation-gray.svg)](https://hexdocs.pm/legion)
 
@@ -112,9 +112,9 @@ config :req_llm, openai_api_key: System.get_env("OPENAI_API_KEY")
 
 ## Web Dashboard
 
-[`legion_web`](https://github.com/dimamik/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
+[`legion_web`](https://github.com/software-mansion-labs/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
 
-![Legion Web Dashboard](https://raw.githubusercontent.com/dimamik/legion_web/main/img/preview.png)
+![Legion Web Dashboard](https://raw.githubusercontent.com/software-mansion-labs/legion_web/main/img/preview.png)
 
 ## Long-lived Agents
 
@@ -337,6 +337,16 @@ Legion's sandbox restricts what LLM-generated code can do, but it is not full pr
 Legion is built for trusted code generators (your own LLM-backed agents with controlled tool access), not for running arbitrary code from unknown sources. If your threat model requires full isolation, run agents in a separate BEAM instance.
 
 <!-- MDOC -->
+
+## Authors
+
+Legion is created by Software Mansion.
+
+Since 2012 [Software Mansion](https://swmansion.com/?utm_source=git&utm_medium=readme&utm_campaign=legion) is a software agency with experience in building web and mobile apps as well as complex multimedia solutions. We are Core React Native Contributors, Elixir ecosystem experts, and live streaming and broadcasting technologies specialists. We can help you build your next dream product – [Hire us](https://swmansion.com/contact/projects).
+
+Copyright 2026, [Software Mansion](https://swmansion.com/?utm_source=git&utm_medium=readme&utm_campaign=legion)
+
+[![Software Mansion](https://logo.swmansion.com/logo?color=white&variant=desktop&width=200&tag=legion-github)](https://swmansion.com/?utm_source=git&utm_medium=readme&utm_campaign=legion)
 
 ## License
 
