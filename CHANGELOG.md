@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changes
+
+- Add `Legion.Store` behaviour for persisting conversations across restarts. Pass `store:` and `agent_id:` to `Legion.start_link/2`; snapshots (messages + bindings) are saved after every completed turn, before the caller receives its reply
+- Add `Legion.Store.Postgres`, a ready-made store adapter that reuses your Ecto repo (`use Legion.Store.Postgres, repo: MyApp.Repo`) without adding Ecto as a dependency
+
 ## v0.4.0 - 2026-05-17
 
 ### Security

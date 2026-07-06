@@ -13,15 +13,22 @@ defmodule Legion.AgentServer do
   alias Legion.{Executor, Telemetry}
   alias ReqLLM.Message.ContentPart
 
-  defstruct [:agent_module, :messages, :config, bindings: []]
+  defstruct [:agent_module, :messages, :config, :store, :agent_id, bindings: []]
 
   # Client API
 
   def start_link(agent_module, opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name)
+    {store, opts} = Keyword.pop(opts, :store)
+    {agent_id, opts} = Keyword.pop(opts, :agent_id)
+
+    if is_nil(store) != is_nil(agent_id) do
+      raise ArgumentError, ":store and :agent_id must be given together"
+    end
+
     gen_opts = if name, do: [name: name], else: []
     config = resolve_config(agent_module, opts)
-    GenServer.start_link(__MODULE__, {agent_module, config}, gen_opts)
+    GenServer.start_link(__MODULE__, {agent_module, config, store, agent_id}, gen_opts)
   end
 
   def call(agent, message, timeout \\ :infinity) do
@@ -39,7 +46,7 @@ defmodule Legion.AgentServer do
   # Server callbacks
 
   @impl true
-  def init({agent_module, config}) do
+  def init({agent_module, config, store, agent_id}) do
     parent_run_id = Vault.get(:run_id)
     run_id = make_ref()
 
@@ -58,10 +65,19 @@ defmodule Legion.AgentServer do
       %{agent: agent_module}
     )
 
+    {saved_messages, saved_bindings} =
+      case store && store.load(agent_id) do
+        {:ok, %{messages: messages, bindings: bindings}} -> {messages, bindings}
+        _no_snapshot -> {[], []}
+      end
+
     state = %__MODULE__{
       agent_module: agent_module,
-      messages: [%{role: "system", content: system_prompt}],
-      config: config
+      messages: [%{role: "system", content: system_prompt} | saved_messages],
+      config: config,
+      store: store,
+      agent_id: agent_id,
+      bindings: saved_bindings
     }
 
     {:ok, state}
@@ -130,7 +146,16 @@ defmodule Legion.AgentServer do
         end
       )
 
-    {{status, value}, %{state | messages: final_messages, bindings: final_bindings}}
+    state = persist(%{state | messages: final_messages, bindings: final_bindings})
+    {{status, value}, state}
+  end
+
+  defp persist(%{store: nil} = state), do: state
+
+  defp persist(state) do
+    [%{role: "system"} | messages] = state.messages
+    :ok = state.store.save(state.agent_id, %{messages: messages, bindings: state.bindings})
+    state
   end
 
   defp stringify(message, max_length) when is_binary(message),

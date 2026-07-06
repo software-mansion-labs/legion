@@ -397,6 +397,90 @@ defmodule Legion.AgentServerTest do
     end
   end
 
+  defmodule MemoryStore do
+    @behaviour Legion.Store
+
+    def start_link, do: Agent.start_link(fn -> %{} end, name: __MODULE__)
+
+    def load(agent_id), do: Agent.get(__MODULE__, &Map.fetch(&1, agent_id))
+
+    def save(agent_id, snapshot) do
+      Agent.update(__MODULE__, &Map.put(&1, agent_id, snapshot))
+    end
+  end
+
+  describe "persistence" do
+    setup do
+      start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
+      :ok
+    end
+
+    test "saves a snapshot before the caller receives its reply" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "receipt")
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+
+      assert {:ok, %{messages: messages, bindings: []}} = MemoryStore.load("receipt")
+
+      assert [
+               %{role: "user", content: "What is the capital of France?"},
+               %{role: "assistant"} | _
+             ] = messages
+
+      refute Enum.any?(messages, &(&1.role == "system"))
+    end
+
+    test "restores the conversation under a fresh system prompt after a restart" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "restore")
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+      GenServer.stop(pid)
+
+      {:ok, revived} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "restore")
+
+      assert [
+               %{role: "system"},
+               %{role: "user", content: "What is the capital of France?"},
+               %{role: "assistant"} | _
+             ] = Legion.get_messages(revived)
+    end
+
+    test "restores conversation-scoped bindings after a restart" do
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
+
+        if assistant_count == 0 do
+          llm_eval_response("x = 42")
+        else
+          llm_eval_response("x + 1")
+        end
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(ConversationBindingsAgent, store: MemoryStore, agent_id: "bindings")
+
+      {:ok, 42} = Legion.call(pid, "set x")
+      GenServer.stop(pid)
+
+      {:ok, revived} =
+        Legion.start_link(ConversationBindingsAgent, store: MemoryStore, agent_id: "bindings")
+
+      assert {:ok, 43} = Legion.call(revived, "use x")
+    end
+
+    test "raises when :store is given without :agent_id" do
+      assert_raise ArgumentError, ":store and :agent_id must be given together", fn ->
+        Legion.start_link(MathAgent, store: MemoryStore)
+      end
+    end
+  end
+
   describe "binding_scope" do
     test "bindings do not persist across turns by default (:turn)" do
       stub(ReqLLM, :generate_object, fn _model, messages, _schema ->

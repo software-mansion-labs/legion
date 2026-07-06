@@ -7,9 +7,17 @@
 
 <!-- MDOC -->
 
-An Elixir framework for building AI agents that write and execute code instead of making function calls.
+An Elixir framework for AI agents that live inside your application and act by writing code.
 
-Traditional agents call tools one at a time - fetch, wait, decide, fetch again - burning tokens and latency on every round-trip. Legion agents write Elixir code that fetches, filters, decides, and acts in a single step, running safely in a sandbox. Fewer LLM calls, smarter behavior, full language expressivity. [Why code execution beats function calling.](https://www.anthropic.com/engineering/code-execution-with-mcp)
+Legion is a runtime, not a coding assistant. No human reads, reviews, or commits the code its agents write. An agent writes Elixir the way you would write a shell one-liner: to do something, right now. Given a task, it reads your tools' source, writes a snippet that fetches, filters, decides, and acts, executes it, observes the result, and continues - all inside your running application.
+
+That single move replaces function calling. A traditional agent pays an LLM round-trip for every tool call: fetch, wait, decide, call the next one. A Legion agent collapses that loop into one evaluation, with pipelines, pattern matching, and the standard library at its disposal. Fewer LLM calls, lower latency, smarter behavior. [Why code execution beats function calling.](https://www.anthropic.com/engineering/code-execution-with-mcp)
+
+The whole framework fits in three ideas:
+
+- **Tools are plain Elixir modules.** The LLM reads their source directly - no schemas, no wrappers, no glue.
+- **Agents are BEAM processes.** Supervise them, pool them, `call` and `cast` them like GenServers.
+- **Generated code runs in a sandbox.** Dangerous constructs are blocked at the AST level; module access is allowlisted.
 
 ## Quick Start
 
@@ -85,6 +93,7 @@ A traditional agent would need a separate LLM call for each filter decision and 
 - **Tools are just modules** - `use Legion.Tool` on any module to expose it. The LLM reads your source code and calls your functions. No schemas to write, no wrappers - reuse existing app logic directly.
 - **Authorization via Vault** - Set auth context before the agent starts, validate inside tools at runtime. LLM-generated code never touches credentials. See [Vault](https://github.com/dimamik/vault).
 - **Long-lived agents** - Start agents with `Legion.start_link/2` and message them with `call/2` and `cast/2`, just like a GenServer. Variables can persist across turns with `binding_scope: :conversation`.
+- **Persistence** - Make conversations survive crashes, restarts, and deploys with `use Legion.Store.Postgres, repo: MyApp.Repo` (reuses your Ecto repo, one table), or implement the two-callback `Legion.Store` behaviour for any other storage. Snapshots are saved after every completed turn, before the caller sees its reply - a reply is a commit receipt.
 - **Multi-agent orchestration** - Agents delegate to other agents via the built-in `AgentTool`. Fan out with `parallel/2`, chain with `pipeline/1`. Sub-agents are linked processes - when a parent dies, children stop too.
 - **Human in the loop** - The built-in `HumanTool` pauses agent execution until a human responds. It's just message passing - your handler receives a question and sends back an answer.
 - **Structured output** - Define a JSON Schema via `output_schema/0` to get typed, validated responses. Or skip it and work with plain text.
@@ -215,8 +224,10 @@ config :legion, :config, %{
 
 | Option               | Description                                                                                                                |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `model`              | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm), e.g. `"openai:gpt-4o-mini"`.                              |
 | `max_iterations`     | Successful execution steps before the agent is stopped.                                                                    |
 | `max_retries`        | Consecutive failures (bad code, tool errors) before giving up. Resets after each success.                                  |
+| `sandbox_timeout`    | Milliseconds a single code evaluation may run before it is killed.                                                         |
 | `binding_scope`      | `:iteration` (fresh each step), `:turn` (persist within a message, default), or `:conversation` (persist across messages). |
 | `max_message_length` | Byte limit for any single message. Longer content is truncated. Set to `:infinity` to disable.                             |
 

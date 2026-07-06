@@ -29,12 +29,14 @@ defmodule Legion do
 
   ## Options
     - `:name` - register the process under a name
+    - `:store`, `:agent_id` - persist the conversation across restarts; see `Legion.Store`
     - Any config overrides (`:model`, `:max_iterations`, etc.)
 
   ## Examples
 
       {:ok, pid} = Legion.start_link(AssistantAgent)
       {:ok, pid} = Legion.start_link(AssistantAgent, name: MyAssistant, model: "openai:gpt-4o")
+      {:ok, pid} = Legion.start_link(AssistantAgent, store: MyApp.AgentStore, agent_id: "user_42")
   """
   def start_link(agent_module, opts \\ []) do
     AgentServer.start_link(agent_module, opts)
