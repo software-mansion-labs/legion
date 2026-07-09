@@ -22,9 +22,14 @@ defmodule Legion.AgentServer do
     {store, opts} = Keyword.pop(opts, :store)
     {agent_id, opts} = Keyword.pop(opts, :agent_id)
 
-    if is_nil(store) != is_nil(agent_id) do
-      raise ArgumentError, ":store and :agent_id must be given together"
+    store = store || Application.get_env(:legion, :store)
+
+    if is_nil(store) and not is_nil(agent_id) do
+      raise ArgumentError,
+            ":agent_id requires a :store - pass one or set `config :legion, :store, MyStore`"
     end
+
+    agent_id = if store, do: agent_id || generate_agent_id(), else: nil
 
     gen_opts = if name, do: [name: name], else: []
     config = resolve_config(agent_module, opts)
@@ -41,6 +46,10 @@ defmodule Legion.AgentServer do
 
   def get_messages(agent) do
     GenServer.call(agent, :get_messages)
+  end
+
+  def get_agent_id(agent) do
+    GenServer.call(agent, :get_agent_id)
   end
 
   # Server callbacks
@@ -98,6 +107,11 @@ defmodule Legion.AgentServer do
   end
 
   @impl true
+  def handle_call(:get_agent_id, _from, state) do
+    {:reply, state.agent_id, state}
+  end
+
+  @impl true
   def handle_call({:message, message}, _from, state) do
     {reply, state} = handle_message(message, state)
     {:reply, reply, state}
@@ -124,6 +138,7 @@ defmodule Legion.AgentServer do
   """
   def handle_message(message, state) do
     content = stringify(message, state.config[:max_message_length])
+    conversation_scope? = Map.get(state.config, :binding_scope, :turn) == :conversation
 
     {status, value, final_messages, final_bindings} =
       Telemetry.span(
@@ -133,10 +148,7 @@ defmodule Legion.AgentServer do
           messages = state.messages ++ [%{role: "user", content: content}]
           prev_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
-          initial_bindings =
-            if Map.get(state.config, :binding_scope, :turn) == :conversation,
-              do: state.bindings,
-              else: []
+          initial_bindings = if conversation_scope?, do: state.bindings, else: []
 
           {status, value, messages, bindings} =
             result = Executor.run(state.agent_module, messages, state.config, initial_bindings)
@@ -146,7 +158,8 @@ defmodule Legion.AgentServer do
         end
       )
 
-    state = persist(%{state | messages: final_messages, bindings: final_bindings})
+    kept_bindings = if conversation_scope?, do: final_bindings, else: []
+    state = persist(%{state | messages: final_messages, bindings: kept_bindings})
     {{status, value}, state}
   end
 
@@ -157,6 +170,8 @@ defmodule Legion.AgentServer do
     :ok = state.store.save(state.agent_id, %{messages: messages, bindings: state.bindings})
     state
   end
+
+  defp generate_agent_id, do: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
 
   defp stringify(message, max_length) when is_binary(message),
     do: Executor.truncate_content(message, max_length)

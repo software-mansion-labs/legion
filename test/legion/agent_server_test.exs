@@ -433,6 +433,32 @@ defmodule Legion.AgentServerTest do
       refute Enum.any?(messages, &(&1.role == "system"))
     end
 
+    test "a one-off execute/3 persists its snapshot before stopping" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, _} =
+        Legion.execute(MathAgent, "What is the capital of France?",
+          store: MemoryStore,
+          agent_id: "one-off"
+        )
+
+      assert {:ok, %{messages: [%{role: "user"}, %{role: "assistant"} | _]}} =
+               MemoryStore.load("one-off")
+    end
+
+    test "does not persist bindings under the default :turn scope" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("x = 42")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "turn-bindings")
+      {:ok, 42} = Legion.call(pid, "set x")
+
+      assert {:ok, %{bindings: []}} = MemoryStore.load("turn-bindings")
+    end
+
     test "restores the conversation under a fresh system prompt after a restart" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         llm_response("Paris")
@@ -474,9 +500,41 @@ defmodule Legion.AgentServerTest do
       assert {:ok, 43} = Legion.call(revived, "use x")
     end
 
-    test "raises when :store is given without :agent_id" do
-      assert_raise ArgumentError, ":store and :agent_id must be given together", fn ->
-        Legion.start_link(MathAgent, store: MemoryStore)
+    test "generates an agent_id when a store is given without one" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore)
+      agent_id = Legion.get_agent_id(pid)
+
+      assert is_binary(agent_id)
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+      assert {:ok, _snapshot} = MemoryStore.load(agent_id)
+    end
+
+    test "uses a store configured globally, needing only an agent_id" do
+      Application.put_env(:legion, :store, MemoryStore)
+      on_exit(fn -> Application.delete_env(:legion, :store) end)
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, agent_id: "global-store")
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+
+      assert {:ok, _snapshot} = MemoryStore.load("global-store")
+    end
+
+    test "get_agent_id/1 returns nil without a store" do
+      {:ok, pid} = Legion.start_link(MathAgent)
+      assert Legion.get_agent_id(pid) == nil
+    end
+
+    test "raises when :agent_id is given without a :store" do
+      assert_raise ArgumentError, ~r/:agent_id requires a :store/, fn ->
+        Legion.start_link(MathAgent, agent_id: "orphan")
       end
     end
   end

@@ -22,6 +22,28 @@ defmodule Legion.Store do
         use Legion.Store.Postgres, repo: MyApp.Repo
       end
 
+  ## Configuring the store
+
+  Pass `:store` per agent, or set one globally so every agent persists by default:
+
+      config :legion, :store, MyApp.AgentStore
+
+  A `:store` given to `start_link/2` overrides the global one.
+
+  ## Identifying a conversation
+
+  `:agent_id` is the key a snapshot is saved under - it names one conversation,
+  not one user. A chat app with many chats per user keys by the chat; compose the
+  id however you like, since Legion treats it as opaque:
+
+      Legion.start_link(ChatAgent, agent_id: "user_42:chat_7")
+
+  With a store in effect, omitting `:agent_id` makes Legion generate one. That
+  suits a brand-new conversation: read it back with `Legion.get_agent_id/1` and
+  persist the mapping if you want to resume the chat later. Pass your own id to
+  resume an existing conversation. Two agents started under the same id race onto
+  the same row, so route each conversation to a single process.
+
   Or implement the two callbacks against any storage you like:
 
   ## Example: hand-rolled Ecto store
