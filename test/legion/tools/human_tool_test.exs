@@ -38,8 +38,22 @@ defmodule Legion.Tools.HumanToolTest do
     assert HumanTool.ask("What is your name?") == "fake answer"
   end
 
-  test "ask/1 passes question and run_id metadata to handler" do
-    run_id = make_ref()
+  test "ask/1 works under eval_and_continue" do
+    Vault.unsafe_merge(%{current_action: "eval_and_continue"})
+
+    assert HumanTool.ask("What is your name?") == "fake answer"
+  end
+
+  test "ask/1 raises under eval_and_complete so the answer is not discarded" do
+    Vault.unsafe_merge(%{current_action: "eval_and_complete"})
+
+    assert_raise RuntimeError, ~r/must run under eval_and_continue/, fn ->
+      HumanTool.ask("What is your name?")
+    end
+  end
+
+  test "ask/1 passes question and agent_id metadata to handler" do
+    agent_id = "human-tool-test"
     test_pid = self()
 
     spy_pid =
@@ -51,10 +65,10 @@ defmodule Legion.Tools.HumanToolTest do
         end
       end)
 
-    Vault.unsafe_merge(%{Legion.Tools.HumanTool => [handler: spy_pid], run_id: run_id})
+    Vault.unsafe_merge(%{Legion.Tools.HumanTool => [handler: spy_pid], agent_id: agent_id})
 
     assert HumanTool.ask("tell me something") == "spy answer"
-    assert_receive {:captured, "tell me something", %{run_id: ^run_id}}
+    assert_receive {:captured, "tell me something", %{agent_id: ^agent_id}}
   end
 
   test "ask/1 raises when no handler is configured" do

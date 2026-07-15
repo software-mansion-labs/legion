@@ -48,7 +48,14 @@ defmodule Legion.MixProject do
 
   defp groups_for_modules do
     [
-      Core: [Legion, Legion.Agent, Legion.Tool, Legion.Store, Legion.Store.Postgres],
+      Core: [
+        Legion,
+        Legion.Agent,
+        Legion.Tool,
+        Legion.Store,
+        Legion.Store.Postgres,
+        Legion.Store.Postgres.Migration
+      ],
       Runtime: [Legion.AgentServer, Legion.Executor, ~r/^Legion\.Sandbox/],
       Tools: [~r/^Legion\.Tools\./],
       Internals: [Legion.AgentPrompt, Legion.SourceRegistry, Legion.Telemetry]

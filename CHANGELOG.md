@@ -6,6 +6,10 @@
 
 - Add `Legion.Store` behaviour for persisting conversations across restarts. Pass `store:` and `agent_id:` to `Legion.start_link/2`; snapshots (messages + bindings) are saved after every completed turn, before the caller receives its reply
 - Add `Legion.Store.Postgres`, a ready-made store adapter that reuses your Ecto repo (`use Legion.Store.Postgres, repo: MyApp.Repo`) without adding Ecto as a dependency
+- `Legion.Store.Postgres.Migration` installs a trigger that `pg_notify`s the table's channel with the agent_id on every write, and generated stores expose `__repo__/0` and `__table__/0`, so consumers (LegionWeb) can follow store changes live
+- Add optional `Legion.Store.save_status/2` callback, called with `:running` when a turn starts and `:idle` after its snapshot is saved; `Legion.Store.Postgres` implements it via a `status` column, so a `'running'` status under a dead pid identifies a conversation that crashed mid-turn
+- Bump the default model from `openai:gpt-4o-mini` to `openai:gpt-5.4`
+- `Legion.Tools.HumanTool.ask/1` now raises when called under `eval_and_complete` - the turn would end as soon as the code returns, silently discarding the human's answer; the error feeds back to the model, which retries under `eval_and_continue`
 
 ## v0.4.0 - 2026-05-17
 

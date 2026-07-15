@@ -12,7 +12,8 @@ defmodule Legion do
 
   Starts a temporary agent process, blocks until the task completes, then stops it.
   Accepts the same `opts` as `start_link/2`, so a one-off run can resume and
-  persist a conversation by passing `:store` and `:agent_id`.
+  persist a conversation by passing `:store` and `:agent_id`. Passing `:store`
+  overrides the globally configured store for this agent; see `Legion.Store`.
 
   ## Examples
 
@@ -88,7 +89,8 @@ defmodule Legion do
   end
 
   @doc """
-  Returns the persistence id of a running agent, or `nil` if it has no store.
+  Returns the id of a running agent. Always set - Legion generates one when
+  none is passed.
 
   When a store is configured but you let Legion generate the id, capture it
   with this to resume the same conversation on a later start.
@@ -100,6 +102,62 @@ defmodule Legion do
   """
   def get_agent_id(pid) do
     AgentServer.get_agent_id(pid)
+  end
+
+  @doc """
+  Whether `pid` - typically the one recorded in a persisted run's metadata -
+  is alive on this node. Accepts `nil` and returns `false`.
+
+  A stored pid outlives the VM that wrote it, so after a restart the check is
+  best-effort: a recycled pid value can collide with an unrelated live
+  process.
+
+  ## Examples
+
+      run = MyApp.AgentStore.get_run("user_42:chat_7")
+      Legion.running?(run.pid)
+  """
+  def running?(pid) when is_pid(pid) do
+    node(pid) == node() and Process.alive?(pid)
+  rescue
+    # A pid deserialized from a previous VM incarnation is not a local pid,
+    # for which Process.alive?/1 raises.
+    ArgumentError -> false
+  end
+
+  def running?(_other), do: false
+
+  @doc """
+  Resumes a persisted conversation.
+
+  Returns the recorded process if it is still `running?/1`; otherwise starts
+  the agent again under the same `agent_id`, so it reloads its snapshot from
+  the store. `opts` are passed through to `start_link/2`.
+
+  Requires a store implementing `c:Legion.Store.get_run/1` - pass `:store` or
+  configure one globally. Raises if the store has no run for `agent_id`.
+
+  ## Examples
+
+      {:ok, pid} = Legion.resume("user_42:chat_7")
+      {:ok, pid} = Legion.resume("user_42:chat_7", store: MyApp.AgentStore)
+  """
+  def resume(agent_id, opts \\ []) do
+    store =
+      Keyword.get(opts, :store) || Vault.get(:store) || Application.get_env(:legion, :store) ||
+        raise ArgumentError,
+              "resume/2 requires a :store - pass one or set `config :legion, :store, MyStore`"
+
+    run =
+      store.get_run(agent_id) ||
+        raise ArgumentError,
+              "no run recorded for agent_id #{inspect(agent_id)} in #{inspect(store)}"
+
+    if running?(run[:pid]) do
+      {:ok, run[:pid]}
+    else
+      start_link(run.agent_module, Keyword.put(opts, :agent_id, agent_id))
+    end
   end
 
   @doc """

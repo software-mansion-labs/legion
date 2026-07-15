@@ -22,14 +22,14 @@ defmodule Legion.AgentServer do
     {store, opts} = Keyword.pop(opts, :store)
     {agent_id, opts} = Keyword.pop(opts, :agent_id)
 
-    store = store || Application.get_env(:legion, :store)
+    store = store || Vault.get(:store) || Application.get_env(:legion, :store)
 
     if is_nil(store) and not is_nil(agent_id) do
       raise ArgumentError,
             ":agent_id requires a :store - pass one or set `config :legion, :store, MyStore`"
     end
 
-    agent_id = if store, do: agent_id || generate_agent_id(), else: nil
+    agent_id = agent_id || generate_id()
 
     gen_opts = if name, do: [name: name], else: []
     config = resolve_config(agent_module, opts)
@@ -56,11 +56,11 @@ defmodule Legion.AgentServer do
 
   @impl true
   def init({agent_module, config, store, agent_id}) do
-    parent_run_id = Vault.get(:run_id)
-    run_id = make_ref()
+    parent_agent_id = Vault.get(:agent_id)
 
-    Vault.unsafe_put(:run_id, run_id)
-    Vault.unsafe_put(:parent_run_id, parent_run_id)
+    Vault.unsafe_put(:agent_id, agent_id)
+    Vault.unsafe_put(:parent_agent_id, parent_agent_id)
+    if store, do: Vault.unsafe_put(:store, store)
 
     for tool <- agent_module.tools() do
       Vault.unsafe_put(tool, agent_module.tool_config(tool))
@@ -74,6 +74,13 @@ defmodule Legion.AgentServer do
       %{agent: agent_module}
     )
 
+    save_run(store, agent_id, %{
+      agent_module: agent_module,
+      parent_agent_id: parent_agent_id,
+      pid: self(),
+      started_at: System.system_time(:millisecond)
+    })
+
     {saved_messages, saved_bindings} =
       case store && store.load(agent_id) do
         {:ok, %{messages: messages, bindings: bindings}} -> {messages, bindings}
@@ -82,7 +89,7 @@ defmodule Legion.AgentServer do
 
     state = %__MODULE__{
       agent_module: agent_module,
-      messages: [%{role: "system", content: system_prompt} | saved_messages],
+      messages: [Executor.message(:system, system_prompt) | saved_messages],
       config: config,
       store: store,
       agent_id: agent_id,
@@ -140,12 +147,18 @@ defmodule Legion.AgentServer do
     content = stringify(message, state.config[:max_message_length])
     conversation_scope? = Map.get(state.config, :binding_scope, :turn) == :conversation
 
+    # Persist the user message before the turn runs so store-backed views
+    # (e.g. the legion_web database source) show it without waiting for the
+    # response.
+    state = persist(%{state | messages: state.messages ++ [Executor.message(:user, content)]})
+    save_status(state, :running)
+
     {status, value, final_messages, final_bindings} =
       Telemetry.span(
         [:legion, :agent, :message],
         %{agent: state.agent_module, message: content},
         fn ->
-          messages = state.messages ++ [%{role: "user", content: content}]
+          messages = state.messages
           prev_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
           initial_bindings = if conversation_scope?, do: state.bindings, else: []
@@ -160,6 +173,7 @@ defmodule Legion.AgentServer do
 
     kept_bindings = if conversation_scope?, do: final_bindings, else: []
     state = persist(%{state | messages: final_messages, bindings: kept_bindings})
+    save_status(state, :idle)
     {{status, value}, state}
   end
 
@@ -171,7 +185,34 @@ defmodule Legion.AgentServer do
     state
   end
 
-  defp generate_agent_id, do: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+  # Status is written outside the turn's save/persist path: a crash between
+  # the :running write and the :idle write leaves 'running' in the store,
+  # which consumers read as "crashed mid-turn" under a dead pid.
+  defp save_status(%{store: nil}, _status), do: :ok
+
+  defp save_status(state, status) do
+    if Code.ensure_loaded?(state.store) and function_exported?(state.store, :save_status, 2) do
+      state.store.save_status(state.agent_id, status)
+    end
+
+    :ok
+  end
+
+  defp save_run(nil, _agent_id, _metadata), do: :ok
+
+  defp save_run(store, agent_id, metadata) do
+    if Code.ensure_loaded?(store) and function_exported?(store, :save_run, 2) do
+      store.save_run(agent_id, metadata)
+    else
+      Logger.warning(
+        "Store #{inspect(store)} does not implement save_run/2; run metadata not persisted"
+      )
+    end
+
+    :ok
+  end
+
+  defp generate_id, do: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
 
   defp stringify(message, max_length) when is_binary(message),
     do: Executor.truncate_content(message, max_length)

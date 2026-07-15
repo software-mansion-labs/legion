@@ -13,17 +13,12 @@ Legion.Telemetry.attach_default_logger()
     database: System.get_env("POSTGRES_DB", "postgres")
   )
 
-Postgrex.query!(
-  :legion_store_test,
-  """
-  CREATE TABLE IF NOT EXISTS legion_agents (
-    agent_id text PRIMARY KEY,
-    snapshot bytea NOT NULL,
-    inserted_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-  )
-  """,
-  []
-)
+for sql <- Legion.Store.Postgres.Migration.down_sql(1, "legion_agents") do
+  Postgrex.query!(:legion_store_test, sql, [])
+end
+
+for sql <- Legion.Store.Postgres.Migration.up_sql(1, "legion_agents") do
+  Postgrex.query!(:legion_store_test, sql, [])
+end
 
 ExUnit.start(exclude: [:integration])

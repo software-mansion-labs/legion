@@ -37,7 +37,7 @@ defmodule Legion.Agent do
 
     - `config/0` — agent-level configuration merged with application config and
       call-time opts. Defaults to `%{}`. Available keys:
-      - `model` — LLM model identifier (default: `"openai:gpt-4o-mini"`)
+      - `model` — LLM model identifier (default: `"openai:gpt-5.4"`)
       - `max_iterations` — max successful execution steps per turn (default: `10`)
       - `max_retries` — max consecutive failures before giving up (default: `3`)
       - `sandbox_timeout` — timeout in ms for code execution (default: `60_000`)

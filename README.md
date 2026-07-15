@@ -213,7 +213,7 @@ Your handler receives `{:human_request, ref, from_pid, question, meta}` and repl
 
 ```elixir
 config :legion, :config, %{
-  model: "openai:gpt-4o-mini",
+  model: "openai:gpt-5.4",
   max_iterations: 10,
   max_retries: 3,
   sandbox_timeout: 60_000,
@@ -224,7 +224,7 @@ config :legion, :config, %{
 
 | Option               | Description                                                                                                                |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `model`              | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm), e.g. `"openai:gpt-4o-mini"`.                              |
+| `model`              | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm), e.g. `"openai:gpt-5.4"`.                              |
 | `max_iterations`     | Successful execution steps before the agent is stopped.                                                                    |
 | `max_retries`        | Consecutive failures (bad code, tool errors) before giving up. Resets after each success.                                  |
 | `sandbox_timeout`    | Milliseconds a single code evaluation may run before it is killed.                                                         |

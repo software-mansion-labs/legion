@@ -28,7 +28,11 @@ defmodule Legion.Store do
 
       config :legion, :store, MyApp.AgentStore
 
-  A `:store` given to `start_link/2` overrides the global one.
+  A `:store` given to `start_link/2` overrides the global one. Sub-agents
+  spawned from a running agent (e.g. via `Legion.Tools.AgentTool`) inherit
+  the parent's store automatically. The inheritance is ambient: *any* agent
+  started from within an agent's process tree picks up that store unless
+  given an explicit `:store` of its own.
 
   ## Identifying a conversation
 
@@ -38,7 +42,7 @@ defmodule Legion.Store do
 
       Legion.start_link(ChatAgent, agent_id: "user_42:chat_7")
 
-  With a store in effect, omitting `:agent_id` makes Legion generate one. That
+  Omitting `:agent_id` makes Legion generate one. That
   suits a brand-new conversation: read it back with `Legion.get_agent_id/1` and
   persist the mapping if you want to resume the chat later. Pass your own id to
   resume an existing conversation. Two agents started under the same id race onto
@@ -73,18 +77,81 @@ defmodule Legion.Store do
 
   The snapshot holds the conversation `:messages` (without the system prompt)
   and the `:bindings` from evaluated code (relevant with
-  `binding_scope: :conversation`). Bindings are arbitrary Elixir terms -
+  `binding_scope: :conversation`). Each message carries a `:type`
+  (`:user`, `:assistant`, `:eval_result`, or `:error`) and an `:at` timestamp
+  in milliseconds, so consumers can classify and order messages without
+  parsing content. Bindings are arbitrary Elixir terms -
   values like pids, references, or functions will not survive
   serialization, so keep conversation-scoped variables to plain data if you
   persist agents.
+
+  ## Run metadata
+
+  Implement the optional `c:save_run/2` to also record each conversation's
+  identity: which agent module ran, under which parent conversation (for
+  sub-agents), when, and under which `pid`. Legion calls it once per agent
+  start, so persisted conversations stay attributable to the agent tree that
+  produced them. Restarting a conversation under the same `agent_id` calls it
+  again with a fresh `started_at` and `pid` - treat it as an upsert. The
+  stored pid always names the newest process for the conversation, so
+  `Legion.running?/1` and `Legion.resume/2` can tell whether it is still
+  live (a pid outlives the VM that wrote it, so never trust it blindly). On conflict, keep the stored
+  `parent_agent_id`: the callback reports where the agent was started *this
+  time*, so a conversation resumed from iex or another agent's tree would
+  otherwise be silently reparented.
+
+  ## Turn status
+
+  Implement the optional `c:save_status/2` to also record whether a
+  conversation is mid-turn: Legion calls it with `:running` when a message
+  starts and `:idle` after the turn's snapshot is saved. Combined with the
+  stored pid this lets a consumer distinguish a live agent that is working
+  from one waiting for input, and a conversation that crashed mid-turn
+  (status still `:running` under a dead pid) from one that finished.
+
+  ## Reading conversations back
+
+  The optional `c:list_runs/1` and `c:get_run/1` callbacks expose persisted
+  runs for consumers that rebuild a view of past conversations from the store
+  alone - `LegionWeb` uses them when configured with
+  `config :legion_web, agents_source: :database`. `Legion.Store.Postgres`
+  implements both.
   """
 
   @type agent_id :: term()
   @type snapshot :: %{messages: [map()], bindings: keyword()}
+  @type run_metadata :: %{
+          agent_module: module(),
+          parent_agent_id: agent_id() | nil,
+          pid: pid(),
+          started_at: integer()
+        }
+  @type run :: %{
+          agent_id: agent_id(),
+          agent_module: module() | nil,
+          parent_agent_id: agent_id() | nil,
+          pid: pid() | nil,
+          status: :running | :idle | nil,
+          started_at: integer() | nil
+        }
 
   @doc "Returns the last saved snapshot for `agent_id`, or `:error` if none exists."
   @callback load(agent_id()) :: {:ok, snapshot()} | :error
 
   @doc "Saves the snapshot for `agent_id`. Raise on failure - the turn is not acked until this returns."
   @callback save(agent_id(), snapshot()) :: :ok
+
+  @doc "Records run metadata when an agent starts. Optional. `started_at` is in milliseconds."
+  @callback save_run(agent_id(), run_metadata()) :: :ok
+
+  @doc "Records whether the conversation is mid-turn. Optional."
+  @callback save_status(agent_id(), :running | :idle) :: :ok
+
+  @doc "Returns the newest `limit` persisted runs, newest first. Optional."
+  @callback list_runs(limit :: pos_integer()) :: [run()]
+
+  @doc "Returns the persisted run for `agent_id`, or `nil` if none exists. Optional."
+  @callback get_run(agent_id()) :: run() | nil
+
+  @optional_callbacks save_run: 2, save_status: 2, list_runs: 1, get_run: 1
 end
