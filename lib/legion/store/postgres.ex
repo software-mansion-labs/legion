@@ -93,6 +93,8 @@ defmodule Legion.Store.Postgres do
     quote do
       @behaviour Legion.Store
 
+      alias Legion.Store.Postgres
+
       @impl Legion.Store
       # sobelow_skip ["Misc.BinToTerm"]
       def load(agent_id) when is_binary(agent_id) do
@@ -130,13 +132,13 @@ defmodule Legion.Store.Postgres do
       @impl Legion.Store
       def list_runs(limit) do
         %{rows: rows} = unquote(repo).query!(unquote(list_runs_sql), [limit])
-        Enum.map(rows, &Legion.Store.Postgres.decode_run_row/1)
+        Enum.map(rows, &Postgres.decode_run_row/1)
       end
 
       @impl Legion.Store
       def get_run(agent_id) when is_binary(agent_id) do
         case unquote(repo).query!(unquote(get_run_sql), [agent_id]) do
-          %{rows: [row]} -> Legion.Store.Postgres.decode_run_row(row)
+          %{rows: [row]} -> Postgres.decode_run_row(row)
           %{rows: []} -> nil
         end
       end

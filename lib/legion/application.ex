@@ -1,4 +1,8 @@
 defmodule Legion.Application do
+  @moduledoc """
+  The OTP application for Legion.
+  """
+
   use Application
 
   @impl true
