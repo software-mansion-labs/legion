@@ -41,7 +41,6 @@ defmodule Legion.Store.PostgresDbTest do
     metadata = %{
       agent_module: MyApp.Worker,
       parent_agent_id: "parent-1",
-      pid: self(),
       started_at: 100
     }
 
@@ -60,8 +59,6 @@ defmodule Legion.Store.PostgresDbTest do
     assert agent_module == "MyApp.Worker"
     assert parent_agent_id == "parent-1"
     assert started_at == 200
-    assert %{pid: pid} = Store.get_run("child-1")
-    assert pid == self()
   end
 
   test "save_status/2 flips the stored status and save_run/2 resets it to idle" do

@@ -128,11 +128,31 @@ defmodule Legion do
   def running?(_other), do: false
 
   @doc """
+  Looks up the live process for an agent id.
+
+  Uses `Legion.AgentRegistry` as the runtime source of truth for the
+  `agent_id -> pid` mapping. Returns `{:ok, pid}` when the agent is currently
+  registered, or `:error` when no live process is registered for `agent_id`.
+
+  ## Examples
+
+      {:ok, pid} = Legion.lookup("user_42:chat_7")
+      :error = Legion.lookup("missing_agent_id")
+  """
+  def lookup(agent_id) do
+    case Registry.lookup(Legion.AgentRegistry, agent_id) do
+      [{pid, _}] -> {:ok, pid}
+      [] -> :error
+    end
+  end
+
+  @doc """
   Resumes a persisted conversation.
 
-  Returns the recorded process if it is still `running?/1`; otherwise starts
-  the agent again under the same `agent_id`, so it reloads its snapshot from
-  the store. `opts` are passed through to `start_link/2`.
+  Checks the persisted run exists, then returns the process registered for
+  `agent_id` if the agent is already running. If no process is registered,
+  starts the agent again under the same `agent_id`, so it reloads its snapshot
+  from the store. `opts` are passed through to `start_link/2`.
 
   Requires a store implementing `c:Legion.Store.get_run/1` - pass `:store` or
   configure one globally. Raises if the store has no run for `agent_id`.
@@ -153,10 +173,9 @@ defmodule Legion do
         raise ArgumentError,
               "no run recorded for agent_id #{inspect(agent_id)} in #{inspect(store)}"
 
-    if running?(run[:pid]) do
-      {:ok, run[:pid]}
-    else
-      start_link(run.agent_module, Keyword.put(opts, :agent_id, agent_id))
+    case lookup(agent_id) do
+      {:ok, pid} -> {:ok, pid}
+      :error -> start_link(run.agent_module, Keyword.put(opts, :agent_id, agent_id))
     end
   end
 

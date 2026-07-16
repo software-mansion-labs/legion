@@ -89,13 +89,10 @@ defmodule Legion.Store do
 
   Implement the optional `c:save_run/2` to also record each conversation's
   identity: which agent module ran, under which parent conversation (for
-  sub-agents), when, and under which `pid`. Legion calls it once per agent
-  start, so persisted conversations stay attributable to the agent tree that
-  produced them. Restarting a conversation under the same `agent_id` calls it
-  again with a fresh `started_at` and `pid` - treat it as an upsert. The
-  stored pid always names the newest process for the conversation, so
-  `Legion.running?/1` and `Legion.resume/2` can tell whether it is still
-  live (a pid outlives the VM that wrote it, so never trust it blindly). On conflict, keep the stored
+  sub-agents), and when. Legion calls it once per agent start, so persisted
+  conversations stay attributable to the agent tree that produced them.
+  Restarting a conversation under the same `agent_id` calls it again with a
+  fresh `started_at` - treat it as an upsert. On conflict, keep the stored
   `parent_agent_id`: the callback reports where the agent was started *this
   time*, so a conversation resumed from iex or another agent's tree would
   otherwise be silently reparented.
@@ -104,10 +101,7 @@ defmodule Legion.Store do
 
   Implement the optional `c:save_status/2` to also record whether a
   conversation is mid-turn: Legion calls it with `:running` when a message
-  starts and `:idle` after the turn's snapshot is saved. Combined with the
-  stored pid this lets a consumer distinguish a live agent that is working
-  from one waiting for input, and a conversation that crashed mid-turn
-  (status still `:running` under a dead pid) from one that finished.
+  starts and `:idle` after the turn's snapshot is saved.
 
   ## Reading conversations back
 
@@ -123,14 +117,12 @@ defmodule Legion.Store do
   @type run_metadata :: %{
           agent_module: module(),
           parent_agent_id: agent_id() | nil,
-          pid: pid(),
           started_at: integer()
         }
   @type run :: %{
           agent_id: agent_id(),
           agent_module: module() | nil,
           parent_agent_id: agent_id() | nil,
-          pid: pid() | nil,
           status: :running | :idle | nil,
           started_at: integer() | nil
         }

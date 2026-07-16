@@ -62,6 +62,8 @@ defmodule Legion.AgentServer do
     Vault.unsafe_put(:parent_agent_id, parent_agent_id)
     if store, do: Vault.unsafe_put(:store, store)
 
+    Registry.register(Legion.AgentRegistry, agent_id, self())
+
     for tool <- agent_module.tools() do
       Vault.unsafe_put(tool, agent_module.tool_config(tool))
     end
@@ -77,7 +79,6 @@ defmodule Legion.AgentServer do
     save_run(store, agent_id, %{
       agent_module: agent_module,
       parent_agent_id: parent_agent_id,
-      pid: self(),
       started_at: System.system_time(:millisecond)
     })
 

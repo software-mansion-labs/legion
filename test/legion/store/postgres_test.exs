@@ -21,13 +21,12 @@ defmodule Legion.Store.PostgresTest do
       %{num_rows: 1}
     end
 
-    def query!("INSERT INTO " <> _rest, [agent_id, agent_module, parent_agent_id, pid, started_at]) do
+    def query!("INSERT INTO " <> _rest, [agent_id, agent_module, parent_agent_id, started_at]) do
       Agent.update(
         __MODULE__,
         &put_in(&1.runs[agent_id], %{
           agent_module: agent_module,
           parent_agent_id: parent_agent_id,
-          pid: pid,
           status: "idle",
           started_at: started_at
         })
@@ -45,7 +44,7 @@ defmodule Legion.Store.PostgresTest do
       rows =
         Agent.get(__MODULE__, fn state ->
           for {agent_id, run} <- state.runs do
-            [agent_id, run.agent_module, run.parent_agent_id, run.pid, run.status, run.started_at]
+            [agent_id, run.agent_module, run.parent_agent_id, run.status, run.started_at]
           end
         end)
 
@@ -84,11 +83,10 @@ defmodule Legion.Store.PostgresTest do
     assert_raise FunctionClauseError, fn -> Store.save(42, %{messages: [], bindings: []}) end
   end
 
-  test "save_run/2 stores the module in inspect form with parent, pid, and start time" do
+  test "save_run/2 stores the module in inspect form with parent, and start time" do
     metadata = %{
       agent_module: Legion.Test.Support.MathAgent,
       parent_agent_id: "p1",
-      pid: self(),
       started_at: 123
     }
 
@@ -97,7 +95,6 @@ defmodule Legion.Store.PostgresTest do
     assert FakeRepo.run("user_42") == %{
              agent_module: "Legion.Test.Support.MathAgent",
              parent_agent_id: "p1",
-             pid: :erlang.term_to_binary(self()),
              status: "idle",
              started_at: 123
            }
@@ -112,20 +109,6 @@ defmodule Legion.Store.PostgresTest do
 
     :ok = Store.save_status("s1", :idle)
     assert %{status: :idle} = Store.get_run("s1")
-  end
-
-  test "get_run/1 round-trips the pid" do
-    metadata = %{
-      agent_module: SomeAgent,
-      parent_agent_id: nil,
-      pid: self(),
-      started_at: 123
-    }
-
-    :ok = Store.save_run("with-pid", metadata)
-
-    assert %{pid: pid} = Store.get_run("with-pid")
-    assert pid == self()
   end
 
   test "list_runs/1 returns decoded runs newest first" do

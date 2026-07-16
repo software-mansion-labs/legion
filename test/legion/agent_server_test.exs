@@ -612,14 +612,19 @@ defmodule Legion.AgentServerTest do
     end
 
     test "records run metadata on start" do
-      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "meta")
+      {:ok, _pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "meta")
 
       assert [run] = MemoryStore.runs()
       assert run.agent_id == "meta"
       assert run.agent_module == MathAgent
       assert run.parent_agent_id == nil
-      assert run.pid == pid
       assert is_integer(run.started_at)
+    end
+
+    test "registers the agent pid by agent_id" do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "lookup")
+
+      assert {:ok, ^pid} = Legion.lookup("lookup")
     end
 
     test "resume/2 returns the recorded process while it is alive" do

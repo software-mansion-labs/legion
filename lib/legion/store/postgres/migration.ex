@@ -107,7 +107,6 @@ defmodule Legion.Store.Postgres.Migration do
         agent_id text PRIMARY KEY,
         agent_module text,
         parent_agent_id text,
-        pid bytea,
         status text,
         started_at bigint,
         snapshot bytea,

@@ -39,16 +39,16 @@ defmodule Legion.Store.Postgres do
   The store also implements `c:Legion.Store.save_run/2`, so the same row
   carries the conversation's identity: `agent_module` (in `inspect/1` form,
   e.g. `"MyApp.ResearchAgent"`), `parent_agent_id` linking a sub-agent to the
-  conversation that spawned it, `pid` of the newest process that ran the
-  conversation (a `:erlang.term_to_binary/1` blob, like the snapshot), and
-  `started_at` in milliseconds (last start wins). `snapshot` is null until the conversation's first turn completes;
+  conversation that spawned it, and `started_at` in milliseconds (last start
+  wins). `snapshot` is null until the conversation's first turn completes;
   `parent_agent_id` is kept once set, so resuming from elsewhere does not
   reparent the conversation.
 
   `c:Legion.Store.save_status/2` is implemented as well: the row's `status`
   flips to `'running'` when a turn starts and back to `'idle'` when it
-  completes (`save_run` resets it to `'idle'` on start), so a `'running'`
-  status under a dead pid identifies a conversation that crashed mid-turn.
+  completes (`save_run` resets it to `'idle'` on start), so consumers can
+  identify conversations that were mid-turn when persistence last observed
+  them.
 
   `c:Legion.Store.list_runs/1` and `c:Legion.Store.get_run/1` are implemented
   too, so persisted conversations can be read back into a view of past runs.
@@ -71,12 +71,11 @@ defmodule Legion.Store.Postgres do
     """
 
     save_run_sql = """
-    INSERT INTO #{table} (agent_id, agent_module, parent_agent_id, pid, status, started_at, inserted_at, updated_at)
-    VALUES ($1, $2, $3, $4, 'idle', $5, now(), now())
+    INSERT INTO #{table} (agent_id, agent_module, parent_agent_id, status, started_at, inserted_at, updated_at)
+    VALUES ($1, $2, $3, 'idle', $4, now(), now())
     ON CONFLICT (agent_id) DO UPDATE
       SET agent_module = EXCLUDED.agent_module,
           parent_agent_id = COALESCE(#{table}.parent_agent_id, EXCLUDED.parent_agent_id),
-          pid = EXCLUDED.pid,
           status = 'idle',
           started_at = EXCLUDED.started_at,
           updated_at = now()
@@ -84,7 +83,7 @@ defmodule Legion.Store.Postgres do
 
     save_status_sql = "UPDATE #{table} SET status = $2, updated_at = now() WHERE agent_id = $1"
 
-    run_columns = "agent_id, agent_module, parent_agent_id, pid, status, started_at"
+    run_columns = "agent_id, agent_module, parent_agent_id, status, started_at"
 
     list_runs_sql =
       "SELECT #{run_columns} FROM #{table} ORDER BY started_at DESC NULLS LAST LIMIT $1"
@@ -116,7 +115,6 @@ defmodule Legion.Store.Postgres do
           agent_id,
           inspect(metadata.agent_module),
           metadata.parent_agent_id,
-          metadata[:pid] && :erlang.term_to_binary(metadata.pid),
           metadata.started_at
         ])
 
@@ -152,16 +150,11 @@ defmodule Legion.Store.Postgres do
   end
 
   @doc false
-  # A pid stored by a previous VM run decodes with its original creation
-  # number, so `Legion.running?/1` reads it as not running instead of
-  # colliding with a recycled pid value.
-  # sobelow_skip ["Misc.BinToTerm"]
-  def decode_run_row([agent_id, agent_module, parent_agent_id, pid, status, started_at]) do
+  def decode_run_row([agent_id, agent_module, parent_agent_id, status, started_at]) do
     %{
       agent_id: agent_id,
       agent_module: agent_module && Module.concat([agent_module]),
       parent_agent_id: parent_agent_id,
-      pid: pid && :erlang.binary_to_term(pid),
       status: decode_status(status),
       started_at: started_at
     }
