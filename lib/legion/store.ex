@@ -7,14 +7,15 @@ defmodule Legion.Store do
 
       {:ok, pid} = Legion.start_link(AssistantAgent, store: MyApp.AgentStore, agent_id: "user_42")
 
-  On start, the agent calls `c:load/1` and resumes from the snapshot if one
-  exists. The system prompt is regenerated fresh on every start, so prompt or
-  tool changes apply to restored conversations.
+  On start, the agent calls `c:get/1` and resumes from the returned
+  `Legion.Store.ConversationState` if one exists. The system prompt is
+  regenerated fresh on every start, so prompt or tool changes apply to
+  restored conversations.
 
-  After every completed turn, the agent calls `c:save/2` **before** replying
-  to the caller. A reply is a commit receipt: any turn a caller observed
-  survives a crash, restart, or deploy. A crash mid-turn rolls back to the
-  last completed turn.
+  After every completed turn, the agent calls `c:save/2` with a
+  `Legion.Store.ConversationState` **before** replying to the caller. A reply
+  is a commit receipt: any turn a caller observed survives a crash, restart,
+  or deploy. A crash mid-turn rolls back to the last completed turn.
 
   For Postgres users there is a ready-made adapter - see `Legion.Store.Postgres`:
 
@@ -37,8 +38,8 @@ defmodule Legion.Store do
   ## Identifying a conversation
 
   `:agent_id` is the key a snapshot is saved under - it names one conversation,
-  not one user. A chat app with many chats per user keys by the chat; compose the
-  id however you like, since Legion treats it as opaque:
+  not one user. A chat app with many chats per user keys by the chat;
+  compose the id however you like, since Legion treats it as opaque:
 
       Legion.start_link(ChatAgent, agent_id: "user_42:chat_7")
 
@@ -48,102 +49,65 @@ defmodule Legion.Store do
   resume an existing conversation. Two agents started under the same id race onto
   the same row, so route each conversation to a single process.
 
-  Or implement the two callbacks against any storage you like:
+  ## Required persistence
 
-  ## Example: hand-rolled Ecto store
+  Stores must implement `c:get/1` and `c:save/2`.
 
-      defmodule MyApp.AgentStore do
-        @behaviour Legion.Store
-
-        def load(agent_id) do
-          case MyApp.Repo.get(MyApp.AgentSnapshot, agent_id) do
-            nil -> :error
-            row -> {:ok, :erlang.binary_to_term(row.snapshot)}
-          end
-        end
-
-        def save(agent_id, snapshot) do
-          MyApp.Repo.insert!(
-            %MyApp.AgentSnapshot{id: agent_id, snapshot: :erlang.term_to_binary(snapshot)},
-            on_conflict: {:replace, [:snapshot]},
-            conflict_target: :id
-          )
-
-          :ok
-        end
-      end
-
-  ## What is persisted
-
-  The snapshot holds the conversation `:messages` (without the system prompt)
-  and the `:bindings` from evaluated code (relevant with
-  `binding_scope: :conversation`). Each message carries a `:type`
-  (`:user`, `:assistant`, `:eval_result`, or `:error`) and an `:at` timestamp
-  in milliseconds, so consumers can classify and order messages without
-  parsing content. Bindings are arbitrary Elixir terms -
-  values like pids, references, or functions will not survive
+  The required save payload is `Legion.Store.ConversationState`, which holds
+  the conversation `:messages` (without the system prompt) and the `:bindings`
+  from evaluated code (relevant with `binding_scope: :conversation`). Each
+  message carries a `:type` (`:user`, `:assistant`, `:eval_result`, or
+  `:error`) and an `:at` timestamp in milliseconds, so consumers can classify
+  and order messages without parsing content. Bindings are arbitrary Elixir
+  terms - values like pids, references, or functions will not survive
   serialization, so keep conversation-scoped variables to plain data if you
   persist agents.
 
-  ## Run metadata
+  ## Optional persistence
 
-  Implement the optional `c:save_run/2` to also record each conversation's
-  identity: which agent module ran, under which parent conversation (for
-  sub-agents), and when. Legion calls it once per agent start, so persisted
-  conversations stay attributable to the agent tree that produced them.
-  Restarting a conversation under the same `agent_id` calls it again with a
-  fresh `started_at` - treat it as an upsert. On conflict, keep the stored
-  `parent_agent_id`: the callback reports where the agent was started *this
-  time*, so a conversation resumed from iex or another agent's tree would
-  otherwise be silently reparented.
+  Stores may also accept `Legion.Store.ConversationMetadata` through
+  `c:save/2` to record which agent module ran, under which parent
+  conversation, and when.
 
-  ## Turn status
+  Stores may also accept `{:status, :running | :idle}` through `c:save/2` to
+  record whether the agent is mid-turn.
 
-  Implement the optional `c:save_status/2` to also record whether a
-  conversation is mid-turn: Legion calls it with `:running` when a message
-  starts and `:idle` after the turn's snapshot is saved.
+  Because metadata and status persistence are optional, snapshots returned
+  from `c:get/1` or `c:list/1` may have `metadata: nil` or `status: nil`.
+  Because a store may record optional data before any conversation state is
+  saved, `state` may also be nil.
 
-  ## Reading conversations back
+  ## Reading conversations
 
-  The optional `c:list_runs/1` and `c:get_run/1` callbacks expose persisted
-  runs for consumers that rebuild a view of past conversations from the store
-  alone - `LegionWeb` uses them when configured with
-  `config :legion_web, agents_source: :database`. `Legion.Store.Postgres`
-  implements both.
+  `c:get/1` returns the persisted snapshot for one `agent_id`, or `:error`
+  when the store has no row for that id.
+
+  The optional `c:list/1` callback returns persisted snapshots newest first
+  for consumers that rebuild a view of past conversations from the store
+  alone.
   """
 
   @type agent_id :: term()
-  @type snapshot :: %{messages: [map()], bindings: keyword()}
-  @type run_metadata :: %{
-          agent_module: module(),
-          parent_agent_id: agent_id() | nil,
-          started_at: integer()
+  @type status :: :idle | :running
+  @type snapshot :: {
+          agent_id :: agent_id(),
+          metadata :: Legion.Store.ConversationMetadata.t() | nil,
+          status :: status() | nil,
+          state :: Legion.Store.ConversationState.t() | nil
         }
-  @type run :: %{
-          agent_id: agent_id(),
-          agent_module: module() | nil,
-          parent_agent_id: agent_id() | nil,
-          status: :running | :idle | nil,
-          started_at: integer() | nil
-        }
+  @type payload ::
+          Legion.Store.ConversationState.t()
+          | Legion.Store.ConversationMetadata.t()
+          | {:status, status()}
 
-  @doc "Returns the last saved snapshot for `agent_id`, or `:error` if none exists."
-  @callback load(agent_id()) :: {:ok, snapshot()} | :error
+  @doc "Returns the persisted snapshot for `agent_id`, or `:error` if none exists."
+  @callback get(agent_id()) :: {:ok, snapshot()} | :error
 
-  @doc "Saves the snapshot for `agent_id`. Raise on failure - the turn is not acked until this returns."
-  @callback save(agent_id(), snapshot()) :: :ok
+  @doc "Returns the newest `limit` persisted snapshots, newest first."
+  @callback list(limit :: pos_integer()) :: [snapshot()]
 
-  @doc "Records run metadata when an agent starts. Optional. `started_at` is in milliseconds."
-  @callback save_run(agent_id(), run_metadata()) :: :ok
+  @doc "Saves a conversation state, conversation metadata, or status payload for `agent_id`."
+  @callback save(agent_id(), payload()) :: :ok
 
-  @doc "Records whether the conversation is mid-turn. Optional."
-  @callback save_status(agent_id(), :running | :idle) :: :ok
-
-  @doc "Returns the newest `limit` persisted runs, newest first. Optional."
-  @callback list_runs(limit :: pos_integer()) :: [run()]
-
-  @doc "Returns the persisted run for `agent_id`, or `nil` if none exists. Optional."
-  @callback get_run(agent_id()) :: run() | nil
-
-  @optional_callbacks save_run: 2, save_status: 2, list_runs: 1, get_run: 1
+  @optional_callbacks list: 1
 end
