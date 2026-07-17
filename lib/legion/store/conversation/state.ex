@@ -1,4 +1,4 @@
-defmodule Legion.Store.ConversationState do
+defmodule Legion.Store.Conversation.State do
   @moduledoc """
   Replayable state for a persisted agent conversation.
 

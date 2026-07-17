@@ -1,4 +1,4 @@
-defmodule Legion.Store.ConversationMetadata do
+defmodule Legion.Store.Conversation.Metadata do
   @moduledoc """
   Identity metadata for a persisted agent conversation.
 
