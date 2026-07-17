@@ -54,6 +54,8 @@ defmodule Legion.MixProject do
         Legion.Agent,
         Legion.Tool,
         Legion.Store,
+        Legion.Store.Conversation,
+        ~r/^Legion\.Store\.Conversation\./,
         Legion.Store.Postgres,
         Legion.Store.Postgres.Migration
       ],

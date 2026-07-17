@@ -109,7 +109,7 @@ defmodule Legion.Store.Postgres.Migration do
         parent_agent_id text,
         status text,
         started_at bigint,
-        snapshot bytea,
+        conversation_state bytea,
         inserted_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
       )
