@@ -11,6 +11,8 @@ defmodule Legion.AgentServer do
   require Logger
 
   alias Legion.{Executor, Telemetry}
+  alias Legion.Store.Conversation
+  alias Legion.Store.Conversation.{Metadata, State}
   alias ReqLLM.Message.ContentPart
 
   defstruct [:agent_module, :messages, :config, :store, :agent_id, bindings: []]
@@ -76,16 +78,13 @@ defmodule Legion.AgentServer do
       %{agent: agent_module}
     )
 
-    save_run(store, agent_id, %{
-      agent_module: agent_module,
-      parent_agent_id: parent_agent_id,
-      started_at: System.system_time(:millisecond)
-    })
-
     {saved_messages, saved_bindings} =
-      case store && store.load(agent_id) do
-        {:ok, %{messages: messages, bindings: bindings}} -> {messages, bindings}
-        _no_snapshot -> {[], []}
+      case store && store.get(agent_id) do
+        {:ok, %Conversation{state: %State{messages: messages, bindings: bindings}}} ->
+          {messages, bindings}
+
+        _no_state ->
+          {[], []}
       end
 
     state = %__MODULE__{
@@ -97,7 +96,7 @@ defmodule Legion.AgentServer do
       bindings: saved_bindings
     }
 
-    {:ok, state}
+    {:ok, persist(state, {:metadata, parent_agent_id})}
   end
 
   @impl true
@@ -151,8 +150,11 @@ defmodule Legion.AgentServer do
     # Persist the user message before the turn runs so store-backed views
     # (e.g. the legion_web database source) show it without waiting for the
     # response.
-    state = persist(%{state | messages: state.messages ++ [Executor.message(:user, content)]})
-    save_status(state, :running)
+    state =
+      state
+      |> Map.update!(:messages, &(&1 ++ [Executor.message(:user, content)]))
+      |> persist(:state)
+      |> persist({:status, :running})
 
     {status, value, final_messages, final_bindings} =
       Telemetry.span(
@@ -173,44 +175,42 @@ defmodule Legion.AgentServer do
       )
 
     kept_bindings = if conversation_scope?, do: final_bindings, else: []
-    state = persist(%{state | messages: final_messages, bindings: kept_bindings})
-    save_status(state, :idle)
+
+    state =
+      %{state | messages: final_messages, bindings: kept_bindings}
+      |> persist(:state)
+      |> persist({:status, :idle})
+
     {{status, value}, state}
   end
 
-  defp persist(%{store: nil} = state), do: state
+  defp persist(%{store: nil} = state, _payload), do: state
 
-  defp persist(state) do
+  defp persist(state, :state) do
     [%{role: "system"} | messages] = state.messages
-    :ok = state.store.save(state.agent_id, %{messages: messages, bindings: state.bindings})
+    :ok = state.store.save(state.agent_id, %State{messages: messages, bindings: state.bindings})
     state
   end
 
-  # Status is written outside the turn's save/persist path: a crash between
-  # the :running write and the :idle write leaves 'running' in the store,
-  # which consumers read as "crashed mid-turn" under a dead pid.
-  defp save_status(%{store: nil}, _status), do: :ok
+  defp persist(state, {:metadata, parent_agent_id}) do
+    :ok =
+      state.store.save(
+        state.agent_id,
+        %Metadata{
+          agent_module: state.agent_module,
+          parent_agent_id: parent_agent_id,
+          started_at: System.system_time(:millisecond)
+        }
+      )
 
-  defp save_status(state, status) do
-    if Code.ensure_loaded?(state.store) and function_exported?(state.store, :save_status, 2) do
-      state.store.save_status(state.agent_id, status)
-    end
-
-    :ok
+    state
   end
 
-  defp save_run(nil, _agent_id, _metadata), do: :ok
-
-  defp save_run(store, agent_id, metadata) do
-    if Code.ensure_loaded?(store) and function_exported?(store, :save_run, 2) do
-      store.save_run(agent_id, metadata)
-    else
-      Logger.warning(
-        "Store #{inspect(store)} does not implement save_run/2; run metadata not persisted"
-      )
-    end
-
-    :ok
+  # A crash between the :running write and :idle write leaves `:running` in
+  # the store, which consumers read as "crashed mid-turn" under a dead pid.
+  defp persist(state, {:status, status}) when status in [:running, :idle] do
+    :ok = state.store.save(state.agent_id, {:status, status})
+    state
   end
 
   defp generate_id, do: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)

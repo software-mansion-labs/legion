@@ -33,7 +33,7 @@ defmodule Legion.Executor do
 
   @doc """
   Builds a conversation message stamped with its `:type` and creation time
-  (`:at`, milliseconds). The extra keys ride along into persisted snapshots so
+  (`:at`, milliseconds). The extra keys ride along into persisted state so
   consumers (e.g. LegionWeb) can classify messages without parsing content;
   ReqLLM ignores them.
   """

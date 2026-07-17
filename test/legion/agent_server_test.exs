@@ -4,6 +4,8 @@ defmodule Legion.AgentServerTest do
 
   import ExUnit.CaptureLog
 
+  alias Legion.Store.Conversation
+  alias Legion.Store.Conversation.{Metadata, State}
   alias Legion.Test.Support.MathAgent
   alias ReqLLM.Message.ContentPart
 
@@ -418,20 +420,46 @@ defmodule Legion.AgentServerTest do
 
     def start_link, do: Agent.start_link(fn -> %{} end, name: __MODULE__)
 
-    def load(agent_id), do: Agent.get(__MODULE__, &Map.fetch(&1, agent_id))
-
-    def save(agent_id, snapshot) do
-      Agent.update(__MODULE__, &Map.put(&1, agent_id, snapshot))
-    end
-
-    def save_run(agent_id, metadata) do
-      Agent.update(__MODULE__, &Map.put(&1, {:run, agent_id}, metadata))
-    end
-
-    def save_status(agent_id, status) do
-      Agent.update(__MODULE__, fn state ->
-        Map.update(state, {:statuses, agent_id}, [status], &[status | &1])
+    @impl Legion.Store
+    def get(agent_id) do
+      Agent.get(__MODULE__, fn state ->
+        case Map.fetch(state, agent_id) do
+          {:ok, conversation} -> {:ok, conversation}
+          :error -> :error
+        end
       end)
+    end
+
+    def load(agent_id) do
+      case get(agent_id) do
+        {:ok, %Conversation{state: state}} when not is_nil(state) -> {:ok, state}
+        _ -> :error
+      end
+    end
+
+    @impl Legion.Store
+    def save(agent_id, %State{} = snapshot) do
+      update_conversation(agent_id, &%{&1 | state: snapshot})
+    end
+
+    def save(agent_id, %Metadata{} = metadata) do
+      update_conversation(agent_id, &%{&1 | metadata: metadata})
+    end
+
+    def save(agent_id, {:status, status}) do
+      Agent.update(__MODULE__, fn state ->
+        state
+        |> Map.update({:statuses, agent_id}, [status], &[status | &1])
+        |> Map.update(
+          agent_id,
+          %Conversation{agent_id: agent_id, status: status},
+          fn conversation ->
+            %{conversation | status: status}
+          end
+        )
+      end)
+
+      :ok
     end
 
     def statuses(agent_id) do
@@ -440,16 +468,28 @@ defmodule Legion.AgentServerTest do
     end
 
     def get_run(agent_id) do
-      case Agent.get(__MODULE__, &Map.get(&1, {:run, agent_id})) do
-        nil -> nil
-        metadata -> Map.put(metadata, :agent_id, agent_id)
+      case get(agent_id) do
+        {:ok, %Conversation{metadata: nil}} -> nil
+        {:ok, %Conversation{metadata: metadata}} -> Map.put(metadata, :agent_id, agent_id)
+        :error -> nil
       end
     end
 
     def runs do
       Agent.get(__MODULE__, fn state ->
-        for {{:run, agent_id}, metadata} <- state, do: Map.put(metadata, :agent_id, agent_id)
+        for {agent_id, %Conversation{metadata: metadata}} <- state,
+            is_binary(agent_id),
+            not is_nil(metadata),
+            do: Map.put(metadata, :agent_id, agent_id)
       end)
+    end
+
+    defp update_conversation(agent_id, update) do
+      Agent.update(__MODULE__, fn state ->
+        Map.update(state, agent_id, update.(%Conversation{agent_id: agent_id}), update)
+      end)
+
+      :ok
     end
   end
 
