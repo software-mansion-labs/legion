@@ -180,6 +180,25 @@ defmodule Legion.Executor do
     )
   end
 
+  defp checkpoint!(config, messages, bindings, execution) do
+    case config[:checkpoint] do
+      nil ->
+        :ok
+
+      callback ->
+        try do
+          :ok =
+            callback.(%{
+              messages: messages,
+              bindings: bindings,
+              execution: execution
+            })
+        rescue
+          error -> exit({:checkpoint_persistence_failed, error})
+        end
+    end
+  end
+
   defp handle_action(
          _agent,
          messages,
@@ -214,6 +233,15 @@ defmodule Legion.Executor do
 
         messages =
           messages ++ [message(:eval_result, format_result(result, new_bindings, config))]
+
+        execution =
+          if eval == "eval_and_continue" do
+            %{phase: :awaiting_llm, iteration: i + 1, retries: 0}
+          else
+            %{phase: :completing, iteration: i, retries: 0}
+          end
+
+        checkpoint!(config, messages, new_bindings, execution)
 
         if eval == "eval_and_continue",
           do: loop(agent, messages, config, i + 1, 0, new_bindings),
@@ -275,7 +303,15 @@ defmodule Legion.Executor do
             )
           ]
 
-      loop(agent_module, messages, config, iteration, retries + 1, bindings)
+      next_retries = retries + 1
+
+      checkpoint!(config, messages, bindings, %{
+        phase: :awaiting_llm,
+        iteration: iteration,
+        retries: next_retries
+      })
+
+      loop(agent_module, messages, config, iteration, next_retries, bindings)
     end
   end
 

@@ -61,6 +61,16 @@ defmodule Legion.AgentServerTest do
      }}
   end
 
+  defp llm_eval_continue_response(code) do
+    {:ok,
+     %ReqLLM.Response{
+       id: "test",
+       model: "test",
+       context: nil,
+       object: %{"action" => "eval_and_continue", "code" => code, "result" => ""}
+     }}
+  end
+
   describe "get_messages/1" do
     test "returns conversation history from a running agent" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -500,6 +510,24 @@ defmodule Legion.AgentServerTest do
     end
   end
 
+  defmodule StepMemoryStore do
+    @behaviour Legion.Store
+
+    alias Legion.AgentServerTest.MemoryStore
+
+    @impl Legion.Store
+    def persistence_frequency, do: :step
+
+    @impl Legion.Store
+    def get(agent_id), do: MemoryStore.get(agent_id)
+
+    @impl Legion.Store
+    def list(limit), do: MemoryStore.list(limit)
+
+    @impl Legion.Store
+    def save(payload), do: MemoryStore.save(payload)
+  end
+
   describe "persistence" do
     setup do
       start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
@@ -640,6 +668,148 @@ defmodule Legion.AgentServerTest do
               %Payload{
                 conversation_state: %{bindings: [x: 42]}
               }} = MemoryStore.get("conversation-bindings")
+    end
+
+    test "a :step store persists a complete eval_and_continue checkpoint" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> llm_eval_continue_response("x = 42")
+          2 -> llm_response("done")
+        end
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-continue")
+
+      assert {:ok, "done"} = Legion.call(pid, "compute")
+
+      [_started, running, checkpoint, completed] = MemoryStore.writes("step-continue")
+
+      assert %Payload{
+               status: :running,
+               conversation_state: %{messages: [%{type: :user}], bindings: []}
+             } = running
+
+      assert %Payload{
+               status: nil,
+               conversation_state: %{
+                 messages: [%{type: :user}, %{type: :assistant}, %{type: :eval_result}],
+                 bindings: [x: 42],
+                 execution: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+               }
+             } = checkpoint
+
+      assert %Payload{status: :idle, conversation_state: final_state} = completed
+      assert final_state.bindings == []
+      refute Map.has_key?(final_state, :execution)
+    end
+
+    test "a :step store persists eval_and_complete before the final snapshot" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("1 + 1")
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-complete")
+
+      assert {:ok, 2} = Legion.call(pid, "compute")
+
+      [_started, _running, checkpoint, completed] = MemoryStore.writes("step-complete")
+
+      assert %Payload{
+               status: nil,
+               conversation_state: %{
+                 execution: %{phase: :completing, iteration: 0, retries: 0}
+               }
+             } = checkpoint
+
+      assert %Payload{status: :idle, conversation_state: final_state} = completed
+      refute Map.has_key?(final_state, :execution)
+    end
+
+    test "a :step store persists retry state after an error message" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> llm_eval_response("raise \"boom\"")
+          2 -> llm_response("recovered")
+        end
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-retry")
+      assert {:ok, "recovered"} = Legion.call(pid, "compute")
+
+      [_started, _running, checkpoint, _completed] = MemoryStore.writes("step-retry")
+
+      assert %Payload{
+               status: nil,
+               conversation_state: %{
+                 messages: messages,
+                 bindings: [],
+                 execution: %{phase: :awaiting_llm, iteration: 0, retries: 1}
+               }
+             } = checkpoint
+
+      assert List.last(messages).type == :error
+    end
+
+    test "a :step store retains conversation bindings in the final snapshot" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("x = 42")
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(ConversationBindingsAgent,
+          store: StepMemoryStore,
+          agent_id: "step-conversation-bindings"
+        )
+
+      assert {:ok, 42} = Legion.call(pid, "compute")
+
+      [_started, _running, checkpoint, completed] =
+        MemoryStore.writes("step-conversation-bindings")
+
+      assert checkpoint.conversation_state.bindings == [x: 42]
+      assert completed.conversation_state.bindings == [x: 42]
+    end
+
+    test "a :step store persists empty iteration-scoped bindings" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("x = 42")
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(MathAgent,
+          store: StepMemoryStore,
+          agent_id: "step-iteration-bindings",
+          binding_scope: :iteration
+        )
+
+      assert {:ok, 42} = Legion.call(pid, "compute")
+
+      [_started, _running, checkpoint, completed] =
+        MemoryStore.writes("step-iteration-bindings")
+
+      assert checkpoint.conversation_state.bindings == []
+      assert completed.conversation_state.bindings == []
+    end
+
+    test "a :step store does not add a checkpoint for return" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("done")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-return")
+      assert {:ok, "done"} = Legion.call(pid, "compute")
+
+      assert [_started, _running, _completed] = MemoryStore.writes("step-return")
     end
 
     test "restores the conversation under a fresh system prompt after a restart" do

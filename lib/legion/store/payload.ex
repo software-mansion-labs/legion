@@ -14,9 +14,15 @@ defmodule Legion.Store.Payload do
   ]
 
   @type status :: :idle | :running
+  @type execution :: %{
+          phase: :awaiting_llm | :completing,
+          iteration: non_neg_integer(),
+          retries: non_neg_integer()
+        }
   @type state :: %{
-          messages: [map()],
-          bindings: keyword()
+          required(:messages) => [map()],
+          required(:bindings) => keyword(),
+          optional(:execution) => execution()
         }
   @type t :: %__MODULE__{
           agent_id: Legion.Store.agent_id(),

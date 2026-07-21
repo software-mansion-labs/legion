@@ -10,11 +10,19 @@ defmodule Legion.AgentServer do
 
   require Logger
 
-  alias Legion.{Executor, Telemetry}
+  alias Legion.{Executor, Store, Telemetry}
   alias Legion.Store.Payload
   alias ReqLLM.Message.ContentPart
 
-  defstruct [:agent_module, :messages, :config, :store, :agent_id, bindings: []]
+  defstruct [
+    :agent_module,
+    :messages,
+    :config,
+    :store,
+    :agent_id,
+    :persistence_frequency,
+    bindings: []
+  ]
 
   # Client API
 
@@ -31,10 +39,16 @@ defmodule Legion.AgentServer do
     end
 
     agent_id = agent_id || generate_id()
+    persistence_frequency = Store.persistence_frequency(store)
 
     gen_opts = if name, do: [name: name], else: []
     config = resolve_config(agent_module, opts)
-    GenServer.start_link(__MODULE__, {agent_module, config, store, agent_id}, gen_opts)
+
+    GenServer.start_link(
+      __MODULE__,
+      {agent_module, config, store, agent_id, persistence_frequency},
+      gen_opts
+    )
   end
 
   def call(agent, message, timeout \\ :infinity) do
@@ -56,7 +70,7 @@ defmodule Legion.AgentServer do
   # Server callbacks
 
   @impl true
-  def init({agent_module, config, store, agent_id}) do
+  def init({agent_module, config, store, agent_id, persistence_frequency}) do
     parent_agent_id = Vault.get(:agent_id)
 
     Vault.unsafe_put(:agent_id, agent_id)
@@ -92,6 +106,7 @@ defmodule Legion.AgentServer do
       config: config,
       store: store,
       agent_id: agent_id,
+      persistence_frequency: persistence_frequency,
       bindings: saved_bindings
     }
 
@@ -159,6 +174,16 @@ defmodule Legion.AgentServer do
       |> Map.update!(:messages, &(&1 ++ [Executor.message(:user, content)]))
       |> persist([:conversation_state, status: :running])
 
+    checkpoint =
+      if state.persistence_frequency == :step do
+        fn checkpoint ->
+          persist(state, [{:conversation_state, checkpoint}])
+          :ok
+        end
+      end
+
+    executor_config = Map.put(state.config, :checkpoint, checkpoint)
+
     {status, value, final_messages, final_bindings} =
       Telemetry.span(
         [:legion, :agent, :message],
@@ -170,7 +195,7 @@ defmodule Legion.AgentServer do
           initial_bindings = if conversation_scope?, do: state.bindings, else: []
 
           {status, value, messages, bindings} =
-            result = Executor.run(state.agent_module, messages, state.config, initial_bindings)
+            result = Executor.run(state.agent_module, messages, executor_config, initial_bindings)
 
           iterations = Enum.count(messages, &(&1[:role] == "assistant")) - prev_count
           {result, %{iterations: iterations, status: status, result: value, bindings: bindings}}
@@ -198,6 +223,9 @@ defmodule Legion.AgentServer do
       :conversation_state, payload ->
         %{payload | conversation_state: persisted_conversation_state(state)}
 
+      {:conversation_state, checkpoint}, payload ->
+        %{payload | conversation_state: persisted_conversation_state(checkpoint)}
+
       {field, value}, payload
       when field in [:agent_module, :parent_agent_id, :status, :started_at] ->
         Map.put(payload, field, value)
@@ -207,10 +235,18 @@ defmodule Legion.AgentServer do
     end)
   end
 
-  defp persisted_conversation_state(state) do
+  defp persisted_conversation_state(%__MODULE__{} = state) do
     [%{role: "system"} | messages] = state.messages
 
     %{messages: messages, bindings: state.bindings}
+  end
+
+  defp persisted_conversation_state(%{
+         messages: [%{role: "system"} | messages],
+         bindings: bindings,
+         execution: execution
+       }) do
+    %{messages: messages, bindings: bindings, execution: execution}
   end
 
   defp generate_id, do: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)

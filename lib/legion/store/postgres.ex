@@ -2,13 +2,19 @@ defmodule Legion.Store.Postgres do
   @moduledoc """
   A ready-made `Legion.Store` backed by Postgres, through your existing Ecto repo.
 
-  Legion does not depend on Ecto - the generated store only calls
-  `repo.query!/2` at runtime, so it works with any `Ecto.Repo` on
-  `Ecto.Adapters.Postgres` that your application already runs.
+  Legion depends on Ecto. The generated store defines an `Ecto.Schema` and
+  uses your application's existing `Ecto.Repo` for reads and partial upserts.
+  The repo must use `Ecto.Adapters.Postgres`.
 
   ## Usage
 
-  Define a store module:
+  Define a Postgres-backed Ecto repo and a store module that uses it:
+
+      defmodule MyApp.Repo do
+        use Ecto.Repo,
+          otp_app: :my_app,
+          adapter: Ecto.Adapters.Postgres
+      end
 
       defmodule MyApp.AgentStore do
         use Legion.Store.Postgres, repo: MyApp.Repo
@@ -31,27 +37,32 @@ defmodule Legion.Store.Postgres do
 
     - `:repo` (required) - your Ecto repo module
     - `:table` - the table name, defaults to `"legion_agents"`
+    - `:persistence_frequency` - `:turn` (default) or `:step`
+
+  To persist intermediate eval results and recoverable errors:
+
+      defmodule MyApp.AgentStore do
+        use Legion.Store.Postgres,
+          repo: MyApp.Repo,
+          persistence_frequency: :step
+      end
 
   Agent ids must be strings. Snapshots are stored as `:erlang.term_to_binary/1`
   blobs - readable only from Elixir, one row per conversation, upserted on
-  every turn.
+  every save. Step snapshots therefore require no additional migration.
 
-  The store also implements `c:Legion.Store.save_run/2`, so the same row
-  carries the conversation's identity: `agent_module` (in `inspect/1` form,
-  e.g. `"MyApp.ResearchAgent"`), `parent_agent_id` linking a sub-agent to the
-  conversation that spawned it, and `started_at` in milliseconds (last start
-  wins). `snapshot` is null until the conversation's first turn completes;
-  `parent_agent_id` is kept once set, so resuming from elsewhere does not
-  reparent the conversation.
+  `c:Legion.Store.save/1` performs partial upserts, so the same row carries the
+  conversation state and identity: `agent_module` (in `inspect/1` form, e.g.
+  `"MyApp.ResearchAgent"`), `parent_agent_id` linking a sub-agent to the
+  conversation that spawned it, and `started_at` in milliseconds. Omitted
+  payload fields preserve their existing values.
 
-  `c:Legion.Store.save_status/2` is implemented as well: the row's `status`
-  flips to `'running'` when a turn starts and back to `'idle'` when it
-  completes (`save_run` resets it to `'idle'` on start), so consumers can
-  identify conversations that were mid-turn when persistence last observed
-  them.
+  The row's `status` flips to `'running'` when a turn starts and back to
+  `'idle'` when it completes. Step writes update only the conversation state,
+  leaving the running status unchanged.
 
-  `c:Legion.Store.list_runs/1` and `c:Legion.Store.get_run/1` are implemented
-  too, so persisted conversations can be read back into a view of past runs.
+  `c:Legion.Store.list/1` and `c:Legion.Store.get/1` read persisted
+  conversations back from the same table.
 
   The migration also installs a trigger that `pg_notify`s the table's channel
   (the table name) with the `agent_id` on every insert or update, so
@@ -63,6 +74,7 @@ defmodule Legion.Store.Postgres do
   defmacro __using__(opts) do
     repo = Keyword.fetch!(opts, :repo)
     table = Keyword.get(opts, :table, "legion_agents")
+    persistence_frequency = Keyword.get(opts, :persistence_frequency, :turn)
 
     quote do
       @behaviour Legion.Store
@@ -87,6 +99,9 @@ defmodule Legion.Store.Postgres do
           field(:updated_at, :utc_datetime_usec)
         end
       end
+
+      @impl Legion.Store
+      def persistence_frequency, do: unquote(persistence_frequency)
 
       @impl Legion.Store
       def get(agent_id) when is_binary(agent_id) do
@@ -173,6 +188,7 @@ defmodule Legion.Store.Postgres do
       messages: Map.get(state, :messages, []),
       bindings: Map.get(state, :bindings, [])
     }
+    |> Map.merge(Map.take(state, [:execution]))
   end
 
   defp decode_status("running"), do: :running

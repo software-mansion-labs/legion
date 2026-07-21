@@ -45,9 +45,20 @@ defmodule Legion.Store.PostgresTest do
     use Legion.Store.Postgres, repo: Legion.Store.PostgresTest.FakeRepo
   end
 
+  defmodule StepStore do
+    use Legion.Store.Postgres,
+      repo: Legion.Store.PostgresTest.FakeRepo,
+      persistence_frequency: :step
+  end
+
   setup do
     start_supervised!(%{id: FakeRepo, start: {FakeRepo, :start_link, []}})
     :ok
+  end
+
+  test "generated stores expose their configured persistence frequency" do
+    assert Legion.Store.persistence_frequency(Store) == :turn
+    assert Legion.Store.persistence_frequency(StepStore) == :step
   end
 
   test "save/1 fully inserts every payload field" do
@@ -72,6 +83,23 @@ defmodule Legion.Store.PostgresTest do
 
     assert :ok = Store.save(payload)
     assert {:ok, ^payload} = Store.get("state-only")
+  end
+
+  test "save/1 round trips step execution state" do
+    execution = %{phase: :awaiting_llm, iteration: 2, retries: 1}
+
+    payload = %Payload{
+      agent_id: "step-state",
+      status: :running,
+      conversation_state: %{
+        messages: [%{role: "user", content: "result"}],
+        bindings: [x: 42],
+        execution: execution
+      }
+    }
+
+    assert :ok = Store.save(payload)
+    assert {:ok, ^payload} = Store.get("step-state")
   end
 
   test "save/1 partial upsert preserves omitted fields and advances updated_at" do

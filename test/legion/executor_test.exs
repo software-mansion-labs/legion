@@ -76,6 +76,13 @@ defmodule Legion.ExecutorTest do
     {:ok, %ReqLLM.Response{id: "test", model: "test", context: nil, object: object}}
   end
 
+  defp executor_messages(message) do
+    [
+      Legion.Executor.message(:system, "system"),
+      Legion.Executor.message(:user, message)
+    ]
+  end
+
   describe "run/4" do
     test "returns result for return action" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -177,6 +184,144 @@ defmodule Legion.ExecutorTest do
       end)
 
       assert {:ok, "ok"} = Legion.execute(MathAgent, "recover")
+    end
+  end
+
+  describe "checkpoints" do
+    test "emits complete checkpoints for continuing and completing eval results" do
+      test_pid = self()
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 ->
+            response(%{
+              "action" => "eval_and_continue",
+              "code" => "x = 10",
+              "result" => ""
+            })
+
+          2 ->
+            response(%{
+              "action" => "eval_and_complete",
+              "code" => "x * 2",
+              "result" => ""
+            })
+        end
+      end)
+
+      checkpoint = fn state ->
+        send(test_pid, {:checkpoint, state})
+        :ok
+      end
+
+      assert {:ok, 20, _messages, _bindings} =
+               Legion.Executor.run(
+                 MathAgent,
+                 executor_messages("compute"),
+                 %{checkpoint: checkpoint}
+               )
+
+      assert_received {:checkpoint,
+                       %{
+                         messages: continuing_messages,
+                         bindings: [x: 10],
+                         execution: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+                       }}
+
+      assert List.last(continuing_messages).type == :eval_result
+
+      assert_received {:checkpoint,
+                       %{
+                         messages: completing_messages,
+                         bindings: [x: 10],
+                         execution: %{phase: :completing, iteration: 1, retries: 0}
+                       }}
+
+      assert List.last(completing_messages).type == :eval_result
+    end
+
+    test "emits the current counters after a recoverable error" do
+      test_pid = self()
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 ->
+            response(%{
+              "action" => "eval_and_complete",
+              "code" => "raise \"boom\"",
+              "result" => ""
+            })
+
+          2 ->
+            response(%{"action" => "return", "code" => "", "result" => "recovered"})
+        end
+      end)
+
+      checkpoint = fn state ->
+        send(test_pid, {:checkpoint, state})
+        :ok
+      end
+
+      assert {:ok, "recovered", _messages, []} =
+               Legion.Executor.run(
+                 MathAgent,
+                 executor_messages("recover"),
+                 %{checkpoint: checkpoint}
+               )
+
+      assert_received {:checkpoint,
+                       %{
+                         messages: messages,
+                         bindings: [],
+                         execution: %{phase: :awaiting_llm, iteration: 0, retries: 1}
+                       }}
+
+      assert List.last(messages).type == :error
+      refute_received {:checkpoint, _other}
+    end
+
+    test "does not checkpoint a return action" do
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        response(%{"action" => "return", "code" => "", "result" => "done"})
+      end)
+
+      assert {:ok, "done", _messages, []} =
+               Legion.Executor.run(
+                 MathAgent,
+                 executor_messages("finish"),
+                 %{checkpoint: fn state -> send(test_pid, {:checkpoint, state}) end}
+               )
+
+      refute_received {:checkpoint, _state}
+    end
+
+    test "checkpoint failure exits before the next LLM request" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+        response(%{"action" => "eval_and_continue", "code" => "1 + 1", "result" => ""})
+      end)
+
+      reason =
+        catch_exit(
+          Legion.Executor.run(
+            MathAgent,
+            executor_messages("compute"),
+            %{checkpoint: fn _state -> :error end}
+          )
+        )
+
+      assert {:checkpoint_persistence_failed, %MatchError{term: :error}} = reason
+      assert :counters.get(call_count, 1) == 1
     end
   end
 
