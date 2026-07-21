@@ -4,8 +4,7 @@ defmodule Legion.AgentServerTest do
 
   import ExUnit.CaptureLog
 
-  alias Legion.Store.Conversation
-  alias Legion.Store.Conversation.{Metadata, State}
+  alias Legion.Store.Payload
   alias Legion.Test.Support.MathAgent
   alias ReqLLM.Message.ContentPart
 
@@ -421,75 +420,83 @@ defmodule Legion.AgentServerTest do
     def start_link, do: Agent.start_link(fn -> %{} end, name: __MODULE__)
 
     @impl Legion.Store
-    def get(agent_id) do
+    def get(agent_id), do: Agent.get(__MODULE__, &Map.get(&1, agent_id, :error))
+
+    @impl Legion.Store
+    def list(limit) do
       Agent.get(__MODULE__, fn state ->
-        case Map.fetch(state, agent_id) do
-          {:ok, conversation} -> {:ok, conversation}
-          :error -> :error
-        end
+        state
+        |> Map.values()
+        |> Enum.flat_map(fn
+          {:ok, %Payload{} = payload} -> [payload]
+          _ -> []
+        end)
+        |> Enum.take(limit)
       end)
     end
 
     def load(agent_id) do
       case get(agent_id) do
-        {:ok, %Conversation{state: state}} when not is_nil(state) -> {:ok, state}
+        {:ok, %Payload{conversation_state: state}} when not is_nil(state) -> {:ok, state}
         _ -> :error
       end
     end
 
     @impl Legion.Store
-    def save(agent_id, %State{} = snapshot) do
-      update_conversation(agent_id, &%{&1 | state: snapshot})
-    end
-
-    def save(agent_id, %Metadata{} = metadata) do
-      update_conversation(agent_id, &%{&1 | metadata: metadata})
-    end
-
-    def save(agent_id, {:status, status}) do
+    def save(%Payload{} = payload) do
       Agent.update(__MODULE__, fn state ->
-        state
-        |> Map.update({:statuses, agent_id}, [status], &[status | &1])
-        |> Map.update(
-          agent_id,
-          %Conversation{agent_id: agent_id, status: status},
-          fn conversation ->
-            %{conversation | status: status}
+        existing =
+          case Map.get(state, payload.agent_id) do
+            {:ok, stored} -> stored
+            nil -> %Payload{agent_id: payload.agent_id}
           end
-        )
+
+        merged = merge(existing, payload)
+
+        state
+        |> Map.put(payload.agent_id, {:ok, merged})
+        |> Map.update({:writes, payload.agent_id}, [payload], &[payload | &1])
       end)
 
       :ok
     end
 
-    def statuses(agent_id) do
-      Agent.get(__MODULE__, &Map.get(&1, {:statuses, agent_id}, []))
+    def save(_invalid), do: :error
+
+    def writes(agent_id) do
+      Agent.get(__MODULE__, &Map.get(&1, {:writes, agent_id}, []))
       |> Enum.reverse()
+    end
+
+    def statuses(agent_id) do
+      agent_id
+      |> writes()
+      |> Enum.map(& &1.status)
+      |> Enum.reject(&is_nil/1)
     end
 
     def get_run(agent_id) do
       case get(agent_id) do
-        {:ok, %Conversation{metadata: nil}} -> nil
-        {:ok, %Conversation{metadata: metadata}} -> Map.put(metadata, :agent_id, agent_id)
+        {:ok, %Payload{agent_module: nil}} -> nil
+        {:ok, %Payload{} = payload} -> payload
         :error -> nil
       end
     end
 
     def runs do
       Agent.get(__MODULE__, fn state ->
-        for {agent_id, %Conversation{metadata: metadata}} <- state,
-            is_binary(agent_id),
-            not is_nil(metadata),
-            do: Map.put(metadata, :agent_id, agent_id)
+        for {_agent_id, {:ok, %Payload{agent_module: agent_module} = payload}} <- state,
+            not is_nil(agent_module),
+            do: payload
       end)
     end
 
-    defp update_conversation(agent_id, update) do
-      Agent.update(__MODULE__, fn state ->
-        Map.update(state, agent_id, update.(%Conversation{agent_id: agent_id}), update)
+    defp merge(existing, incoming) do
+      Enum.reduce(Map.from_struct(incoming), existing, fn
+        {:agent_id, _agent_id}, payload -> payload
+        {_field, nil}, payload -> payload
+        {field, value}, payload -> Map.put(payload, field, value)
       end)
-
-      :ok
     end
   end
 
@@ -511,6 +518,50 @@ defmodule Legion.AgentServerTest do
 
       {:ok, _} = Legion.call(pid, "And of Germany?")
       assert MemoryStore.statuses("statuses") == [:running, :idle, :running, :idle]
+    end
+
+    test "writes the new Store payloads for a completed message" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "payloads")
+      {:ok, "Paris"} = Legion.call(pid, "What is the capital of France?")
+
+      [started, running, completed] = MemoryStore.writes("payloads")
+
+      assert %Payload{
+               agent_id: "payloads",
+               agent_module: MathAgent,
+               parent_agent_id: nil,
+               started_at: started_at,
+               status: nil,
+               conversation_state: nil
+             } = started
+
+      assert is_integer(started_at)
+
+      assert %Payload{
+               agent_id: "payloads",
+               status: :running,
+               conversation_state: %{
+                 messages: [%{role: "user", content: "What is the capital of France?"}],
+                 bindings: []
+               }
+             } = running
+
+      assert %Payload{
+               agent_id: "payloads",
+               status: :idle,
+               conversation_state: %{messages: messages, bindings: []}
+             } = completed
+
+      assert [
+               %{role: "user", content: "What is the capital of France?"},
+               %{role: "assistant"} | _
+             ] = messages
+
+      refute Enum.any?(messages, &(&1.role == "system"))
     end
 
     test "saves a snapshot before the caller receives its reply" do
@@ -570,6 +621,25 @@ defmodule Legion.AgentServerTest do
       {:ok, 42} = Legion.call(pid, "set x")
 
       assert {:ok, %{bindings: []}} = MemoryStore.load("turn-bindings")
+    end
+
+    test "persists conversation-scoped bindings in the completed payload" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("x = 42")
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(ConversationBindingsAgent,
+          store: MemoryStore,
+          agent_id: "conversation-bindings"
+        )
+
+      assert {:ok, 42} = Legion.call(pid, "set x")
+
+      assert {:ok,
+              %Payload{
+                conversation_state: %{bindings: [x: 42]}
+              }} = MemoryStore.get("conversation-bindings")
     end
 
     test "restores the conversation under a fresh system prompt after a restart" do
@@ -686,7 +756,7 @@ defmodule Legion.AgentServerTest do
 
       {:ok, revived} = Legion.resume("resume-dead", store: MemoryStore)
 
-      assert revived != pid
+      assert Legion.running?(revived)
 
       assert [
                %{role: "system"},

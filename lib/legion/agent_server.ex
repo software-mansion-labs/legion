@@ -11,8 +11,7 @@ defmodule Legion.AgentServer do
   require Logger
 
   alias Legion.{Executor, Telemetry}
-  alias Legion.Store.Conversation
-  alias Legion.Store.Conversation.{Metadata, State}
+  alias Legion.Store.Payload
   alias ReqLLM.Message.ContentPart
 
   defstruct [:agent_module, :messages, :config, :store, :agent_id, bindings: []]
@@ -80,7 +79,7 @@ defmodule Legion.AgentServer do
 
     {saved_messages, saved_bindings} =
       case store && store.get(agent_id) do
-        {:ok, %Conversation{state: %State{messages: messages, bindings: bindings}}} ->
+        {:ok, %Payload{conversation_state: %{messages: messages, bindings: bindings}}} ->
           {messages, bindings}
 
         _no_state ->
@@ -96,7 +95,12 @@ defmodule Legion.AgentServer do
       bindings: saved_bindings
     }
 
-    {:ok, persist(state, {:metadata, parent_agent_id})}
+    {:ok,
+     persist(state,
+       agent_module: state.agent_module,
+       parent_agent_id: parent_agent_id,
+       started_at: System.system_time(:millisecond)
+     )}
   end
 
   @impl true
@@ -153,8 +157,7 @@ defmodule Legion.AgentServer do
     state =
       state
       |> Map.update!(:messages, &(&1 ++ [Executor.message(:user, content)]))
-      |> persist(:state)
-      |> persist({:status, :running})
+      |> persist([:conversation_state, status: :running])
 
     {status, value, final_messages, final_bindings} =
       Telemetry.span(
@@ -178,39 +181,36 @@ defmodule Legion.AgentServer do
 
     state =
       %{state | messages: final_messages, bindings: kept_bindings}
-      |> persist(:state)
-      |> persist({:status, :idle})
+      |> persist([:conversation_state, status: :idle])
 
     {{status, value}, state}
   end
 
-  defp persist(%{store: nil} = state, _payload), do: state
+  defp persist(%{store: nil} = state, _fields), do: state
 
-  defp persist(state, :state) do
+  defp persist(state, fields) do
+    :ok = state.store.save(payload(state, fields))
+    state
+  end
+
+  defp payload(state, fields) do
+    Enum.reduce(fields, %Payload{agent_id: state.agent_id}, fn
+      :conversation_state, payload ->
+        %{payload | conversation_state: persisted_conversation_state(state)}
+
+      {field, value}, payload
+      when field in [:agent_module, :parent_agent_id, :status, :started_at] ->
+        Map.put(payload, field, value)
+
+      unknown, _payload ->
+        raise ArgumentError, "unsupported persistence field: #{inspect(unknown)}"
+    end)
+  end
+
+  defp persisted_conversation_state(state) do
     [%{role: "system"} | messages] = state.messages
-    :ok = state.store.save(state.agent_id, %State{messages: messages, bindings: state.bindings})
-    state
-  end
 
-  defp persist(state, {:metadata, parent_agent_id}) do
-    :ok =
-      state.store.save(
-        state.agent_id,
-        %Metadata{
-          agent_module: state.agent_module,
-          parent_agent_id: parent_agent_id,
-          started_at: System.system_time(:millisecond)
-        }
-      )
-
-    state
-  end
-
-  # A crash between the :running write and :idle write leaves `:running` in
-  # the store, which consumers read as "crashed mid-turn" under a dead pid.
-  defp persist(state, {:status, status}) when status in [:running, :idle] do
-    :ok = state.store.save(state.agent_id, {:status, status})
-    state
+    %{messages: messages, bindings: state.bindings}
   end
 
   defp generate_id, do: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
