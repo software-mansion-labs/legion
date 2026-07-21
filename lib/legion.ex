@@ -174,8 +174,15 @@ defmodule Legion do
               "no run recorded for agent_id #{inspect(agent_id)} in #{inspect(store)}"
 
     case lookup(agent_id) do
-      {:ok, pid} -> {:ok, pid}
-      :error -> start_link(run.agent_module, Keyword.put(opts, :agent_id, agent_id))
+      {:ok, pid} ->
+        if running?(pid) do
+          {:ok, pid}
+        else
+          start_link(run.agent_module, Keyword.put(opts, :agent_id, agent_id))
+        end
+
+      :error ->
+        start_link(run.agent_module, Keyword.put(opts, :agent_id, agent_id))
     end
   end
 
