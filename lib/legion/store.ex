@@ -8,14 +8,14 @@ defmodule Legion.Store do
       {:ok, pid} = Legion.start_link(AssistantAgent, store: MyApp.AgentStore, agent_id: "user_42")
 
   On start, the agent calls `c:get/1` and resumes from the returned
-  `Legion.Store.Conversation.State` if one exists. The system prompt is
-  regenerated fresh on every start, so prompt or tool changes apply to
-  restored conversations.
+  `Legion.Store.Payload` when it has a `:conversation_state`. The system prompt
+  is regenerated for every start, so prompt and tool changes apply to restored
+  conversations.
 
-  After every completed turn, the agent calls `c:save/2` with a
-  `Legion.Store.Conversation.State` **before** replying to the caller. A reply
-  is a commit receipt: any turn a caller observed survives a crash, restart,
-  or deploy. A crash mid-turn rolls back to the last completed turn.
+  After every completed turn, the agent calls `c:save/1` with a payload before
+  replying to the caller. A reply is a commit receipt: any observed turn
+  survives a crash, restart, or deploy. A crash mid-turn rolls back to the last
+  completed turn.
 
   For Postgres users there is a ready-made adapter - see `Legion.Store.Postgres`:
 
@@ -51,15 +51,14 @@ defmodule Legion.Store do
 
   ## Required persistence
 
-  Stores must implement `c:get/1` and `c:save/2`.
+  Stores must implement `c:get/1` and `c:save/1`.
 
-  Stores must accept two required save payloads:
-
-    - `Legion.Store.Conversation.State`, which holds the conversation
-      `:messages` (without the system prompt) and the `:bindings` from
-      evaluated code (relevant with `binding_scope: :conversation`)
-    - `{:status, :running | :idle}`, which records whether the agent is
-      mid-turn
+  `c:save/1` receives a `Legion.Store.Payload`. Its `:conversation_state` is a
+  map containing the conversation's `:messages` (without the system prompt)
+  and `:bindings` from evaluated code (relevant with
+  `binding_scope: :conversation`). `:status` records whether the agent is
+  mid-turn. The payload also carries the agent module, parent conversation, and
+  start time when those values are known.
 
   Each message carries a `:type` (`:user`, `:assistant`, `:eval_result`, or
   `:error`) and an `:at` timestamp in milliseconds, so consumers can classify
@@ -68,22 +67,11 @@ defmodule Legion.Store do
   serialization, so keep conversation-scoped variables to plain data if you
   persist agents.
 
-  ## Optional persistence
+  `use Legion.Store` provides a default no-op `save/1` that logs a warning.
+  Override it for durable persistence.
 
-  Stores may also accept `Legion.Store.Conversation.Metadata` through
-  `c:save/2` to record which agent module ran, under which parent
-  conversation, and when.
-
-  `use Legion.Store` provides default no-op `save/2` clauses for state,
-  metadata, and status payloads. They log a warning and return `:ok`, so a
-  store can opt into only the payloads it persists without breaking agent
-  execution. Override `save/2` for durable persistence.
-
-  Because metadata persistence is optional, conversations returned from
-  `c:get/1` or `c:list/1` may have `metadata: nil`. `status` may also be nil
-  for persisted conversations created before status was recorded. Because a
-  store may record metadata or status before any conversation state is saved,
-  `state` may also be nil.
+  Payload fields other than `:agent_id` may be nil. A store can therefore
+  persist identity or status before a conversation state exists.
 
   ## Reading conversations
 
@@ -95,59 +83,18 @@ defmodule Legion.Store do
   alone.
   """
 
-  alias Legion.Store.Conversation
-  alias Legion.Store.Conversation.{Metadata, State}
+  alias Legion.Store.Payload
 
   @type agent_id :: term()
-  @type status :: Conversation.status()
-  @type conversation :: Conversation.t()
-  @type payload ::
-          State.t()
-          | Metadata.t()
-          | {:status, status()}
+  @type status :: Payload.status()
+  @type payload :: Payload.t()
 
   @doc "Returns the persisted conversation for `agent_id`, or `:error` if none exists."
-  @callback get(agent_id()) :: {:ok, conversation()} | :error
+  @callback get(agent_id()) :: {:ok, payload()} | :error
 
   @doc "Returns the newest `limit` persisted conversations, newest first."
-  @callback list(limit :: pos_integer()) :: [conversation()]
+  @callback list(limit :: pos_integer()) :: [payload()]
 
-  @doc "Saves a conversation state, status, or optional conversation metadata for `agent_id`."
-  @callback save(agent_id(), payload()) :: :ok | :error
-
-  @optional_callbacks list: 1
-
-  defmacro __using__(_opts) do
-    quote do
-      @behaviour Legion.Store
-
-      require Logger
-
-      def save(_agent_id, %Conversation.State{}) do
-        Logger.warning(
-          "Store #{inspect(__MODULE__)} does not persist conversation state; override save/2 to persist this payload"
-        )
-
-        :ok
-      end
-
-      def save(_agent_id, %Conversation.Metadata{}) do
-        Logger.warning(
-          "Store #{inspect(__MODULE__)} does not persist conversation metadata; override save/2 to persist this payload"
-        )
-
-        :ok
-      end
-
-      def save(_agent_id, {:status, status}) when status in [:running, :idle] do
-        Logger.warning(
-          "Store #{inspect(__MODULE__)} does not persist conversation status; override save/2 to persist this payload"
-        )
-
-        :ok
-      end
-
-      defoverridable save: 2
-    end
-  end
+  @doc "Saves a conversation payload."
+  @callback save(payload()) :: :ok | :error
 end

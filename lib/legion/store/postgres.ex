@@ -58,85 +58,76 @@ defmodule Legion.Store.Postgres do
   consumers can follow store changes live without polling.
   """
 
+  alias Legion.Store.Payload
+
   defmacro __using__(opts) do
     repo = Keyword.fetch!(opts, :repo)
     table = Keyword.get(opts, :table, "legion_agents")
 
-    table_columns =
-      "agent_id, agent_module, parent_agent_id, status, started_at, conversation_state"
-
-    select_sql = "SELECT #{table_columns} FROM #{table} WHERE agent_id = $1"
-
-    list_sql =
-      "SELECT #{table_columns} FROM #{table} ORDER BY updated_at DESC NULLS LAST LIMIT $1"
-
-    save_state_sql = """
-    INSERT INTO #{table} (agent_id, conversation_state, inserted_at, updated_at)
-    VALUES ($1, $2, now(), now())
-    ON CONFLICT (agent_id) DO UPDATE SET conversation_state = EXCLUDED.conversation_state, updated_at = now()
-    """
-
-    save_metadata_sql = """
-    INSERT INTO #{table} (agent_id, agent_module, parent_agent_id, started_at, inserted_at, updated_at)
-    VALUES ($1, $2, $3, $4, now(), now())
-    ON CONFLICT (agent_id) DO UPDATE
-      SET agent_module = EXCLUDED.agent_module,
-          parent_agent_id = COALESCE(#{table}.parent_agent_id, EXCLUDED.parent_agent_id),
-          started_at = EXCLUDED.started_at,
-          updated_at = now()
-    """
-
-    save_status_sql = """
-    INSERT INTO #{table} (agent_id, status, inserted_at, updated_at)
-    VALUES ($1, $2, now(), now())
-    ON CONFLICT (agent_id) DO UPDATE
-      SET status = EXCLUDED.status, updated_at = now()
-    """
-
     quote do
-      use Legion.Store
+      @behaviour Legion.Store
 
+      import Ecto.Query, only: [from: 2]
+
+      alias Legion.Store.Payload
       alias Legion.Store.Postgres
+
+      defmodule Record do
+        use Ecto.Schema
+
+        @primary_key {:agent_id, :string, autogenerate: false}
+
+        schema unquote(table) do
+          field(:agent_module, :string)
+          field(:parent_agent_id, :string)
+          field(:status, :string)
+          field(:started_at, :integer)
+          field(:conversation_state, :binary)
+          field(:inserted_at, :utc_datetime_usec)
+          field(:updated_at, :utc_datetime_usec)
+        end
+      end
 
       @impl Legion.Store
       def get(agent_id) when is_binary(agent_id) do
-        case unquote(repo).query!(unquote(select_sql), [agent_id]) do
-          %{rows: []} -> :error
-          %{rows: [row]} -> {:ok, Postgres.decode_conversation(row)}
+        case unquote(repo).get(Record, agent_id) do
+          nil -> :error
+          record -> {:ok, Postgres.decode_record(record)}
         end
       end
 
       @impl Legion.Store
       def list(limit) when is_integer(limit) and limit > 0 do
-        %{rows: rows} = unquote(repo).query!(unquote(list_sql), [limit])
-        Enum.map(rows, &Postgres.decode_conversation/1)
+        from(record in Record, order_by: [desc: record.updated_at], limit: ^limit)
+        |> unquote(repo).all()
+        |> Enum.map(&Postgres.decode_record/1)
       end
+
+      def save(map) when is_map(map) and not is_struct(map), do: :error
 
       @impl Legion.Store
-      def save(agent_id, %Legion.Store.Conversation.State{} = state) when is_binary(agent_id) do
-        unquote(repo).query!(unquote(save_state_sql), [agent_id, :erlang.term_to_binary(state)])
-        :ok
-      end
+      def save(%Payload{agent_id: nil}), do: :error
 
       @impl Legion.Store
-      def save(agent_id, %Legion.Store.Conversation.Metadata{} = metadata)
-          when is_binary(agent_id) do
-        unquote(repo).query!(
-          unquote(save_metadata_sql),
-          [agent_id] ++ Postgres.encode_metadata(metadata)
-        )
+      def save(%Payload{} = payload) do
+        attrs =
+          payload
+          |> Postgres.encode_data()
+          |> Map.reject(fn {_k, v} -> is_nil(v) end)
+          |> Map.put(:updated_at, DateTime.utc_now())
 
-        :ok
+        update_columns = attrs |> Map.delete(:agent_id) |> Map.keys()
+
+        case unquote(repo).insert_all(
+               Record,
+               [attrs],
+               conflict_target: :agent_id,
+               on_conflict: {:replace, update_columns}
+             ) do
+          {1, _} -> :ok
+          _ -> :error
+        end
       end
-
-      @impl Legion.Store
-      def save(agent_id, {:status, status})
-          when is_binary(agent_id) and status in [:running, :idle] do
-        unquote(repo).query!(unquote(save_status_sql), [agent_id, Atom.to_string(status)])
-        :ok
-      end
-
-      def save(_agent_id, _payload), do: :error
 
       @doc false
       def __repo__, do: unquote(repo)
@@ -146,49 +137,39 @@ defmodule Legion.Store.Postgres do
     end
   end
 
-  @doc false
-  def decode_conversation([
-        agent_id,
-        agent_module,
-        parent_agent_id,
-        status,
-        started_at,
-        conversation_state | _
-      ]) do
-    %Legion.Store.Conversation{
-      agent_id: agent_id,
-      metadata: decode_metadata(agent_module, parent_agent_id, started_at),
-      status: decode_status(status),
-      state: decode_state(conversation_state)
-    }
+  def encode_data(%Payload{} = payload) do
+    payload
+    |> Map.from_struct()
+    |> Map.update(:conversation_state, nil, fn state ->
+      if is_nil(state), do: nil, else: :erlang.term_to_binary(state)
+    end)
+    |> Map.update(:agent_module, nil, fn module ->
+      if is_nil(module), do: nil, else: inspect(module)
+    end)
+    |> Map.update(:status, nil, fn status ->
+      if is_nil(status), do: nil, else: Atom.to_string(status)
+    end)
   end
 
   @doc false
-  def encode_metadata(%Legion.Store.Conversation.Metadata{} = metadata) do
-    [
-      metadata.agent_module && inspect(metadata.agent_module),
-      metadata.parent_agent_id,
-      metadata.started_at
-    ]
-  end
-
-  defp decode_metadata(nil, nil, nil), do: nil
-
-  defp decode_metadata(agent_module, parent_agent_id, started_at) do
-    %Legion.Store.Conversation.Metadata{
-      agent_module: agent_module && Module.concat([agent_module]),
-      parent_agent_id: parent_agent_id,
-      started_at: started_at
+  def decode_record(record) do
+    %Payload{
+      agent_id: record.agent_id,
+      agent_module: record.agent_module && Module.concat([record.agent_module]),
+      parent_agent_id: record.parent_agent_id,
+      status: decode_status(record.status),
+      started_at: record.started_at,
+      conversation_state: decode_conversation_state(record.conversation_state)
     }
   end
 
-  defp decode_state(nil), do: nil
+  defp decode_conversation_state(nil), do: nil
 
   # sobelow_skip ["Misc.BinToTerm"]
-  defp decode_state(binary) when is_binary(binary) do
+  defp decode_conversation_state(binary) when is_binary(binary) do
     state = :erlang.binary_to_term(binary)
 
-    %Legion.Store.Conversation.State{
+    %{
       messages: Map.get(state, :messages, []),
       bindings: Map.get(state, :bindings, [])
     }

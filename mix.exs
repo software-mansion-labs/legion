@@ -67,6 +67,7 @@ defmodule Legion.MixProject do
 
   defp deps do
     [
+      {:ecto, "~> 3.13"},
       {:req_llm, "~> 1.2"},
       {:vault, "~> 0.2"},
       {:jason, "~> 1.4"},
