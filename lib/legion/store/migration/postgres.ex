@@ -32,6 +32,15 @@ defmodule Legion.Store.Migration.Postgres do
       the `:table` given to `use Legion.Store.Postgres`.
     * `:version` - the target version. `up/1` defaults to the latest version;
       `down/1` defaults to rolling back all versions.
+
+  ## Migrating Without Ecto
+
+  If your application uses something other than Ecto for migrations, be it an external system or
+  another ORM, it may be helpful to create plain SQL migrations for Oban database schema changes.
+
+  The simplest mechanism for obtaining the SQL changes is to create the migration locally and run
+  `mix ecto.migrate --log-migrations-sql`. That will log all of the generated SQL, which you can
+  then paste into your migration system of choice.
   """
 
   use Ecto.Migration
