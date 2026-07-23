@@ -56,7 +56,7 @@ defmodule Legion.MixProject do
         Legion.Store,
         Legion.Store.Payload,
         Legion.Store.Postgres,
-        Legion.Store.Postgres.Migration
+        Legion.Store.Migration.Postgres
       ],
       Runtime: [Legion.AgentServer, Legion.Executor, ~r/^Legion\.Sandbox/],
       Tools: [~r/^Legion\.Tools\./],

@@ -10,7 +10,7 @@
 - Add globally configured and per-agent stores, generated agent ids, `Legion.get_agent_id/1`, `Legion.lookup/1`, `Legion.running?/1`, and `Legion.resume/2` for identifying, finding, and restarting persisted conversations
 - Propagate stores to sub-agents and persist `parent_agent_id`, `agent_module`, and `started_at` metadata for reconstructing conversation trees
 - Add `Legion.Store.Postgres`, backed by an existing PostgreSQL Ecto repo, with partial upserts, `get/1`, `list/1`, configurable table names, configurable persistence frequency, and an optional `ecto_sql` dependency
-- Add versioned, idempotent `Legion.Store.Postgres.Migration` helpers and `pg_notify` notifications for inserts and updates; generated stores expose `__repo__/0` and `__table__/0` for database-backed consumers such as LegionWeb
+- Add versioned, idempotent `Legion.Store.Migration.Postgres` migrations with configurable table names and `pg_notify` notifications for inserts and updates; migration versions are tracked in the agents table comment; generated stores expose `__repo__/0` and `__table__/0` for database-backed consumers such as LegionWeb
 - Bump the default model from `openai:gpt-4o-mini` to `openai:gpt-5.4`
 - `Legion.Tools.HumanTool.ask/1` now raises when called under `eval_and_complete` - the turn would end as soon as the code returns, silently discarding the human's answer; the error feeds back to the model, which retries under `eval_and_continue`
 

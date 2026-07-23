@@ -2,6 +2,15 @@ Mimic.copy(ReqLLM)
 
 Legion.Telemetry.attach_default_logger()
 
+defmodule Legion.Test.Support.LegionAgentsMigration do
+  use Ecto.Migration
+
+  alias Legion.Store.Migration.Postgres
+
+  def up, do: Postgres.up()
+  def down, do: Postgres.down()
+end
+
 # Shared connection and schema for the Legion.Store.Postgres database tests.
 {:ok, _} =
   Legion.Test.Support.PostgresRepo.start_link(
@@ -12,12 +21,11 @@ Legion.Telemetry.attach_default_logger()
     database: System.get_env("POSTGRES_DB", "postgres")
   )
 
-for sql <- Legion.Store.Postgres.Migration.down_sql(1, "legion_agents") do
-  Legion.Test.Support.PostgresRepo.query!(sql)
-end
-
-for sql <- Legion.Store.Postgres.Migration.up_sql(1, "legion_agents") do
-  Legion.Test.Support.PostgresRepo.query!(sql)
-end
+Ecto.Migrator.up(
+  Legion.Test.Support.PostgresRepo,
+  20_260_723_100_815,
+  Legion.Test.Support.LegionAgentsMigration,
+  log: false
+)
 
 ExUnit.start(exclude: [:integration])
