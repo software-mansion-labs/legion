@@ -4,10 +4,13 @@
 
 ### Changes
 
-- Add `Legion.Store` behaviour for persisting conversations across restarts. Pass `store:` and `agent_id:` to `Legion.start_link/2`; snapshots (messages + bindings) are saved after every completed turn, before the caller receives its reply
-- Add `Legion.Store.Postgres`, a ready-made store adapter that reuses your Ecto repo (`use Legion.Store.Postgres, repo: MyApp.Repo`) without adding Ecto as a dependency
-- `Legion.Store.Postgres.Migration` installs a trigger that `pg_notify`s the table's channel with the agent_id on every write, and generated stores expose `__repo__/0` and `__table__/0`, so consumers (LegionWeb) can follow store changes live
-- Add optional `Legion.Store.save_status/2` callback, called with `:running` when a turn starts and `:idle` after its snapshot is saved; `Legion.Store.Postgres` implements it via a `status` column, so a `'running'` status under a dead pid identifies a conversation that crashed mid-turn
+- Add `Legion.Store` for persisting conversations across process and application restarts; stores exchange partial `Legion.Store.Payload` values containing conversation state and metadata through `get/1` and `save/1`
+- Persist the user message with `status: :running` before execution and the final conversation with `status: :idle` before replying, so a reply is a commit receipt for the completed turn
+- Add optional `persistence_frequency/0`; stores default to `:turn`, while `:step` also checkpoints intermediate eval results, recoverable errors, bindings, and executor progress. Interrupted turns are recorded but are not resumed automatically
+- Add globally configured and per-agent stores, generated agent ids, `Legion.get_agent_id/1`, `Legion.lookup/1`, `Legion.running?/1`, and `Legion.resume/2` for identifying, finding, and restarting persisted conversations
+- Propagate stores to sub-agents and persist `parent_agent_id`, `agent_module`, and `started_at` metadata for reconstructing conversation trees
+- Add `Legion.Store.Postgres`, backed by an existing PostgreSQL Ecto repo, with partial upserts, `get/1`, `list/1`, configurable table names, configurable persistence frequency, and an optional `ecto_sql` dependency
+- Add versioned, idempotent `Legion.Store.Postgres.Migration` helpers and `pg_notify` notifications for inserts and updates; generated stores expose `__repo__/0` and `__table__/0` for database-backed consumers such as LegionWeb
 - Bump the default model from `openai:gpt-4o-mini` to `openai:gpt-5.4`
 - `Legion.Tools.HumanTool.ask/1` now raises when called under `eval_and_complete` - the turn would end as soon as the code returns, silently discarding the human's answer; the error feeds back to the model, which retries under `eval_and_continue`
 

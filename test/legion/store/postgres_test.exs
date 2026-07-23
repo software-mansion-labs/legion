@@ -12,6 +12,8 @@ defmodule Legion.Store.PostgresTest do
       Agent.get(__MODULE__, &Map.get(&1.rows, agent_id))
     end
 
+    def all(_query), do: Agent.get(__MODULE__, &Map.values(&1.rows))
+
     def insert_all(_schema, [attrs], conflict_target: :agent_id, on_conflict: {:replace, columns}) do
       Agent.update(__MODULE__, fn state ->
         row =
@@ -32,7 +34,7 @@ defmodule Legion.Store.PostgresTest do
         agent_id: agent_id,
         agent_module: nil,
         parent_agent_id: nil,
-        status: nil,
+        status: "idle",
         started_at: nil,
         conversation_state: nil,
         inserted_at: nil,
@@ -81,8 +83,9 @@ defmodule Legion.Store.PostgresTest do
       conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: []}
     }
 
+    expected_payload = %{payload | status: :idle}
     assert :ok = Store.save(payload)
-    assert {:ok, ^payload} = Store.get("state-only")
+    assert {:ok, ^expected_payload} = Store.get("state-only")
   end
 
   test "save/1 round trips step execution state" do
@@ -126,7 +129,7 @@ defmodule Legion.Store.PostgresTest do
               conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
             }} = Store.get("user_42")
 
-    assert DateTime.compare(FakeRepo.run("user_42").updated_at, previous_updated_at) == :gt
+    assert NaiveDateTime.compare(FakeRepo.run("user_42").updated_at, previous_updated_at) == :gt
   end
 
   test "a payload cannot be constructed without agent_id" do

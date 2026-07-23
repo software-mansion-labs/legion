@@ -7,7 +7,7 @@ defmodule Legion.Telemetry do
   ## Agent Lifecycle Events
 
   - `[:legion, :agent, :started]` — agent process finished `init/1`
-    - Measurements: `%{system_time: integer}`
+    - Measurements: `%{system_time: NaiveDateTime.t()}`
     - Metadata: `%{agent: module, agent_id: term, parent_agent_id: term}`
     - `agent_id` names the conversation — stable across restarts, so a resumed
       conversation emits under the same id.
@@ -17,7 +17,7 @@ defmodule Legion.Telemetry do
       since GenServer does not call `terminate/2` on init failure.
 
   - `[:legion, :agent, :stopped]` — agent process terminated via `terminate/2`
-    - Measurements: `%{system_time: integer}`
+    - Measurements: `%{system_time: NaiveDateTime.t()}`
     - Metadata: `%{agent: module, agent_id: term}` (plus `parent_agent_id`
       when the parent's run is still on the process Vault)
 

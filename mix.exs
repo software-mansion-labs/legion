@@ -54,8 +54,7 @@ defmodule Legion.MixProject do
         Legion.Agent,
         Legion.Tool,
         Legion.Store,
-        Legion.Store.Conversation,
-        ~r/^Legion\.Store\.Conversation\./,
+        Legion.Store.Payload,
         Legion.Store.Postgres,
         Legion.Store.Postgres.Migration
       ],
@@ -67,7 +66,7 @@ defmodule Legion.MixProject do
 
   defp deps do
     [
-      {:ecto, "~> 3.13"},
+      {:ecto_sql, "~> 3.13", optional: true},
       {:req_llm, "~> 1.2"},
       {:vault, "~> 0.2"},
       {:jason, "~> 1.4"},

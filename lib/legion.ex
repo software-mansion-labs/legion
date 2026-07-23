@@ -105,17 +105,17 @@ defmodule Legion do
   end
 
   @doc """
-  Whether `pid` - typically the one recorded in a persisted run's metadata -
-  is alive on this node. Accepts `nil` and returns `false`.
+  Returns whether `pid` is alive on this node. Non-pid values return `false`.
 
-  A stored pid outlives the VM that wrote it, so after a restart the check is
-  best-effort: a recycled pid value can collide with an unrelated live
-  process.
+  Use `lookup/1` to resolve an `agent_id` to its currently registered process
+  before checking it.
 
   ## Examples
 
-      run = MyApp.AgentStore.get_run("user_42:chat_7")
-      Legion.running?(run.pid)
+      case Legion.lookup("user_42:chat_7") do
+        {:ok, pid} -> Legion.running?(pid)
+        :error -> false
+      end
   """
   def running?(pid) when is_pid(pid) do
     node(pid) == node() and Process.alive?(pid)
@@ -149,13 +149,14 @@ defmodule Legion do
   @doc """
   Resumes a persisted conversation.
 
-  Checks the persisted run exists, then returns the process registered for
-  `agent_id` if the agent is already running. If no process is registered,
-  starts the agent again under the same `agent_id`, so it reloads its snapshot
-  from the store. `opts` are passed through to `start_link/2`.
+  Loads the persisted conversation with `get/1` to determine its agent module,
+  then returns the process registered for `agent_id` if it is still running.
+  If no live process is registered, starts the persisted agent module under the
+  same `agent_id`, so it reloads its conversation state. `opts` are passed
+  through to `start_link/2`.
 
-  Requires a store implementing `c:Legion.Store.get_run/1` - pass `:store` or
-  configure one globally. Raises if the store has no run for `agent_id`.
+  Pass `:store` or configure one globally. Raises if `get/1` does not return a
+  `Legion.Store.Payload` containing an agent module for `agent_id`.
 
   ## Examples
 
@@ -168,21 +169,26 @@ defmodule Legion do
         raise ArgumentError,
               "resume/2 requires a :store - pass one or set `config :legion, :store, MyStore`"
 
-    run =
-      store.get_run(agent_id) ||
-        raise ArgumentError,
-              "no run recorded for agent_id #{inspect(agent_id)} in #{inspect(store)}"
+    agent_module =
+      case store.get(agent_id) do
+        {:ok, %Legion.Store.Payload{agent_module: agent_module}} when not is_nil(agent_module) ->
+          agent_module
+
+        _ ->
+          raise ArgumentError,
+                "no run recorded for agent_id #{inspect(agent_id)} in #{inspect(store)}"
+      end
 
     case lookup(agent_id) do
       {:ok, pid} ->
         if running?(pid) do
           {:ok, pid}
         else
-          start_link(run.agent_module, Keyword.put(opts, :agent_id, agent_id))
+          start_link(agent_module, Keyword.put(opts, :agent_id, agent_id))
         end
 
       :error ->
-        start_link(run.agent_module, Keyword.put(opts, :agent_id, agent_id))
+        start_link(agent_module, Keyword.put(opts, :agent_id, agent_id))
     end
   end
 

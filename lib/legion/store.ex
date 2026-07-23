@@ -7,7 +7,7 @@ defmodule Legion.Store do
 
       {:ok, pid} = Legion.start_link(AssistantAgent, store: MyApp.AgentStore, agent_id: "user_42")
 
-  On start, the agent calls `c:get/1` and resumes from the returned
+  On start, the agent calls `get/1` and resumes from the returned
   `Legion.Store.Payload` when it has a `:conversation_state`. The system prompt
   is regenerated for every start, so prompt and tool changes apply to restored
   conversations.
@@ -18,7 +18,7 @@ defmodule Legion.Store do
   restart, or deploy.
 
   A store can opt into step persistence by implementing
-  `c:persistence_frequency/0` and returning `:step`. Legion then also saves
+  `persistence_frequency/0` and returning `:step`. Legion then also saves
   after intermediate user-role messages, including eval results and recoverable
   errors. Each step save contains the complete conversation and executor state
   at that checkpoint.
@@ -66,11 +66,11 @@ defmodule Legion.Store do
   resume an existing conversation. Two agents started under the same id race onto
   the same row, so route each conversation to a single process.
 
-  ## Required persistence
+  ## Required callbacks
 
-  Stores must implement `c:get/1` and `c:save/1`.
+  Stores must implement `get/1`, `list/1`, and `save/1`.
 
-  `c:save/1` receives a `Legion.Store.Payload`. Its `:conversation_state` is a
+  `save/1` receives a `Legion.Store.Payload`. Its `:conversation_state` is a
   map containing the conversation's `:messages` (without the system prompt)
   and `:bindings` from evaluated code. Step snapshots also contain an
   `:execution` map with `:phase`, `:iteration`, and `:retries`. `:status`
@@ -101,12 +101,11 @@ defmodule Legion.Store do
 
   ## Reading conversations
 
-  `c:get/1` returns the persisted conversation for one `agent_id`, or `:error`
+  `get/1` returns the persisted conversation for one `agent_id`, or `:error`
   when the store has no row for that id.
 
-  The optional `c:list/1` callback returns persisted conversations newest first
-  for consumers that rebuild a view of past conversations from the store
-  alone.
+  `list/1` returns persisted conversations newest first for consumers that
+  rebuild a view of past conversations from the store alone.
   """
 
   alias Legion.Store.Payload

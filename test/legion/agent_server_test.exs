@@ -567,7 +567,7 @@ defmodule Legion.AgentServerTest do
                conversation_state: nil
              } = started
 
-      assert is_integer(started_at)
+      assert is_struct(started_at, NaiveDateTime)
 
       assert %Payload{
                agent_id: "payloads",
@@ -898,7 +898,7 @@ defmodule Legion.AgentServerTest do
       assert run.agent_id == "meta"
       assert run.agent_module == MathAgent
       assert run.parent_agent_id == nil
-      assert is_integer(run.started_at)
+      assert is_struct(run.started_at, NaiveDateTime)
     end
 
     test "registers the agent pid by agent_id" do

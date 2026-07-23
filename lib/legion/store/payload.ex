@@ -29,7 +29,7 @@ defmodule Legion.Store.Payload do
           agent_module: module() | nil,
           parent_agent_id: Legion.Store.agent_id() | nil,
           status: status() | nil,
-          started_at: integer() | nil,
+          started_at: NaiveDateTime.t() | nil,
           conversation_state: state() | nil
         }
 end

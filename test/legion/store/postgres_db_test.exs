@@ -3,49 +3,10 @@ defmodule Legion.Store.PostgresDbTest do
   use ExUnit.Case, async: false
 
   alias Legion.Store.Payload
-
-  defmodule Repo do
-    @columns ~w(agent_id agent_module parent_agent_id status started_at conversation_state inserted_at updated_at)a
-
-    def get(_schema, agent_id) do
-      case query!("SELECT #{columns_sql()} FROM legion_agents WHERE agent_id = $1", [agent_id]).rows do
-        [] -> nil
-        [row] -> Map.new(Enum.zip(@columns, row))
-      end
-    end
-
-    def insert_all(_schema, [attrs], conflict_target: :agent_id, on_conflict: {:replace, columns}) do
-      attrs = Map.take(attrs, [:agent_id | columns])
-      fields = Map.keys(attrs)
-      values = Enum.map(fields, &Map.fetch!(attrs, &1))
-
-      sql = """
-      INSERT INTO legion_agents (#{Enum.join(fields, ", ")})
-      VALUES (#{placeholders(length(fields))})
-      ON CONFLICT (agent_id) DO UPDATE
-      SET #{updates_sql(columns)}
-      """
-
-      %{num_rows: count} = query!(sql, values)
-      {count, nil}
-    end
-
-    def query!(sql, params), do: Postgrex.query!(:legion_store_test, sql, params)
-
-    defp columns_sql, do: Enum.join(@columns, ", ")
-
-    defp placeholders(count) do
-      1..count
-      |> Enum.map_join(", ", &"$#{&1}")
-    end
-
-    defp updates_sql(columns) do
-      Enum.map_join(columns, ", ", fn column -> "#{column} = EXCLUDED.#{column}" end)
-    end
-  end
+  alias Legion.Test.Support.PostgresRepo, as: Repo
 
   defmodule Store do
-    use Legion.Store.Postgres, repo: Legion.Store.PostgresDbTest.Repo
+    use Legion.Store.Postgres, repo: Legion.Test.Support.PostgresRepo
   end
 
   setup do
@@ -59,7 +20,7 @@ defmodule Legion.Store.PostgresDbTest do
       agent_module: Legion.Test.Support.MathAgent,
       parent_agent_id: "parent-1",
       status: :idle,
-      started_at: 123,
+      started_at: ~N[2026-01-01 00:00:00.000000],
       conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
     }
 
@@ -74,7 +35,8 @@ defmodule Legion.Store.PostgresDbTest do
     }
 
     assert :ok = Store.save(payload)
-    assert {:ok, ^payload} = Store.get("state-only")
+    assert {:ok, stored} = Store.get("state-only")
+    assert stored == %{payload | status: :idle}
   end
 
   test "save/1 partial upsert preserves omitted fields and advances updated_at" do
@@ -83,7 +45,7 @@ defmodule Legion.Store.PostgresDbTest do
       agent_module: Legion.Test.Support.MathAgent,
       parent_agent_id: "parent-1",
       status: :running,
-      started_at: 123,
+      started_at: ~N[2026-01-01 00:00:00.000000],
       conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
     }
 
@@ -100,14 +62,14 @@ defmodule Legion.Store.PostgresDbTest do
               agent_module: Legion.Test.Support.MathAgent,
               parent_agent_id: "parent-1",
               status: :idle,
-              started_at: 123,
+              started_at: ~N[2026-01-01 00:00:00.000000],
               conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
             }} = Store.get("user_42")
 
     %{rows: [[updated_at]]} =
       Repo.query!("SELECT updated_at FROM legion_agents WHERE agent_id = $1", ["user_42"])
 
-    assert DateTime.compare(updated_at, previous_updated_at) == :gt
+    assert NaiveDateTime.compare(updated_at, previous_updated_at) == :gt
   end
 
   test "a payload cannot be constructed without agent_id" do

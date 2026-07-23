@@ -77,10 +77,11 @@ defmodule Legion.AgentServer do
     Vault.unsafe_put(:parent_agent_id, parent_agent_id)
     if store, do: Vault.unsafe_put(:store, store)
 
-    Registry.register(Legion.AgentRegistry, agent_id, %{
-      parent_agent_id: parent_agent_id,
-      started_at: System.system_time(:millisecond)
-    })
+    {:ok, _} =
+      Registry.register(Legion.AgentRegistry, agent_id, %{
+        parent_agent_id: parent_agent_id,
+        started_at: NaiveDateTime.utc_now()
+      })
 
     for tool <- agent_module.tools() do
       Vault.unsafe_put(tool, agent_module.tool_config(tool))
@@ -90,7 +91,7 @@ defmodule Legion.AgentServer do
 
     Telemetry.emit(
       [:legion, :agent, :started],
-      %{system_time: System.system_time()},
+      %{system_time: NaiveDateTime.utc_now()},
       %{agent: agent_module}
     )
 
@@ -117,7 +118,7 @@ defmodule Legion.AgentServer do
      persist(state,
        agent_module: state.agent_module,
        parent_agent_id: parent_agent_id,
-       started_at: System.system_time(:millisecond)
+       started_at: NaiveDateTime.utc_now()
      )}
   end
 
@@ -125,7 +126,7 @@ defmodule Legion.AgentServer do
   def terminate(_reason, state) do
     Telemetry.emit(
       [:legion, :agent, :stopped],
-      %{system_time: System.system_time()},
+      %{system_time: NaiveDateTime.utc_now()},
       %{agent: state.agent_module}
     )
   end

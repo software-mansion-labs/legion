@@ -31,8 +31,8 @@ defmodule Legion.Store.Postgres.Migration do
       `down/1` to rolling everything back.
   """
 
-  # Legion does not depend on Ecto - these run inside the host app's
-  # migrations, where Ecto.Migration is available.
+  # Ecto SQL is optional for Legion. These helpers run inside the host
+  # application's migrations, where Ecto.Migration is available.
   @compile {:no_warn_undefined, Ecto.Migration}
 
   @default_table "legion_agents"
@@ -107,11 +107,11 @@ defmodule Legion.Store.Postgres.Migration do
         agent_id text PRIMARY KEY,
         agent_module text,
         parent_agent_id text,
-        status text,
-        started_at bigint,
+        status text NOT NULL DEFAULT 'idle',
+        started_at timestamp,
         conversation_state bytea,
-        inserted_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
+        inserted_at timestamp NOT NULL DEFAULT now(),
+        updated_at timestamp NOT NULL DEFAULT now()
       )
       """,
       """

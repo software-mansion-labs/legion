@@ -2,19 +2,14 @@ defmodule Legion.Store.Postgres do
   @moduledoc """
   A ready-made `Legion.Store` backed by Postgres, through your existing Ecto repo.
 
-  Legion depends on Ecto. The generated store defines an `Ecto.Schema` and
-  uses your application's existing `Ecto.Repo` for reads and partial upserts.
-  The repo must use `Ecto.Adapters.Postgres`.
+  The generated store uses Ecto for its schema, reads, and partial upserts.
+  Legion declares `ecto_sql` as an optional dependency; applications using
+  this adapter must provide an `Ecto.Repo` backed by `Ecto.Adapters.Postgres`
+  and include Postgrex.
 
   ## Usage
 
   Define a Postgres-backed Ecto repo and a store module that uses it:
-
-      defmodule MyApp.Repo do
-        use Ecto.Repo,
-          otp_app: :my_app,
-          adapter: Ecto.Adapters.Postgres
-      end
 
       defmodule MyApp.AgentStore do
         use Legion.Store.Postgres, repo: MyApp.Repo
@@ -51,17 +46,18 @@ defmodule Legion.Store.Postgres do
   blobs - readable only from Elixir, one row per conversation, upserted on
   every save. Step snapshots therefore require no additional migration.
 
-  `c:Legion.Store.save/1` performs partial upserts, so the same row carries the
+  `save/1` performs partial upserts, so the same row carries the
   conversation state and identity: `agent_module` (in `inspect/1` form, e.g.
   `"MyApp.ResearchAgent"`), `parent_agent_id` linking a sub-agent to the
-  conversation that spawned it, and `started_at` in milliseconds. Omitted
-  payload fields preserve their existing values.
+  conversation that spawned it, and `started_at` as a UTC `NaiveDateTime`
+  stored with microsecond precision. Omitted payload fields preserve their
+  existing values.
 
   The row's `status` flips to `'running'` when a turn starts and back to
   `'idle'` when it completes. Step writes update only the conversation state,
   leaving the running status unchanged.
 
-  `c:Legion.Store.list/1` and `c:Legion.Store.get/1` read persisted
+  `list/1` and `get/1` read persisted
   conversations back from the same table.
 
   The migration also installs a trigger that `pg_notify`s the table's channel
@@ -90,13 +86,13 @@ defmodule Legion.Store.Postgres do
         @primary_key {:agent_id, :string, autogenerate: false}
 
         schema unquote(table) do
-          field(:agent_module, :string)
-          field(:parent_agent_id, :string)
-          field(:status, :string)
-          field(:started_at, :integer)
-          field(:conversation_state, :binary)
-          field(:inserted_at, :utc_datetime_usec)
-          field(:updated_at, :utc_datetime_usec)
+          field :agent_module, :string
+          field :parent_agent_id, :string
+          field :status, :string
+          field :started_at, :naive_datetime_usec
+          field :conversation_state, :binary
+          field :inserted_at, :naive_datetime_usec
+          field :updated_at, :naive_datetime_usec
         end
       end
 
@@ -129,7 +125,7 @@ defmodule Legion.Store.Postgres do
           payload
           |> Postgres.encode_data()
           |> Map.reject(fn {_k, v} -> is_nil(v) end)
-          |> Map.put(:updated_at, DateTime.utc_now())
+          |> Map.put(:updated_at, NaiveDateTime.utc_now())
 
         update_columns = attrs |> Map.delete(:agent_id) |> Map.keys()
 
@@ -156,13 +152,13 @@ defmodule Legion.Store.Postgres do
     payload
     |> Map.from_struct()
     |> Map.update(:conversation_state, nil, fn state ->
-      if is_nil(state), do: nil, else: :erlang.term_to_binary(state)
+      if not is_nil(state), do: :erlang.term_to_binary(state)
     end)
     |> Map.update(:agent_module, nil, fn module ->
-      if is_nil(module), do: nil, else: inspect(module)
+      if not is_nil(module), do: inspect(module)
     end)
     |> Map.update(:status, nil, fn status ->
-      if is_nil(status), do: nil, else: Atom.to_string(status)
+      if not is_nil(status), do: Atom.to_string(status)
     end)
   end
 
@@ -193,5 +189,4 @@ defmodule Legion.Store.Postgres do
 
   defp decode_status("running"), do: :running
   defp decode_status("idle"), do: :idle
-  defp decode_status(nil), do: nil
 end
