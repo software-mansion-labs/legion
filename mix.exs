@@ -42,13 +42,22 @@ defmodule Legion.MixProject do
 
   def application do
     [
+      mod: {Legion.Application, []},
       extra_applications: [:logger]
     ]
   end
 
   defp groups_for_modules do
     [
-      Core: [Legion, Legion.Agent, Legion.Tool],
+      Core: [
+        Legion,
+        Legion.Agent,
+        Legion.Tool,
+        Legion.Store,
+        Legion.Store.Payload,
+        Legion.Store.Postgres,
+        Legion.Store.Migration.Postgres
+      ],
       Runtime: [Legion.AgentServer, Legion.Executor, ~r/^Legion\.Sandbox/],
       Tools: [~r/^Legion\.Tools\./],
       Internals: [Legion.AgentPrompt, Legion.SourceRegistry, Legion.Telemetry]
@@ -57,6 +66,7 @@ defmodule Legion.MixProject do
 
   defp deps do
     [
+      {:ecto_sql, "~> 3.13", optional: true},
       {:req_llm, "~> 1.2"},
       {:vault, "~> 0.2"},
       {:jason, "~> 1.4"},
@@ -64,7 +74,8 @@ defmodule Legion.MixProject do
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
-      {:mimic, "~> 1.7", only: :test}
+      {:mimic, "~> 1.7", only: :test},
+      {:postgrex, "~> 0.22", only: :test}
     ]
   end
 

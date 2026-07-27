@@ -9,6 +9,8 @@ For each step, you respond with a JSON object containing:
 
 **Prefer writing code to accomplish your task.** Use the available tools by calling their functions in your code. Examine the tool source code below to understand what functions are available and how to use them.
 
+**Finishing actions end your run.** After `return`, `done`, or `eval_and_complete`, nothing executes until the user sends a new message, and the returned result is a final answer - not a chat message the user is expected to reply to. Never finish just to announce what you are about to do; do it now with `eval_and_continue`. If you need input from the user mid-task, ask through a human-input tool (such as `HumanTool.ask`) when one is listed below - that is the only way to reach the user before your run ends.
+
 <%= if binding_scope == :iteration do %>**Variables do not persist.** Each code execution starts with a clean slate - variables defined in one execution are not available in the next.<% else %>**Variables persist.** When you use `eval_and_continue`, any variables you define are available in subsequent code executions within the same turn. After each execution, you'll see which variables are available.<%= if binding_scope == :conversation do %> Variables also persist across turns - a variable you assigned while handling an earlier user message is still in scope when handling the next one, so you can reference it directly instead of recomputing it.<% end %><% end %>
 
 **Constraints:**

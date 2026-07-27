@@ -7,22 +7,24 @@ defmodule Legion.Telemetry do
   ## Agent Lifecycle Events
 
   - `[:legion, :agent, :started]` — agent process finished `init/1`
-    - Measurements: `%{system_time: integer}`
-    - Metadata: `%{agent: module, run_id: reference, parent_run_id: reference}`
-    - `parent_run_id` is only present when the agent was started inside another
+    - Measurements: `%{system_time: NaiveDateTime.t()}`
+    - Metadata: `%{agent: module, agent_id: term, parent_agent_id: term}`
+    - `agent_id` names the conversation — stable across restarts, so a resumed
+      conversation emits under the same id.
+    - `parent_agent_id` is only present when the agent was started inside another
       agent's run. Not emitted if `init/1` itself crashes (e.g. while building
       the system prompt) — in that case `:stopped` is not emitted either,
       since GenServer does not call `terminate/2` on init failure.
 
   - `[:legion, :agent, :stopped]` — agent process terminated via `terminate/2`
-    - Measurements: `%{system_time: integer}`
-    - Metadata: `%{agent: module, run_id: reference}` (plus `parent_run_id`
+    - Measurements: `%{system_time: NaiveDateTime.t()}`
+    - Metadata: `%{agent: module, agent_id: term}` (plus `parent_agent_id`
       when the parent's run is still on the process Vault)
 
   ## Agent Message Events (spans)
 
   - `[:legion, :agent, :message, :start | :stop | :exception]` — agent handling a message
-    - Metadata includes: `agent`, `run_id`, `message`
+    - Metadata includes: `agent`, `agent_id`, `message`
     - Stop adds: `iterations` (count of assistant turns in this message),
       `status` (`:ok` or `:cancel`), `result` (the value returned, or the
       cancellation reason such as `:reached_max_iterations`), and `bindings`
@@ -31,18 +33,18 @@ defmodule Legion.Telemetry do
   ## Iteration Events (spans)
 
   - `[:legion, :iteration, :start | :stop | :exception]`
-    - Metadata includes: `agent`, `run_id`, `iteration`
+    - Metadata includes: `agent`, `agent_id`, `iteration`
     - Stop adds: `action`
 
   ## LLM Request Events (spans)
 
   - `[:legion, :llm, :request, :start | :stop | :exception]`
-    - Metadata includes: `agent`, `run_id`, `model`, `message_count`, `iteration`
+    - Metadata includes: `agent`, `agent_id`, `model`, `message_count`, `iteration`
 
   ## Sandbox Eval Events (spans)
 
   - `[:legion, :sandbox, :eval, :start | :stop | :exception]`
-    - Metadata includes: `agent`, `run_id`, `code`
+    - Metadata includes: `agent`, `agent_id`, `code`
     - Stop adds: `success`, `result` or `error`
 
   ## Default Logger
@@ -114,10 +116,10 @@ defmodule Legion.Telemetry do
   Wraps a function with `:start` / `:stop` / `:exception` telemetry events.
 
   The function should return `{result, extra_stop_metadata}`.
-  `run_id` is automatically injected from the process dictionary.
+  `agent_id` is automatically injected from the process dictionary.
   """
   def span(event_prefix, metadata, fun) when is_function(fun, 0) do
-    metadata = with_run_id(metadata)
+    metadata = with_agent_id(metadata)
     start_time = System.monotonic_time()
 
     :telemetry.execute(event_prefix ++ [:start], %{system_time: System.system_time()}, metadata)
@@ -159,16 +161,16 @@ defmodule Legion.Telemetry do
   end
 
   @doc """
-  Emits a single telemetry event. Injects `run_id` from the process dictionary.
+  Emits a single telemetry event. Injects `agent_id` from the process dictionary.
   """
   def emit(event, measurements \\ %{}, metadata) do
-    :telemetry.execute(event, measurements, with_run_id(metadata))
+    :telemetry.execute(event, measurements, with_agent_id(metadata))
   end
 
-  defp with_run_id(metadata) do
+  defp with_agent_id(metadata) do
     metadata
-    |> put_from_vault(:run_id)
-    |> put_from_vault(:parent_run_id)
+    |> put_from_vault(:agent_id)
+    |> put_from_vault(:parent_agent_id)
   end
 
   defp put_from_vault(metadata, key) do
@@ -283,7 +285,7 @@ defmodule Legion.Telemetry do
     Logger.log(level, "#{prefix} #{message}")
   end
 
-  # ANSI colors indexed by run_id hash for visual grouping
+  # ANSI colors indexed by agent_id hash for visual grouping
   @colors [
     IO.ANSI.cyan(),
     IO.ANSI.green(),
@@ -298,15 +300,15 @@ defmodule Legion.Telemetry do
   ]
 
   defp run_prefix(meta) do
-    color = color_for(meta[:run_id])
-    marker = if meta[:parent_run_id], do: "┃▸", else: "┃ "
+    color = color_for(meta[:agent_id])
+    marker = if meta[:parent_agent_id], do: "┃▸", else: "┃ "
     "#{color}#{marker}#{IO.ANSI.reset()}"
   end
 
   defp color_for(nil), do: IO.ANSI.white()
 
-  defp color_for(run_id) do
-    index = :erlang.phash2(run_id, length(@colors))
+  defp color_for(agent_id) do
+    index = :erlang.phash2(agent_id, length(@colors))
     Enum.at(@colors, index)
   end
 

@@ -11,14 +11,18 @@ defmodule Legion do
   Runs an agent on a single task and returns the result.
 
   Starts a temporary agent process, blocks until the task completes, then stops it.
+  Accepts the same `opts` as `start_link/2`, so a one-off run can resume and
+  persist a conversation by passing `:store` and `:agent_id`. Passing `:store`
+  overrides the globally configured store for this agent; see `Legion.Store`.
 
   ## Examples
 
       {:ok, summary} = Legion.execute(ResearchAgent, "Summarize the Elixir getting started guide")
       {:cancel, :reached_max_iterations} = Legion.execute(ResearchAgent, "impossible task")
+      {:ok, reply} = Legion.execute(ChatAgent, "next question", store: MyApp.AgentStore, agent_id: "user_42:chat_7")
   """
-  def execute(agent_module, task) do
-    {:ok, pid} = AgentServer.start_link(agent_module)
+  def execute(agent_module, task, opts \\ []) do
+    {:ok, pid} = AgentServer.start_link(agent_module, opts)
     result = AgentServer.call(pid, task)
     GenServer.stop(pid)
     result
@@ -29,12 +33,18 @@ defmodule Legion do
 
   ## Options
     - `:name` - register the process under a name
+    - `:store`, `:agent_id` - persist the conversation across restarts; see `Legion.Store`.
+      A store set globally with `config :legion, :store, MyApp.AgentStore` applies to
+      every agent, so you need only pass `:agent_id`. If a store is in effect but no
+      `:agent_id` is given, Legion generates one - read it back with `get_agent_id/1`.
     - Any config overrides (`:model`, `:max_iterations`, etc.)
 
   ## Examples
 
       {:ok, pid} = Legion.start_link(AssistantAgent)
       {:ok, pid} = Legion.start_link(AssistantAgent, name: MyAssistant, model: "openai:gpt-4o")
+      {:ok, pid} = Legion.start_link(ChatAgent, store: MyApp.AgentStore, agent_id: "user_42:chat_7")
+      {:ok, pid} = Legion.start_link(ChatAgent, agent_id: "user_42:chat_7")   # store from app config
   """
   def start_link(agent_module, opts \\ []) do
     AgentServer.start_link(agent_module, opts)
@@ -76,6 +86,110 @@ defmodule Legion do
   """
   def get_messages(pid) do
     AgentServer.get_messages(pid)
+  end
+
+  @doc """
+  Returns the id of a running agent. Always set - Legion generates one when
+  none is passed.
+
+  When a store is configured but you let Legion generate the id, capture it
+  with this to resume the same conversation on a later start.
+
+  ## Examples
+
+      {:ok, pid} = Legion.start_link(ChatAgent)
+      agent_id = Legion.get_agent_id(pid)
+  """
+  def get_agent_id(pid) do
+    AgentServer.get_agent_id(pid)
+  end
+
+  @doc """
+  Returns whether `pid` is alive on this node. Non-pid values return `false`.
+
+  Use `lookup/1` to resolve an `agent_id` to its currently registered process
+  before checking it.
+
+  ## Examples
+
+      case Legion.lookup("user_42:chat_7") do
+        {:ok, pid} -> Legion.running?(pid)
+        :error -> false
+      end
+  """
+  def running?(pid) when is_pid(pid) do
+    node(pid) == node() and Process.alive?(pid)
+  rescue
+    # A pid deserialized from a previous VM incarnation is not a local pid,
+    # for which Process.alive?/1 raises.
+    ArgumentError -> false
+  end
+
+  def running?(_other), do: false
+
+  @doc """
+  Looks up the live process for an agent id.
+
+  Uses `Legion.AgentRegistry` as the runtime source of truth for the
+  `agent_id -> pid` mapping. Returns `{:ok, pid}` when the agent is currently
+  registered, or `:error` when no live process is registered for `agent_id`.
+
+  ## Examples
+
+      {:ok, pid} = Legion.lookup("user_42:chat_7")
+      :error = Legion.lookup("missing_agent_id")
+  """
+  def lookup(agent_id) do
+    case Registry.lookup(Legion.AgentRegistry, agent_id) do
+      [{pid, _}] -> {:ok, pid}
+      [] -> :error
+    end
+  end
+
+  @doc """
+  Resumes a persisted conversation.
+
+  Loads the persisted conversation with `get/1` to determine its agent module,
+  then returns the process registered for `agent_id` if it is still running.
+  If no live process is registered, starts the persisted agent module under the
+  same `agent_id`, so it reloads its conversation state. `opts` are passed
+  through to `start_link/2`.
+
+  Pass `:store` or configure one globally. Raises if `get/1` does not return a
+  `Legion.Store.Payload` containing an agent module for `agent_id`.
+
+  ## Examples
+
+      {:ok, pid} = Legion.resume("user_42:chat_7")
+      {:ok, pid} = Legion.resume("user_42:chat_7", store: MyApp.AgentStore)
+  """
+  def resume(agent_id, opts \\ []) do
+    store =
+      Keyword.get(opts, :store) || Vault.get(:store) || Application.get_env(:legion, :store) ||
+        raise ArgumentError,
+              "resume/2 requires a :store - pass one or set `config :legion, :store, MyStore`"
+
+    agent_module =
+      case store.get(agent_id) do
+        {:ok, %Legion.Store.Payload{agent_module: agent_module}} when not is_nil(agent_module) ->
+          agent_module
+
+        _ ->
+          raise ArgumentError,
+                "no run recorded for agent_id #{inspect(agent_id)} in #{inspect(store)}"
+      end
+
+    case lookup(agent_id) do
+      {:ok, pid} ->
+        if running?(pid) do
+          {:ok, pid}
+        else
+          start_link(agent_module, Keyword.put(opts, :agent_id, agent_id))
+        end
+
+      :error ->
+        start_link(agent_module, Keyword.put(opts, :agent_id, agent_id))
+    end
   end
 
   @doc """

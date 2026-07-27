@@ -7,9 +7,17 @@
 
 <!-- MDOC -->
 
-An Elixir framework for building AI agents that write and execute code instead of making function calls.
+An Elixir framework for AI agents that live inside your application and act by writing code.
 
-Traditional agents call tools one at a time - fetch, wait, decide, fetch again - burning tokens and latency on every round-trip. Legion agents write Elixir code that fetches, filters, decides, and acts in a single step, running safely in a sandbox. Fewer LLM calls, smarter behavior, full language expressivity. [Why code execution beats function calling.](https://www.anthropic.com/engineering/code-execution-with-mcp)
+Legion is a runtime, not a coding assistant. No human reads, reviews, or commits the code its agents write. An agent writes Elixir the way you would write a shell one-liner: to do something, right now. Given a task, it reads your tools' source, writes a snippet that fetches, filters, decides, and acts, executes it, observes the result, and continues - all inside your running application.
+
+That single move replaces function calling. A traditional agent pays an LLM round-trip for every tool call: fetch, wait, decide, call the next one. A Legion agent collapses that loop into one evaluation, with pipelines, pattern matching, and the standard library at its disposal. Fewer LLM calls, lower latency, smarter behavior. [Why code execution beats function calling.](https://www.anthropic.com/engineering/code-execution-with-mcp)
+
+The whole framework fits in three ideas:
+
+- **Tools are plain Elixir modules.** The LLM reads their source directly - no schemas, no wrappers, no glue.
+- **Agents are BEAM processes.** Supervise them, pool them, `call` and `cast` them like GenServers.
+- **Generated code runs in a sandbox.** Dangerous constructs are blocked at the AST level; module access is allowlisted.
 
 ## Quick Start
 
@@ -85,6 +93,7 @@ A traditional agent would need a separate LLM call for each filter decision and 
 - **Tools are just modules** - `use Legion.Tool` on any module to expose it. The LLM reads your source code and calls your functions. No schemas to write, no wrappers - reuse existing app logic directly.
 - **Authorization via Vault** - Set auth context before the agent starts, validate inside tools at runtime. LLM-generated code never touches credentials. See [Vault](https://github.com/dimamik/vault).
 - **Long-lived agents** - Start agents with `Legion.start_link/2` and message them with `call/2` and `cast/2`, just like a GenServer. Variables can persist across turns with `binding_scope: :conversation`.
+- **Persistence** - Persist conversations across process and application restarts with `use Legion.Store.Postgres, repo: MyApp.Repo`, or implement `Legion.Store` for any other storage. Legion saves the incoming user message before execution and the final state before replying; stores can also opt into step checkpoints for intermediate results and recoverable errors.
 - **Multi-agent orchestration** - Agents delegate to other agents via the built-in `AgentTool`. Fan out with `parallel/2`, chain with `pipeline/1`. Sub-agents are linked processes - when a parent dies, children stop too.
 - **Human in the loop** - The built-in `HumanTool` pauses agent execution until a human responds. It's just message passing - your handler receives a question and sends back an answer.
 - **Structured output** - Define a JSON Schema via `output_schema/0` to get typed, validated responses. Or skip it and work with plain text.
@@ -128,6 +137,61 @@ config :req_llm, openai_api_key: System.get_env("OPENAI_API_KEY")
 # Or fire-and-forget
 Legion.cast(pid, "Also check the reviews")
 ```
+
+## Conversation Persistence
+
+Persist conversations with the built-in Postgres adapter or your own implementation of `Legion.Store`. The Postgres adapter reuses your application's Ecto repo:
+
+```elixir
+defmodule MyApp.AgentStore do
+  use Legion.Store.Postgres, repo: MyApp.Repo
+end
+```
+
+Create its table with the migration helper:
+
+```elixir
+defmodule MyApp.Repo.Migrations.AddLegionAgents do
+  use Ecto.Migration
+
+  def up, do: Legion.Store.Migration.Postgres.up()
+  def down, do: Legion.Store.Migration.Postgres.down()
+end
+```
+
+Use a stable `agent_id` to continue the same conversation after a process or application restart:
+
+```elixir
+{:ok, pid} =
+  Legion.start_link(MyApp.AssistantAgent,
+    store: MyApp.AgentStore,
+    agent_id: "user_42:chat_7"
+  )
+
+{:ok, response} = Legion.call(pid, "Remember that my budget is $100")
+
+# Later, after the original process has stopped
+{:ok, pid} = Legion.resume("user_42:chat_7", store: MyApp.AgentStore)
+```
+
+If you omit `agent_id`, Legion generates one. Save it if you want to resume the conversation later:
+
+```elixir
+{:ok, pid} = Legion.start_link(MyApp.AssistantAgent, store: MyApp.AgentStore)
+agent_id = Legion.get_agent_id(pid)
+```
+
+Stores persist at turn boundaries by default. To also checkpoint intermediate eval results, recoverable errors, bindings, and executor progress:
+
+```elixir
+defmodule MyApp.AgentStore do
+  use Legion.Store.Postgres,
+    repo: MyApp.Repo,
+    persistence_frequency: :step
+end
+```
+
+Step persistence records the latest recoverable state, but Legion does not automatically continue an interrupted turn.
 
 ## Multi-Agent Systems
 
@@ -202,9 +266,19 @@ Your handler receives `{:human_request, ref, from_pid, question, meta}` and repl
 
 ## Configuration
 
+Set a global store to persist agents by default:
+
+```elixir
+config :legion, :store, MyApp.AgentStore
+```
+
+A `store:` passed to `Legion.start_link/2` overrides the global store. With a global store configured, pass only `agent_id:` to select an existing conversation; if you omit it, Legion generates one.
+
+Configure model and runtime options separately:
+
 ```elixir
 config :legion, :config, %{
-  model: "openai:gpt-4o-mini",
+  model: "openai:gpt-5.4",
   max_iterations: 10,
   max_retries: 3,
   sandbox_timeout: 60_000,
@@ -215,8 +289,10 @@ config :legion, :config, %{
 
 | Option               | Description                                                                                                                |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `model`              | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm), e.g. `"openai:gpt-5.4"`.                              |
 | `max_iterations`     | Successful execution steps before the agent is stopped.                                                                    |
 | `max_retries`        | Consecutive failures (bad code, tool errors) before giving up. Resets after each success.                                  |
+| `sandbox_timeout`    | Milliseconds a single code evaluation may run before it is killed.                                                         |
 | `binding_scope`      | `:iteration` (fresh each step), `:turn` (persist within a message, default), or `:conversation` (persist across messages). |
 | `max_message_length` | Byte limit for any single message. Longer content is truncated. Set to `:infinity` to disable.                             |
 

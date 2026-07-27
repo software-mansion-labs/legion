@@ -4,6 +4,7 @@ defmodule Legion.AgentServerTest do
 
   import ExUnit.CaptureLog
 
+  alias Legion.Store.Payload
   alias Legion.Test.Support.MathAgent
   alias ReqLLM.Message.ContentPart
 
@@ -20,6 +21,20 @@ defmodule Legion.AgentServerTest do
 
     def config, do: %{model: "agent-model"}
     def tools, do: [Legion.Test.Support.MathTool]
+  end
+
+  defmodule ChildAgent do
+    @moduledoc "Sub-agent invoked through AgentTool."
+    use Legion.Agent
+  end
+
+  defmodule DelegatingAgent do
+    @moduledoc "Agent that delegates work to ChildAgent."
+    use Legion.Agent
+
+    def tools, do: [Legion.Tools.AgentTool]
+    def tool_config(Legion.Tools.AgentTool), do: [agents: [ChildAgent]]
+    def tool_config(_tool), do: []
   end
 
   setup :set_mimic_global
@@ -46,6 +61,16 @@ defmodule Legion.AgentServerTest do
      }}
   end
 
+  defp llm_eval_continue_response(code) do
+    {:ok,
+     %ReqLLM.Response{
+       id: "test",
+       model: "test",
+       context: nil,
+       object: %{"action" => "eval_and_continue", "code" => code, "result" => ""}
+     }}
+  end
+
   describe "get_messages/1" do
     test "returns conversation history from a running agent" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -58,10 +83,12 @@ defmodule Legion.AgentServerTest do
       messages = Legion.get_messages(pid)
 
       assert [
-               %{role: "system", content: _system},
-               %{role: "user", content: "What is the capital of France?"},
-               %{role: "assistant"} | _
+               %{role: "system", type: :system, content: _system},
+               %{role: "user", type: :user, content: "What is the capital of France?", at: at},
+               %{role: "assistant", type: :assistant} | _
              ] = messages
+
+      assert is_integer(at)
     end
   end
 
@@ -394,6 +421,543 @@ defmodule Legion.AgentServerTest do
 
       {:ok, _pid} = Legion.start_link(MathAgent, name: :test_named_agent)
       assert {:ok, "42"} = Legion.call(:test_named_agent, "What is 42?")
+    end
+  end
+
+  defmodule MemoryStore do
+    @behaviour Legion.Store
+
+    def start_link, do: Agent.start_link(fn -> %{} end, name: __MODULE__)
+
+    @impl Legion.Store
+    def get(agent_id), do: Agent.get(__MODULE__, &Map.get(&1, agent_id, :error))
+
+    @impl Legion.Store
+    def list(limit) do
+      Agent.get(__MODULE__, fn state ->
+        state
+        |> Map.values()
+        |> Enum.flat_map(fn
+          {:ok, %Payload{} = payload} -> [payload]
+          _ -> []
+        end)
+        |> Enum.take(limit)
+      end)
+    end
+
+    def load(agent_id) do
+      case get(agent_id) do
+        {:ok, %Payload{conversation_state: state}} when not is_nil(state) -> {:ok, state}
+        _ -> :error
+      end
+    end
+
+    @impl Legion.Store
+    def save(%Payload{} = payload) do
+      Agent.update(__MODULE__, fn state ->
+        existing =
+          case Map.get(state, payload.agent_id) do
+            {:ok, stored} -> stored
+            nil -> %Payload{agent_id: payload.agent_id}
+          end
+
+        merged = merge(existing, payload)
+
+        state
+        |> Map.put(payload.agent_id, {:ok, merged})
+        |> Map.update({:writes, payload.agent_id}, [payload], &[payload | &1])
+      end)
+
+      :ok
+    end
+
+    def save(_invalid), do: :error
+
+    def writes(agent_id) do
+      Agent.get(__MODULE__, &Map.get(&1, {:writes, agent_id}, []))
+      |> Enum.reverse()
+    end
+
+    def statuses(agent_id) do
+      agent_id
+      |> writes()
+      |> Enum.map(& &1.status)
+      |> Enum.reject(&is_nil/1)
+    end
+
+    def get_run(agent_id) do
+      case get(agent_id) do
+        {:ok, %Payload{agent_module: nil}} -> nil
+        {:ok, %Payload{} = payload} -> payload
+        :error -> nil
+      end
+    end
+
+    def runs do
+      Agent.get(__MODULE__, fn state ->
+        for {_agent_id, {:ok, %Payload{agent_module: agent_module} = payload}} <- state,
+            not is_nil(agent_module),
+            do: payload
+      end)
+    end
+
+    defp merge(existing, incoming) do
+      Enum.reduce(Map.from_struct(incoming), existing, fn
+        {:agent_id, _agent_id}, payload -> payload
+        {_field, nil}, payload -> payload
+        {field, value}, payload -> Map.put(payload, field, value)
+      end)
+    end
+  end
+
+  defmodule StepMemoryStore do
+    @behaviour Legion.Store
+
+    alias Legion.AgentServerTest.MemoryStore
+
+    @impl Legion.Store
+    def persistence_frequency, do: :step
+
+    @impl Legion.Store
+    def get(agent_id), do: MemoryStore.get(agent_id)
+
+    @impl Legion.Store
+    def list(limit), do: MemoryStore.list(limit)
+
+    @impl Legion.Store
+    def save(payload), do: MemoryStore.save(payload)
+  end
+
+  describe "persistence" do
+    setup do
+      start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
+      :ok
+    end
+
+    test "brackets each turn with :running and :idle status writes" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "statuses")
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+
+      assert MemoryStore.statuses("statuses") == [:running, :idle]
+
+      {:ok, _} = Legion.call(pid, "And of Germany?")
+      assert MemoryStore.statuses("statuses") == [:running, :idle, :running, :idle]
+    end
+
+    test "writes the new Store payloads for a completed message" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "payloads")
+      {:ok, "Paris"} = Legion.call(pid, "What is the capital of France?")
+
+      [started, running, completed] = MemoryStore.writes("payloads")
+
+      assert %Payload{
+               agent_id: "payloads",
+               agent_module: MathAgent,
+               parent_agent_id: nil,
+               started_at: started_at,
+               status: nil,
+               conversation_state: nil
+             } = started
+
+      assert is_struct(started_at, NaiveDateTime)
+
+      assert %Payload{
+               agent_id: "payloads",
+               status: :running,
+               conversation_state: %{
+                 messages: [%{role: "user", content: "What is the capital of France?"}],
+                 bindings: []
+               }
+             } = running
+
+      assert %Payload{
+               agent_id: "payloads",
+               status: :idle,
+               conversation_state: %{messages: messages, bindings: []}
+             } = completed
+
+      assert [
+               %{role: "user", content: "What is the capital of France?"},
+               %{role: "assistant"} | _
+             ] = messages
+
+      refute Enum.any?(messages, &(&1.role == "system"))
+    end
+
+    test "saves a snapshot before the caller receives its reply" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "receipt")
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+
+      assert {:ok, %{messages: messages, bindings: []}} = MemoryStore.load("receipt")
+
+      assert [
+               %{role: "user", content: "What is the capital of France?"},
+               %{role: "assistant"} | _
+             ] = messages
+
+      refute Enum.any?(messages, &(&1.role == "system"))
+    end
+
+    test "persists the user message before the turn runs" do
+      test_process = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_process, {:snapshot_during_turn, MemoryStore.load("early-save")})
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "early-save")
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+
+      assert_received {:snapshot_during_turn, {:ok, %{messages: messages}}}
+      assert [%{role: "user", content: "What is the capital of France?"}] = messages
+    end
+
+    test "a one-off execute/3 persists its snapshot before stopping" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, _} =
+        Legion.execute(MathAgent, "What is the capital of France?",
+          store: MemoryStore,
+          agent_id: "one-off"
+        )
+
+      assert {:ok, %{messages: [%{role: "user"}, %{role: "assistant"} | _]}} =
+               MemoryStore.load("one-off")
+    end
+
+    test "does not persist bindings under the default :turn scope" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("x = 42")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "turn-bindings")
+      {:ok, 42} = Legion.call(pid, "set x")
+
+      assert {:ok, %{bindings: []}} = MemoryStore.load("turn-bindings")
+    end
+
+    test "persists conversation-scoped bindings in the completed payload" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("x = 42")
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(ConversationBindingsAgent,
+          store: MemoryStore,
+          agent_id: "conversation-bindings"
+        )
+
+      assert {:ok, 42} = Legion.call(pid, "set x")
+
+      assert {:ok,
+              %Payload{
+                conversation_state: %{bindings: [x: 42]}
+              }} = MemoryStore.get("conversation-bindings")
+    end
+
+    test "a :step store persists a complete eval_and_continue checkpoint" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> llm_eval_continue_response("x = 42")
+          2 -> llm_response("done")
+        end
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-continue")
+
+      assert {:ok, "done"} = Legion.call(pid, "compute")
+
+      [_started, running, checkpoint, completed] = MemoryStore.writes("step-continue")
+
+      assert %Payload{
+               status: :running,
+               conversation_state: %{messages: [%{type: :user}], bindings: []}
+             } = running
+
+      assert %Payload{
+               status: nil,
+               conversation_state: %{
+                 messages: [%{type: :user}, %{type: :assistant}, %{type: :eval_result}],
+                 bindings: [x: 42],
+                 execution: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+               }
+             } = checkpoint
+
+      assert %Payload{status: :idle, conversation_state: final_state} = completed
+      assert final_state.bindings == []
+      refute Map.has_key?(final_state, :execution)
+    end
+
+    test "a :step store persists eval_and_complete before the final snapshot" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("1 + 1")
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-complete")
+
+      assert {:ok, 2} = Legion.call(pid, "compute")
+
+      [_started, _running, checkpoint, completed] = MemoryStore.writes("step-complete")
+
+      assert %Payload{
+               status: nil,
+               conversation_state: %{
+                 execution: %{phase: :completing, iteration: 0, retries: 0}
+               }
+             } = checkpoint
+
+      assert %Payload{status: :idle, conversation_state: final_state} = completed
+      refute Map.has_key?(final_state, :execution)
+    end
+
+    test "a :step store persists retry state after an error message" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> llm_eval_response("raise \"boom\"")
+          2 -> llm_response("recovered")
+        end
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-retry")
+      assert {:ok, "recovered"} = Legion.call(pid, "compute")
+
+      [_started, _running, checkpoint, _completed] = MemoryStore.writes("step-retry")
+
+      assert %Payload{
+               status: nil,
+               conversation_state: %{
+                 messages: messages,
+                 bindings: [],
+                 execution: %{phase: :awaiting_llm, iteration: 0, retries: 1}
+               }
+             } = checkpoint
+
+      assert List.last(messages).type == :error
+    end
+
+    test "a :step store retains conversation bindings in the final snapshot" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("x = 42")
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(ConversationBindingsAgent,
+          store: StepMemoryStore,
+          agent_id: "step-conversation-bindings"
+        )
+
+      assert {:ok, 42} = Legion.call(pid, "compute")
+
+      [_started, _running, checkpoint, completed] =
+        MemoryStore.writes("step-conversation-bindings")
+
+      assert checkpoint.conversation_state.bindings == [x: 42]
+      assert completed.conversation_state.bindings == [x: 42]
+    end
+
+    test "a :step store persists empty iteration-scoped bindings" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_eval_response("x = 42")
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(MathAgent,
+          store: StepMemoryStore,
+          agent_id: "step-iteration-bindings",
+          binding_scope: :iteration
+        )
+
+      assert {:ok, 42} = Legion.call(pid, "compute")
+
+      [_started, _running, checkpoint, completed] =
+        MemoryStore.writes("step-iteration-bindings")
+
+      assert checkpoint.conversation_state.bindings == []
+      assert completed.conversation_state.bindings == []
+    end
+
+    test "a :step store does not add a checkpoint for return" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("done")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-return")
+      assert {:ok, "done"} = Legion.call(pid, "compute")
+
+      assert [_started, _running, _completed] = MemoryStore.writes("step-return")
+    end
+
+    test "restores the conversation under a fresh system prompt after a restart" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "restore")
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+      GenServer.stop(pid)
+
+      {:ok, revived} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "restore")
+
+      assert [
+               %{role: "system"},
+               %{role: "user", content: "What is the capital of France?"},
+               %{role: "assistant"} | _
+             ] = Legion.get_messages(revived)
+    end
+
+    test "restores conversation-scoped bindings after a restart" do
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
+
+        if assistant_count == 0 do
+          llm_eval_response("x = 42")
+        else
+          llm_eval_response("x + 1")
+        end
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(ConversationBindingsAgent, store: MemoryStore, agent_id: "bindings")
+
+      {:ok, 42} = Legion.call(pid, "set x")
+      GenServer.stop(pid)
+
+      {:ok, revived} =
+        Legion.start_link(ConversationBindingsAgent, store: MemoryStore, agent_id: "bindings")
+
+      assert {:ok, 43} = Legion.call(revived, "use x")
+    end
+
+    test "generates an agent_id when a store is given without one" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore)
+      agent_id = Legion.get_agent_id(pid)
+
+      assert is_binary(agent_id)
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+      assert {:ok, _snapshot} = MemoryStore.load(agent_id)
+    end
+
+    test "uses a store configured globally, needing only an agent_id" do
+      Application.put_env(:legion, :store, MemoryStore)
+      on_exit(fn -> Application.delete_env(:legion, :store) end)
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, agent_id: "global-store")
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+
+      assert {:ok, _snapshot} = MemoryStore.load("global-store")
+    end
+
+    test "get_agent_id/1 returns a generated id without a store" do
+      {:ok, pid} = Legion.start_link(MathAgent)
+      assert is_binary(Legion.get_agent_id(pid))
+    end
+
+    test "raises when :agent_id is given without a :store" do
+      assert_raise ArgumentError, ~r/:agent_id requires a :store/, fn ->
+        Legion.start_link(MathAgent, agent_id: "orphan")
+      end
+    end
+
+    test "records run metadata on start" do
+      {:ok, _pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "meta")
+
+      assert [run] = MemoryStore.runs()
+      assert run.agent_id == "meta"
+      assert run.agent_module == MathAgent
+      assert run.parent_agent_id == nil
+      assert is_struct(run.started_at, NaiveDateTime)
+    end
+
+    test "registers the agent pid by agent_id" do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "lookup")
+
+      assert {:ok, ^pid} = Legion.lookup("lookup")
+    end
+
+    test "resume/2 returns the recorded process while it is alive" do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "resume-live")
+
+      assert Legion.running?(pid)
+      assert {:ok, ^pid} = Legion.resume("resume-live", store: MemoryStore)
+    end
+
+    test "resume/2 restarts a stopped conversation from its run metadata" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("Paris")
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "resume-dead")
+      {:ok, _} = Legion.call(pid, "What is the capital of France?")
+      GenServer.stop(pid)
+      refute Legion.running?(pid)
+
+      {:ok, revived} = Legion.resume("resume-dead", store: MemoryStore)
+
+      assert Legion.running?(revived)
+
+      assert [
+               %{role: "system"},
+               %{role: "user", content: "What is the capital of France?"},
+               %{role: "assistant"} | _
+             ] = Legion.get_messages(revived)
+    end
+
+    test "resume/2 raises for an agent_id the store has no run for" do
+      assert_raise ArgumentError, ~r/no run recorded/, fn ->
+        Legion.resume("ghost", store: MemoryStore)
+      end
+    end
+
+    test "sub-agents inherit the parent store and link to the parent conversation" do
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        if Enum.any?(messages, &(&1[:content] == "child task")) do
+          llm_response("child done")
+        else
+          llm_eval_response(~s|AgentTool.call(ChildAgent, "child task")|)
+        end
+      end)
+
+      {:ok, _} = Legion.execute(DelegatingAgent, "parent task", store: MemoryStore)
+
+      runs = MemoryStore.runs()
+      parent = Enum.find(runs, &(&1.agent_module == DelegatingAgent))
+      child = Enum.find(runs, &(&1.agent_module == ChildAgent))
+
+      assert child.parent_agent_id == parent.agent_id
+      assert {:ok, %{messages: [%{content: "child task"} | _]}} = MemoryStore.load(child.agent_id)
     end
   end
 

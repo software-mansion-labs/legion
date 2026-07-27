@@ -12,7 +12,7 @@ defmodule Legion.Executor do
   alias Legion.{Sandbox, Telemetry}
 
   @default_config %{
-    model: "openai:gpt-4o-mini",
+    model: "openai:gpt-5.4",
     max_iterations: 10,
     max_retries: 3,
     sandbox_timeout: 60_000,
@@ -23,14 +23,38 @@ defmodule Legion.Executor do
   @doc false
   def default_config, do: @default_config
 
+  @message_roles %{
+    system: "system",
+    user: "user",
+    assistant: "assistant",
+    eval_result: "user",
+    error: "user"
+  }
+
+  @doc """
+  Builds a conversation message stamped with its `:type` and creation time
+  (`:at`, milliseconds). The extra keys ride along into persisted state so
+  consumers (e.g. LegionWeb) can classify messages without parsing content;
+  ReqLLM ignores them.
+  """
+  def message(type, content) do
+    %{
+      role: Map.fetch!(@message_roles, type),
+      type: type,
+      content: content,
+      at: System.system_time(:millisecond)
+    }
+  end
+
   @action_descriptions %{
     "eval_and_continue" =>
       "Execute code and continue the turn. Use when you need the result before deciding the next step.",
     "eval_and_complete" =>
       "Finish the turn with the code's result. Use when the final answer comes from executing code.",
     "return" =>
-      "Finish the turn with a structured result and no code execution. Only use when the task is fully done - not to report in-progress work or bail out of execution errors (fix the code and re-run instead).",
-    "done" => "Task complete with no result to return."
+      "Finish the turn with a structured result and no code execution. Only use when the task is fully done - not to report in-progress work, ask the user something, or bail out of execution errors (fix the code and re-run instead). The result is a final answer, not a chat message: never return a status like \"starting\" or \"working on it\" - do the work first.",
+    "done" =>
+      "Finish the turn with no result to return. This ends your run - nothing executes after it, so only use it when everything you were asked to do is fully done. Never announce upcoming work and then pick this action; do the work first (eval_and_continue)."
   }
 
   defp action_schema(agent_module) do
@@ -146,7 +170,7 @@ defmodule Legion.Executor do
         case ReqLLM.generate_object(config.model, messages, action_schema(agent_module)) do
           {:ok, response} ->
             action = extract_object(response)
-            messages = messages ++ [%{role: "assistant", content: Jason.encode!(action)}]
+            messages = messages ++ [message(:assistant, Jason.encode!(action))]
             {{:ok, action, messages}, %{object: action}}
 
           {:error, reason} ->
@@ -154,6 +178,25 @@ defmodule Legion.Executor do
         end
       end
     )
+  end
+
+  defp checkpoint!(config, messages, bindings, execution) do
+    case config[:checkpoint] do
+      nil ->
+        :ok
+
+      callback ->
+        try do
+          :ok =
+            callback.(%{
+              messages: messages,
+              bindings: bindings,
+              execution: execution
+            })
+        rescue
+          error -> exit({:checkpoint_persistence_failed, error})
+        end
+    end
   end
 
   defp handle_action(
@@ -180,12 +223,25 @@ defmodule Legion.Executor do
          bindings
        )
        when eval in ["eval_and_continue", "eval_and_complete"] and code != "" do
+    # Tools that must see the answer come back to the model (e.g. HumanTool)
+    # read this to reject running under a turn-ending action.
+    Vault.unsafe_put(:current_action, eval)
+
     case eval_in_span(agent, code, config, bindings) do
       {:ok, {result, new_bindings}} ->
         new_bindings = if config.binding_scope == :iteration, do: [], else: new_bindings
 
         messages =
-          messages ++ [%{role: "user", content: format_result(result, new_bindings, config)}]
+          messages ++ [message(:eval_result, format_result(result, new_bindings, config))]
+
+        execution =
+          if eval == "eval_and_continue" do
+            %{phase: :awaiting_llm, iteration: i + 1, retries: 0}
+          else
+            %{phase: :completing, iteration: i, retries: 0}
+          end
+
+        checkpoint!(config, messages, new_bindings, execution)
 
         if eval == "eval_and_continue",
           do: loop(agent, messages, config, i + 1, 0, new_bindings),
@@ -241,14 +297,21 @@ defmodule Legion.Executor do
       messages =
         messages ++
           [
-            %{
-              role: "user",
-              content:
-                "Code execution failed:\n\n#{error_text}\n\nPlease fix the error and try again."
-            }
+            message(
+              :error,
+              "Code execution failed:\n\n#{error_text}\n\nPlease fix the error and try again."
+            )
           ]
 
-      loop(agent_module, messages, config, iteration, retries + 1, bindings)
+      next_retries = retries + 1
+
+      checkpoint!(config, messages, bindings, %{
+        phase: :awaiting_llm,
+        iteration: iteration,
+        retries: next_retries
+      })
+
+      loop(agent_module, messages, config, iteration, next_retries, bindings)
     end
   end
 
