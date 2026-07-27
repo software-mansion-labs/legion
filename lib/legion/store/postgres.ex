@@ -15,13 +15,13 @@ defmodule Legion.Store.Postgres do
         use Legion.Store.Postgres, repo: MyApp.Repo
       end
 
-  Create the table in a migration with `Legion.Store.Postgres.Migration`:
+  Create the table in a migration with `Legion.Store.Migration.Postgres`:
 
       defmodule MyApp.Repo.Migrations.AddLegionAgents do
         use Ecto.Migration
 
-        def up, do: Legion.Store.Postgres.Migration.up()
-        def down, do: Legion.Store.Postgres.Migration.down()
+        def up, do: Legion.Store.Migration.Postgres.up()
+        def down, do: Legion.Store.Migration.Postgres.down()
       end
 
   Then start agents with it:
