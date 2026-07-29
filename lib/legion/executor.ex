@@ -107,9 +107,19 @@ defmodule Legion.Executor do
 
   Returns `{:ok, result, messages, bindings}` or `{:cancel, reason, messages, bindings}`.
   """
-  def run(agent_module, messages, config, bindings \\ []) do
+  def run(agent_module, messages, config, bindings \\ [], execution \\ nil) do
     config = Map.merge(@default_config, config)
-    loop(agent_module, messages, config, 0, 0, bindings)
+
+    case execution do
+      nil ->
+        loop(agent_module, messages, config, 0, 0, bindings)
+
+      %{phase: :awaiting_llm, iteration: i, retries: r} ->
+        loop(agent_module, messages, config, i, r, bindings)
+
+      %{phase: :completing, iteration: _i, retries: _r} ->
+        {:ok, nil, messages, bindings}
+    end
   end
 
   defp loop(agent_module, messages, config, iteration, retries, bindings) do

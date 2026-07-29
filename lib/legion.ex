@@ -184,11 +184,11 @@ defmodule Legion do
         if running?(pid) do
           {:ok, pid}
         else
-          start_link(agent_module, Keyword.put(opts, :agent_id, agent_id))
+          start_link(agent_module, Keyword.merge(opts, agent_id: agent_id, start_mode: :resume))
         end
 
       :error ->
-        start_link(agent_module, Keyword.put(opts, :agent_id, agent_id))
+        start_link(agent_module, Keyword.merge(opts, agent_id: agent_id, start_mode: :resume))
     end
   end
 

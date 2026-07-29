@@ -20,9 +20,9 @@ defmodule Legion.Store.Payload do
           retries: non_neg_integer()
         }
   @type state :: %{
-          required(:messages) => [map()],
-          required(:bindings) => keyword(),
-          optional(:execution) => execution()
+          messages: [map()],
+          bindings: keyword(),
+          execution: execution() | nil
         }
   @type t :: %__MODULE__{
           agent_id: Legion.Store.agent_id(),

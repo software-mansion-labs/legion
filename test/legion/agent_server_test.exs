@@ -463,9 +463,14 @@ defmodule Legion.AgentServerTest do
 
         merged = merge(existing, payload)
 
+        state =
+          state
+          |> Map.put(payload.agent_id, {:ok, merged})
+          |> Map.update({:writes, payload.agent_id}, [payload], &[payload | &1])
+
+        if watcher = Map.get(state, :save_watcher), do: send(watcher, {:store_saved, payload})
+
         state
-        |> Map.put(payload.agent_id, {:ok, merged})
-        |> Map.update({:writes, payload.agent_id}, [payload], &[payload | &1])
       end)
 
       :ok
@@ -476,6 +481,10 @@ defmodule Legion.AgentServerTest do
     def writes(agent_id) do
       Agent.get(__MODULE__, &Map.get(&1, {:writes, agent_id}, []))
       |> Enum.reverse()
+    end
+
+    def watch_saves(test_pid) do
+      Agent.update(__MODULE__, &Map.put(&1, :save_watcher, test_pid))
     end
 
     def statuses(agent_id) do
@@ -691,7 +700,11 @@ defmodule Legion.AgentServerTest do
 
       assert %Payload{
                status: :running,
-               conversation_state: %{messages: [%{type: :user}], bindings: []}
+               conversation_state: %{
+                 messages: [%{type: :user}],
+                 bindings: [],
+                 execution: nil
+               }
              } = running
 
       assert %Payload{
@@ -705,7 +718,7 @@ defmodule Legion.AgentServerTest do
 
       assert %Payload{status: :idle, conversation_state: final_state} = completed
       assert final_state.bindings == []
-      refute Map.has_key?(final_state, :execution)
+      assert final_state.execution == nil
     end
 
     test "a :step store persists eval_and_complete before the final snapshot" do
@@ -728,7 +741,7 @@ defmodule Legion.AgentServerTest do
              } = checkpoint
 
       assert %Payload{status: :idle, conversation_state: final_state} = completed
-      refute Map.has_key?(final_state, :execution)
+      assert final_state.execution == nil
     end
 
     test "a :step store persists retry state after an error message" do
@@ -933,6 +946,65 @@ defmodule Legion.AgentServerTest do
                %{role: "user", content: "What is the capital of France?"},
                %{role: "assistant"} | _
              ] = Legion.get_messages(revived)
+    end
+
+    test "an awaiting-LLM checkpoint resumes with one request and finishes idle" do
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "resume-awaiting-llm",
+                 agent_module: MathAgent,
+                 status: :running,
+                 conversation_state: %{
+                   messages: [%{role: "user", type: :user, content: "compute"}],
+                   bindings: [x: 42],
+                   execution: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+                 }
+               })
+
+      MemoryStore.watch_saves(self())
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_pid, :llm_requested)
+        llm_response("done")
+      end)
+
+      assert {:ok, _pid} = Legion.resume("resume-awaiting-llm", store: MemoryStore)
+      assert_receive :llm_requested
+
+      assert_receive {:store_saved,
+                      %Payload{status: :idle, conversation_state: %{execution: nil}}}
+
+      refute_receive :llm_requested, 50
+    end
+
+    test "a completing checkpoint resumes without a request and finishes idle" do
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "resume-completing",
+                 agent_module: MathAgent,
+                 status: :running,
+                 conversation_state: %{
+                   messages: [%{role: "user", type: :user, content: "compute"}],
+                   bindings: [x: 42],
+                   execution: %{phase: :completing, iteration: 1, retries: 0}
+                 }
+               })
+
+      MemoryStore.watch_saves(self())
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_pid, :llm_requested)
+        llm_response("unexpected")
+      end)
+
+      assert {:ok, _pid} = Legion.resume("resume-completing", store: MemoryStore)
+
+      assert_receive {:store_saved,
+                      %Payload{status: :idle, conversation_state: %{execution: nil}}}
+
+      refute_receive :llm_requested, 100
     end
 
     test "resume/2 raises for an agent_id the store has no run for" do

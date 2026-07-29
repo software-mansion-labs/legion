@@ -70,7 +70,11 @@ defmodule Legion.Store.PostgresTest do
       parent_agent_id: "parent-1",
       status: :idle,
       started_at: 123,
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [x: 42],
+        execution: nil
+      }
     }
 
     assert :ok = Store.save(payload)
@@ -80,7 +84,11 @@ defmodule Legion.Store.PostgresTest do
   test "save/1 partially inserts only the supplied payload fields" do
     payload = %Payload{
       agent_id: "state-only",
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: []}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [],
+        execution: nil
+      }
     }
 
     expected_payload = %{payload | status: :idle}
@@ -112,7 +120,11 @@ defmodule Legion.Store.PostgresTest do
       parent_agent_id: "parent-1",
       status: :running,
       started_at: 123,
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [x: 42],
+        execution: nil
+      }
     }
 
     assert :ok = Store.save(initial)
@@ -126,7 +138,11 @@ defmodule Legion.Store.PostgresTest do
               parent_agent_id: "parent-1",
               status: :idle,
               started_at: 123,
-              conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+              conversation_state: %{
+                messages: [%{role: "user", content: "hi"}],
+                bindings: [x: 42],
+                execution: nil
+              }
             }} = Store.get("user_42")
 
     assert NaiveDateTime.compare(FakeRepo.run("user_42").updated_at, previous_updated_at) == :gt
