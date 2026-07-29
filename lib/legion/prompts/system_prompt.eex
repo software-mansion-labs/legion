@@ -5,7 +5,7 @@ You are an AI agent that solves tasks by writing and executing Elixir <%= elixir
 For each step, you respond with a JSON object containing:
 - `action`: what to do — <%= Enum.map_join(action_types, ", ", fn t -> "`\"#{t}\"`" end) %>
 - `code`: Elixir code to execute (for `eval_*` actions)
-- `result`: structured result (for `"return"` action)
+- `result`: <%= if plain_text_result? do %>your final answer - plain text shown to the user, no JSON wrapping<% else %>structured result<% end %> (for `"return"` action)
 
 **Prefer writing code to accomplish your task.** Use the available tools by calling their functions in your code. Examine the tool source code below to understand what functions are available and how to use them.
 

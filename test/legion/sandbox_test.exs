@@ -27,6 +27,41 @@ defmodule Legion.SandboxTest do
     assert {:error, {:exit, :boom}} = Legion.Sandbox.execute("exit(:boom)", 15_000)
   end
 
+  test "eval exceeding the heap budget is killed with a memory error" do
+    assert {:error, message} =
+             Legion.Sandbox.execute("Enum.to_list(1..50_000_000)", 15_000, [], [],
+               max_heap: 10_000_000
+             )
+
+    assert message =~ "memory limit"
+  end
+
+  test "a brutal kill without a heap budget reports a crash, not a memory limit" do
+    # The AST checker blocks Process for generated code; allowing it here is
+    # the only way to provoke the :killed exit an external kill would cause.
+    assert {:error, {:process_crashed, :killed}} =
+             Legion.Sandbox.execute("Process.exit(self(), :kill)", 15_000, [Process])
+  end
+
+  test "heap budget leaves ordinary evals untouched" do
+    assert {:ok, {499_500, _}} =
+             Legion.Sandbox.execute("Enum.sum(1..999)", 15_000, [], [], max_heap: 10_000_000)
+  end
+
+  test "eval exceeding the reduction budget is killed with a CPU error" do
+    code = "Enum.reduce(1..100_000_000, 0, fn n, acc -> acc + n end)"
+
+    assert {:error, message} =
+             Legion.Sandbox.execute(code, 60_000, [], [], max_reductions: 1_000_000)
+
+    assert message =~ "reduction (CPU) limit"
+  end
+
+  test "reduction budget leaves ordinary evals untouched" do
+    assert {:ok, {499_500, _}} =
+             Legion.Sandbox.execute("Enum.sum(1..999)", 15_000, [], [], max_reductions: 1_000_000)
+  end
+
   test "compile error surfaces diagnostics instead of the generic wrapper message" do
     code = ~S|x = 1
 String.upcase(t)|

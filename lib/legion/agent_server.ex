@@ -275,7 +275,7 @@ defmodule Legion.AgentServer do
     |> Executor.truncate_content(max_length)
   end
 
-  @known_config_keys ~w(binding_scope max_iterations max_message_length max_retries model sandbox_timeout)a
+  @known_config_keys ~w(binding_scope eval_guard max_iterations max_message_length max_retries model sandbox_max_heap sandbox_max_reductions sandbox_timeout)a
 
   defp resolve_config(agent_module, opts) do
     app_config = Application.get_env(:legion, :config, %{})

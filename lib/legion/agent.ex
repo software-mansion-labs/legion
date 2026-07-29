@@ -41,6 +41,16 @@ defmodule Legion.Agent do
       - `max_iterations` — max successful execution steps per turn (default: `10`)
       - `max_retries` — max consecutive failures before giving up (default: `3`)
       - `sandbox_timeout` — timeout in ms for code execution (default: `60_000`)
+      - `sandbox_max_heap` — max heap in bytes for the process evaluating generated
+        code; the VM kills the eval when it exceeds the budget. Also covers tool code
+        called inline from the eval. Set `:infinity` to disable (default: `256_000_000`)
+      - `eval_guard` — a `Legion.EvalGuard` module that vets generated code before
+        it runs, for policy the sandbox cannot express. Runs on the critical path;
+        a denial reaches the agent as an execution error (default: `nil`, no guard)
+      - `sandbox_max_reductions` — CPU budget in reductions for the eval process,
+        enforced by polling (~50ms granularity), so an eval that computes hard gets
+        killed even while the wall clock is fine with it. Counts tool code called
+        inline from the eval too. Set `:infinity` to disable (default: `:infinity`)
       - `binding_scope` — how long variable bindings from code execution live
         (default: `:turn`):
         - `:iteration` — bindings reset between every code execution
