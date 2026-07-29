@@ -7,13 +7,15 @@
 
 <!-- MDOC -->
 
-An Elixir framework for AI agents that live inside your application and act by writing code.
+An Elixir framework for AI agents that live inside your application and get things done by writing code.
 
-Legion is a runtime, not a coding assistant. No human reads, reviews, or commits the code its agents write. An agent writes Elixir the way you would write a shell one-liner: to do something, right now. Given a task, it reads your tools' source, writes a snippet that fetches, filters, decides, and acts, executes it, observes the result, and continues - all inside your running application.
+Give an agent a task and it doesn't pick from a menu of tool calls. It reads the source of the modules you expose to it, writes a snippet that does the job, and runs it right there in your app. Then it looks at the result and writes the next one. That's the whole loop.
 
-That single move replaces function calling. A traditional agent pays an LLM round-trip for every tool call: fetch, wait, decide, call the next one. A Legion agent collapses that loop into one evaluation, with pipelines, pattern matching, and the standard library at its disposal. Fewer LLM calls, lower latency, smarter behavior. [Why code execution beats function calling.](https://www.anthropic.com/engineering/code-execution-with-mcp)
+The code it writes is disposable, like a shell one-liner: made to do one thing, right now, then thrown away. No human reads it, reviews it, or commits it. Legion is a runtime, not a coding assistant.
 
-The whole framework fits in three ideas:
+Why bother? Because function calling is expensive. A traditional agent pays an LLM round trip for every step: fetch, wait, look, call the next tool, wait again. A Legion agent does all of it in one evaluation, with pipelines, pattern matching, and the standard library at its disposal. Fewer round trips, fewer tokens, smarter behavior. [Anthropic has the numbers on why code execution beats function calling.](https://www.anthropic.com/engineering/code-execution-with-mcp)
+
+Everything else is three ideas:
 
 - **Tools are plain Elixir modules.** The LLM reads their source directly - no schemas, no wrappers, no glue.
 - **Agents are BEAM processes.** Supervise them, pool them, `call` and `cast` them like GenServers.
