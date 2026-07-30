@@ -104,6 +104,10 @@ defmodule Legion.Executor do
   Runs the LLM loop against the given message history.
 
   `messages` must already include the system prompt and the current user message.
+  `bindings` seeds the code-evaluation binding. `execution` resumes a step
+  checkpoint when present: `:awaiting_llm` continues from its saved iteration
+  and retry counters, while `:completing` finishes without another LLM request.
+  Pass `nil` to start a new loop.
 
   Returns `{:ok, result, messages, bindings}` or `{:cancel, reason, messages, bindings}`.
   """

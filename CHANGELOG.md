@@ -6,8 +6,9 @@
 
 - Add `Legion.Store` for persisting conversations across process and application restarts; stores exchange partial `Legion.Store.Payload` values containing conversation state and metadata through `get/1` and `save/1`
 - Persist the user message with `status: :running` before execution and the final conversation with `status: :idle` before replying, so a reply is a commit receipt for the completed turn
-- Add optional `persistence_frequency/0`; stores default to `:turn`, while `:step` also checkpoints intermediate eval results, recoverable errors, bindings, and executor progress. Interrupted turns are recorded but are not resumed automatically
+- Add optional `persistence_frequency/0`; stores default to `:turn`, while `:step` also checkpoints intermediate eval results, recoverable errors, bindings, and executor progress
 - Add globally configured and per-agent stores, generated agent ids, `Legion.get_agent_id/1`, `Legion.lookup/1`, `Legion.running?/1`, and `Legion.resume/2` for identifying, finding, and restarting persisted conversations
+- Add `Legion.recover/2` and opt-in `:recovery` startup configuration for recovering interrupted root runs
 - Propagate stores to sub-agents and persist `parent_agent_id`, `agent_module`, and `started_at` metadata for reconstructing conversation trees
 - Add `Legion.Store.Postgres`, backed by an existing PostgreSQL Ecto repo, with partial upserts, `get/1`, `list/1`, configurable table names, configurable persistence frequency, and an optional `ecto_sql` dependency
 - Add versioned, idempotent `Legion.Store.Migration.Postgres` migrations with configurable table names and `pg_notify` notifications for inserts and updates; migration versions are tracked in the agents table comment; generated stores expose `__repo__/0` and `__table__/0` for database-backed consumers such as LegionWeb

@@ -2,7 +2,7 @@ defmodule Legion.MixProject do
   use Mix.Project
 
   @version "0.4.0"
-  @source_url "https://github.com/dimamik/legion"
+  @source_url "https://github.com/software-mansion-labs/legion"
 
   def project do
     [
@@ -58,7 +58,7 @@ defmodule Legion.MixProject do
         Legion.Store.Postgres,
         Legion.Store.Migration.Postgres
       ],
-      Runtime: [Legion.AgentServer, Legion.Executor, ~r/^Legion\.Sandbox/],
+      Runtime: [Legion.AgentServer, Legion.Executor, Legion.Recovery, ~r/^Legion\.Sandbox/],
       Tools: [~r/^Legion\.Tools\./],
       Internals: [Legion.AgentPrompt, Legion.SourceRegistry, Legion.Telemetry]
     ]

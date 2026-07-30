@@ -152,8 +152,12 @@ defmodule Legion do
   Loads the persisted conversation with `get/1` to determine its agent module,
   then returns the process registered for `agent_id` if it is still running.
   If no live process is registered, starts the persisted agent module under the
-  same `agent_id`, so it reloads its conversation state. `opts` are passed
-  through to `start_link/2`.
+  same `agent_id` and returns its pid immediately. The new process restores the
+  conversation and continues execution in the background. It resumes from a
+  saved checkpoint when one exists; otherwise it starts a new executor loop
+  with the restored history.
+
+  `opts` are passed through to `start_link/2`.
 
   Pass `:store` or configure one globally. Raises if `get/1` does not return a
   `Legion.Store.Payload` containing an agent module for `agent_id`.
@@ -186,14 +190,34 @@ defmodule Legion do
   @doc """
   Recovers an interrupted persisted root run and waits for it to finish.
 
-  Loads the run from its store and resumes it only when it is a root run with
-  `:running` status. The recovered agent process stops after completing the
-  interrupted execution, so this is suitable for one-shot startup recovery.
+  The stored payload must have `status: :running` and no `parent_agent_id`.
+  `recover/2` starts a temporary agent process, waits without a timeout while
+  it drives the interrupted execution to completion, then stops that process.
+  Unlike `resume/2`, it does not revive the conversation as a live agent.
 
-  Pass `:store` or configure one globally. Returns `:ok` after a recovered run
-  finishes, `{:error, :already_running}` when that `agent_id` is live, and
-  `{:error, :not_recoverable}` for persisted runs that are not interrupted root
-  runs. Raises when the store has no recorded run for `agent_id`.
+  The executor result is not returned. `:ok` means only that the temporary
+  process stopped normally, including when the executor cancelled the run.
+
+  Pass `:store` or configure one globally. Other options are passed through to
+  `start_link/2`. Returns:
+
+    - `:ok` when the temporary process stops normally
+    - `{:error, reason}` when the temporary process stops abnormally
+    - `{:error, :already_running}` when a live process is registered for `agent_id`
+    - `{:error, :not_recoverable}` when the stored payload is not an interrupted root run
+
+  Raises when no store is available, when the store has no payload for
+  `agent_id`, or when the payload has no `agent_module`.
+
+  ## Examples
+
+      :ok = Legion.recover("user_42:chat_7", store: MyApp.AgentStore)
+
+      {:error, :already_running} =
+        Legion.recover("active_chat", store: MyApp.AgentStore)
+
+      {:error, :not_recoverable} =
+        Legion.recover("completed_chat", store: MyApp.AgentStore)
   """
   def recover(agent_id, opts \\ []) do
     store = store!(opts, :recover)

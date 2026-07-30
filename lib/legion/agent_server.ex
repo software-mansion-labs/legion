@@ -4,6 +4,10 @@ defmodule Legion.AgentServer do
 
   Holds the message history across multiple turns. Each `call` or `cast`
   appends the user message and runs `Executor` to completion (blocking).
+
+  When Legion starts an agent in resume or recovery mode, the server restores
+  the persisted conversation and executor checkpoint, then continues it during
+  startup. Recovery stops the temporary process after that execution finishes.
   """
 
   use GenServer

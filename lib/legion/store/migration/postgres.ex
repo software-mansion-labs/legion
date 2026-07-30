@@ -36,7 +36,7 @@ defmodule Legion.Store.Migration.Postgres do
   ## Migrating Without Ecto
 
   If your application uses something other than Ecto for migrations, be it an external system or
-  another ORM, it may be helpful to create plain SQL migrations for Oban database schema changes.
+  another ORM, it may be helpful to create plain SQL migrations for Legion's database schema changes.
 
   The simplest mechanism for obtaining the SQL changes is to create the migration locally and run
   `mix ecto.migrate --log-migrations-sql`. That will log all of the generated SQL, which you can

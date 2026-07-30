@@ -99,7 +99,8 @@ defmodule Legion.Store do
   action and the following result or error checkpoint. A crash in that window
   can replay the action and any external side effects. Configure
   `:recovery` with stores and a limit to recover interrupted root turns once
-  when the Legion application starts.
+  when the Legion application starts; see `Legion.Recovery` and
+  `Legion.recover/2`.
 
   ## Reading conversations
 
