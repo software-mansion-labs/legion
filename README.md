@@ -154,8 +154,8 @@ Create its table with the migration helper:
 defmodule MyApp.Repo.Migrations.AddLegionAgents do
   use Ecto.Migration
 
-  def up, do: Legion.Store.Postgres.Migration.up()
-  def down, do: Legion.Store.Postgres.Migration.down()
+  def up, do: Legion.Store.Migration.Postgres.up()
+  def down, do: Legion.Store.Migration.Postgres.down()
 end
 ```
 
