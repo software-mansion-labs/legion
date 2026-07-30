@@ -28,6 +28,19 @@ defmodule Legion.AgentServer do
   # Client API
 
   def start_link(agent_module, opts \\ []) do
+    {init_arg, gen_opts} = start_args(agent_module, opts)
+
+    GenServer.start_link(__MODULE__, init_arg, gen_opts)
+  end
+
+  @doc false
+  def start_monitor(agent_module, opts \\ []) do
+    {init_arg, gen_opts} = start_args(agent_module, opts)
+
+    :gen_server.start_monitor(__MODULE__, init_arg, gen_opts)
+  end
+
+  defp start_args(agent_module, opts) do
     {name, opts} = Keyword.pop(opts, :name)
     {store, opts} = Keyword.pop(opts, :store)
     {agent_id, opts} = Keyword.pop(opts, :agent_id)
@@ -45,11 +58,7 @@ defmodule Legion.AgentServer do
     gen_opts = if name, do: [name: name], else: []
     config = resolve_config(agent_module, opts)
 
-    GenServer.start_link(
-      __MODULE__,
-      {agent_module, config, store, agent_id, persistence_frequency},
-      gen_opts
-    )
+    {{agent_module, config, store, agent_id, persistence_frequency}, gen_opts}
   end
 
   def call(agent, message, timeout \\ :infinity) do
@@ -135,6 +144,12 @@ defmodule Legion.AgentServer do
   def handle_continue(%{start_mode: :resume, execution: execution}, state) do
     {_reply, state} = perform_run(state, execution)
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_continue(%{start_mode: :recover, execution: execution}, state) do
+    {_reply, state} = perform_run(state, execution)
+    {:stop, :normal, state}
   end
 
   @impl true

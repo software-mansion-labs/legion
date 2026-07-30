@@ -97,8 +97,9 @@ defmodule Legion.Store do
 
   Step persistence accepts a replay window between an LLM selecting an eval
   action and the following result or error checkpoint. A crash in that window
-  can replay the action and any external side effects. Automatic continuation
-  of an interrupted turn is not currently performed.
+  can replay the action and any external side effects. Configure
+  `:recovery` with stores and a limit to recover interrupted root turns once
+  when the Legion application starts.
 
   ## Reading conversations
 

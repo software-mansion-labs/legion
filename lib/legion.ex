@@ -164,10 +164,7 @@ defmodule Legion do
       {:ok, pid} = Legion.resume("user_42:chat_7", store: MyApp.AgentStore)
   """
   def resume(agent_id, opts \\ []) do
-    store =
-      Keyword.get(opts, :store) || Vault.get(:store) || Application.get_env(:legion, :store) ||
-        raise ArgumentError,
-              "resume/2 requires a :store - pass one or set `config :legion, :store, MyStore`"
+    store = store!(opts, :resume)
 
     agent_module =
       case store.get(agent_id) do
@@ -179,16 +176,76 @@ defmodule Legion do
                 "no run recorded for agent_id #{inspect(agent_id)} in #{inspect(store)}"
       end
 
-    case lookup(agent_id) do
-      {:ok, pid} ->
-        if running?(pid) do
-          {:ok, pid}
+    with {:ok, pid} <- lookup(agent_id), true <- running?(pid) do
+      {:ok, pid}
+    else
+      _ -> start_link(agent_module, Keyword.merge(opts, agent_id: agent_id, start_mode: :resume))
+    end
+  end
+
+  @doc """
+  Recovers an interrupted persisted root run and waits for it to finish.
+
+  Loads the run from its store and resumes it only when it is a root run with
+  `:running` status. The recovered agent process stops after completing the
+  interrupted execution, so this is suitable for one-shot startup recovery.
+
+  Pass `:store` or configure one globally. Returns `:ok` after a recovered run
+  finishes, `{:error, :already_running}` when that `agent_id` is live, and
+  `{:error, :not_recoverable}` for persisted runs that are not interrupted root
+  runs. Raises when the store has no recorded run for `agent_id`.
+  """
+  def recover(agent_id, opts \\ []) do
+    store = store!(opts, :recover)
+
+    with {:ok, pid} <- lookup(agent_id), true <- running?(pid) do
+      {:error, :already_running}
+    else
+      _ -> recover_stored_agent(store, agent_id, opts)
+    end
+  end
+
+  defp store!(opts, operation) do
+    Keyword.get(opts, :store) || Vault.get(:store) || Application.get_env(:legion, :store) ||
+      raise ArgumentError,
+            "#{operation}/2 requires a :store - pass one or set `config :legion, :store, MyStore`"
+  end
+
+  defp recover_stored_agent(store, agent_id, opts) do
+    case store.get(agent_id) do
+      {:ok,
+       %Legion.Store.Payload{
+         agent_module: agent_module,
+         status: :running,
+         parent_agent_id: nil
+       }}
+      when not is_nil(agent_module) ->
+        with {:ok, pid} <- lookup(agent_id), true <- running?(pid) do
+          {:error, :already_running}
         else
-          start_link(agent_module, Keyword.merge(opts, agent_id: agent_id, start_mode: :resume))
+          _ ->
+            {:ok, {_pid, ref}} =
+              AgentServer.start_monitor(
+                agent_module,
+                Keyword.merge(opts, agent_id: agent_id, store: store, start_mode: :recover)
+              )
+
+            receive do
+              {:DOWN, ^ref, :process, _pid, :normal} -> :ok
+              {:DOWN, ^ref, :process, _pid, reason} -> {:error, reason}
+            end
         end
 
+      {:ok, %Legion.Store.Payload{agent_module: nil}} ->
+        raise ArgumentError,
+              "no run recorded for agent_id #{inspect(agent_id)} in #{inspect(store)}"
+
+      {:ok, %Legion.Store.Payload{}} ->
+        {:error, :not_recoverable}
+
       :error ->
-        start_link(agent_module, Keyword.merge(opts, agent_id: agent_id, start_mode: :resume))
+        raise ArgumentError,
+              "no run recorded for agent_id #{inspect(agent_id)} in #{inspect(store)}"
     end
   end
 

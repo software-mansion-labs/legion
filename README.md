@@ -274,6 +274,20 @@ config :legion, :store, MyApp.AgentStore
 
 A `store:` passed to `Legion.start_link/2` overrides the global store. With a global store configured, pass only `agent_id:` to select an existing conversation; if you omit it, Legion generates one.
 
+To recover interrupted root runs when the application starts, configure the
+stores to scan and a shared scan/concurrency limit:
+
+```elixir
+config :legion, :recovery,
+  stores: [MyApp.AgentStore],
+  limit: 10
+```
+
+Recovery is a one-shot asynchronous startup worker, so it does not delay the
+application starting. It calls `list(10)` on each configured store, filters the
+returned runs to interrupted roots, then calls `Legion.recover/2` with no more
+than 10 recoveries in flight across all stores. Omit `:recovery` to disable it.
+
 Configure model and runtime options separately:
 
 ```elixir
