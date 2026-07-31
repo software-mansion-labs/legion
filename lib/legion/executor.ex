@@ -10,6 +10,7 @@ defmodule Legion.Executor do
   """
 
   alias Legion.{Sandbox, Telemetry}
+  alias ReqLLM.Usage
 
   @default_config %{
     model: "openai:gpt-5.4",
@@ -113,18 +114,18 @@ defmodule Legion.Executor do
   Returns `{:ok, result, messages, bindings, turn_tokens}` or
   `{:cancel, reason, messages, bindings, turn_tokens}`.
   """
-  def run(agent_module, messages, config, bindings \\ [], execution \\ nil, turn_tokens \\ 0) do
+  def run(agent_module, messages, config, bindings \\ [], execution \\ nil) do
     config = Map.merge(@default_config, config)
 
     case execution do
       nil ->
-        loop(agent_module, messages, config, 0, 0, bindings, turn_tokens)
+        loop(agent_module, messages, config, 0, 0, bindings, 0)
 
       %{phase: :awaiting_llm, iteration: i, retries: r} ->
-        loop(agent_module, messages, config, i, r, bindings, turn_tokens)
+        loop(agent_module, messages, config, i, r, bindings, 0)
 
       %{phase: :completing, iteration: _i, retries: _r} ->
-        {:ok, nil, messages, bindings, turn_tokens}
+        {:ok, nil, messages, bindings, 0}
     end
   end
 
@@ -144,47 +145,54 @@ defmodule Legion.Executor do
 
   defp iterate(agent_module, messages, config, iteration, retries, bindings, turn_tokens) do
     # credo:disable-for-next-line
-    try do
-      with {:ok, action, messages, turn_tokens} <-
-             call_llm(agent_module, messages, config, iteration, turn_tokens),
-           :ok <- validate_action_type(agent_module, action) do
-        result =
-          handle_action(
-            agent_module,
-            messages,
-            config,
-            action,
-            iteration,
-            retries,
-            bindings,
-            turn_tokens
-          )
-
-        {result, %{action: action["action"]}}
-      else
-        {:error, reason} ->
-          result =
-            handle_execution_error(
-              agent_module,
-              messages,
-              config,
-              reason,
-              iteration,
-              retries,
-              bindings,
-              turn_tokens
-            )
-
-          {result, %{action: nil}}
+    llm_result =
+      try do
+        call_llm(agent_module, messages, config, iteration, turn_tokens)
+      rescue
+        error -> {:error, error, turn_tokens}
       end
-    rescue
-      e ->
+
+    case llm_result do
+      {:ok, action, messages, turn_tokens} ->
+        case validate_action_type(agent_module, action) do
+          :ok ->
+            result =
+              handle_action(
+                agent_module,
+                messages,
+                config,
+                action,
+                iteration,
+                retries,
+                bindings,
+                turn_tokens
+              )
+
+            {result, %{action: action["action"]}}
+
+          {:error, reason} ->
+            result =
+              handle_execution_error(
+                agent_module,
+                messages,
+                config,
+                reason,
+                iteration,
+                retries,
+                bindings,
+                turn_tokens
+              )
+
+            {result, %{action: nil}}
+        end
+
+      {:error, reason, turn_tokens} ->
         result =
           handle_execution_error(
             agent_module,
             messages,
             config,
-            e,
+            reason,
             iteration,
             retries,
             bindings,
@@ -208,16 +216,28 @@ defmodule Legion.Executor do
       fn ->
         case ReqLLM.generate_object(config.model, messages, action_schema(agent_module)) do
           {:ok, response} ->
-            action = extract_object(response)
-            messages = messages ++ [message(:assistant, Jason.encode!(action))]
-            turn_tokens = turn_tokens + response.usage.total_tokens
-            {{:ok, action, messages, turn_tokens}, %{object: action}}
+            handle_llm_response(response, messages, turn_tokens)
 
           {:error, reason} ->
-            {{:error, "LLM request failed: #{inspect(reason)}"}, %{error: reason}}
+            {{:error, "LLM request failed: #{inspect(reason)}", turn_tokens}, %{error: reason}}
         end
       end
     )
+  end
+
+  defp handle_llm_response(response, messages, turn_tokens) do
+    usage = Usage.normalize(response.usage)
+    turn_tokens = turn_tokens + usage.total_tokens
+
+    case extract_object(response) do
+      {:ok, action} when is_map(action) ->
+        messages = messages ++ [message(:assistant, Jason.encode!(action))]
+        {{:ok, action, messages, turn_tokens}, %{object: action}}
+
+      {:error, reason} ->
+        {{:error, "LLM response object invalid: #{inspect(reason)}", turn_tokens},
+         %{error: reason}}
+    end
   end
 
   defp checkpoint!(config, messages, bindings, execution) do
@@ -392,14 +412,16 @@ defmodule Legion.Executor do
     {:error, "Response missing required 'action' field, got: #{inspect(action)}"}
   end
 
-  defp extract_object(%{object: object}) when is_map(object), do: object
+  defp extract_object(%{object: object}) when is_map(object), do: {:ok, object}
 
   defp extract_object(%{message: %{tool_calls: tool_calls}}) when is_list(tool_calls) do
-    ReqLLM.ToolCall.find_args(tool_calls, "structured_output") ||
-      raise "LLM response contained no structured object"
+    case ReqLLM.ToolCall.find_args(tool_calls, "structured_output") do
+      args when is_map(args) -> {:ok, args}
+      _ -> {:error, "LLM response contained no structured object"}
+    end
   end
 
-  defp extract_object(_response), do: raise("LLM response contained no structured object")
+  defp extract_object(_response), do: {:error, "LLM response contained no structured object"}
 
   defp format_result(result, bindings, config) do
     variable_names = bindings |> Keyword.keys() |> Enum.map(&"`#{&1}`")

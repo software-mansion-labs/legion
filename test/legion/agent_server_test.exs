@@ -41,33 +41,29 @@ defmodule Legion.AgentServerTest do
 
   @moduletag capture_log: true
 
-  defp llm_response(result) do
-    {:ok,
-     %ReqLLM.Response{
-       id: "test",
-       model: "test",
-       context: nil,
-       object: %{"action" => "return", "code" => "", "result" => result}
-     }}
+  defp llm_response(result, total_tokens \\ 0) do
+    llm_object(%{"action" => "return", "code" => "", "result" => result}, total_tokens)
   end
 
-  defp llm_eval_response(code) do
-    {:ok,
-     %ReqLLM.Response{
-       id: "test",
-       model: "test",
-       context: nil,
-       object: %{"action" => "eval_and_complete", "code" => code, "result" => ""}
-     }}
+  defp llm_eval_response(code, total_tokens \\ 0) do
+    llm_object(%{"action" => "eval_and_complete", "code" => code, "result" => ""}, total_tokens)
   end
 
-  defp llm_eval_continue_response(code) do
+  defp llm_eval_continue_response(code, total_tokens \\ 0) do
+    llm_object(
+      %{"action" => "eval_and_continue", "code" => code, "result" => ""},
+      total_tokens
+    )
+  end
+
+  defp llm_object(object, total_tokens) do
     {:ok,
      %ReqLLM.Response{
        id: "test",
        model: "test",
        context: nil,
-       object: %{"action" => "eval_and_continue", "code" => code, "result" => ""}
+       object: object,
+       usage: %{total_tokens: total_tokens}
      }}
   end
 
@@ -591,7 +587,8 @@ defmodule Legion.AgentServerTest do
                parent_agent_id: nil,
                started_at: started_at,
                status: nil,
-               conversation_state: nil
+               conversation_state: nil,
+               total_tokens: 0
              } = started
 
       assert is_struct(started_at, NaiveDateTime)
@@ -617,6 +614,43 @@ defmodule Legion.AgentServerTest do
              ] = messages
 
       refute Enum.any?(messages, &(&1.role == "system"))
+    end
+
+    test "accumulates token totals across turns" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> llm_response("first", 7)
+          2 -> llm_response("second", 11)
+        end
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-turns")
+      assert {:ok, "first"} = Legion.call(pid, "first turn")
+      assert {:ok, "second"} = Legion.call(pid, "second turn")
+
+      assert {:ok, %Payload{total_tokens: 18}} = MemoryStore.get("usage-turns")
+    end
+
+    test "restored conversations add only new invocation usage" do
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "usage-restore",
+                 total_tokens: 100,
+                 conversation_state: %{messages: [], bindings: [], execution: nil}
+               })
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        llm_response("new work", 20)
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-restore")
+      assert {:ok, "new work"} = Legion.call(pid, "continue")
+
+      assert {:ok, %Payload{total_tokens: 120}} = MemoryStore.get("usage-restore")
     end
 
     test "saves a snapshot before the caller receives its reply" do
@@ -972,6 +1006,7 @@ defmodule Legion.AgentServerTest do
                  agent_id: "resume-awaiting-llm",
                  agent_module: MathAgent,
                  status: :running,
+                 total_tokens: 0,
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "compute"}],
                    bindings: [x: 42],
@@ -1002,6 +1037,7 @@ defmodule Legion.AgentServerTest do
                  agent_id: "resume-completing",
                  agent_module: MathAgent,
                  status: :running,
+                 total_tokens: 0,
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "compute"}],
                    bindings: [x: 42],
@@ -1044,6 +1080,7 @@ defmodule Legion.AgentServerTest do
                  parent_agent_id: nil,
                  agent_module: MathAgent,
                  status: :running,
+                 total_tokens: 0,
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "compute"}],
                    bindings: [x: 42],
@@ -1079,6 +1116,7 @@ defmodule Legion.AgentServerTest do
                  parent_agent_id: nil,
                  agent_module: MathAgent,
                  status: :idle,
+                 total_tokens: 0,
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "compute"}],
                    bindings: [x: 42],
@@ -1096,6 +1134,7 @@ defmodule Legion.AgentServerTest do
                  parent_agent_id: "recover-parent",
                  agent_module: MathAgent,
                  status: :running,
+                 total_tokens: 0,
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "compute"}],
                    bindings: [x: 42],

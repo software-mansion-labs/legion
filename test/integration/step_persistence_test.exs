@@ -83,7 +83,8 @@ defmodule Legion.Integration.StepPersistenceTest do
        id: "test",
        model: "test",
        context: nil,
-       object: %{"action" => action, "code" => code, "result" => result}
+       object: %{"action" => action, "code" => code, "result" => result},
+       usage: %{total_tokens: 0}
      }}
   end
 end

@@ -19,7 +19,8 @@ defmodule Legion.ParallelAndPipelineTest do
        id: "test",
        model: "test",
        context: nil,
-       object: %{"action" => "return", "code" => "", "result" => result}
+       object: %{"action" => "return", "code" => "", "result" => result},
+       usage: %{total_tokens: 0}
      }}
   end
 
@@ -53,7 +54,8 @@ defmodule Legion.ParallelAndPipelineTest do
              id: "cancel",
              model: "test",
              context: nil,
-             object: %{"action" => "eval_and_continue", "code" => "1 + 1", "result" => ""}
+             object: %{"action" => "eval_and_continue", "code" => "1 + 1", "result" => ""},
+             usage: %{total_tokens: 0}
            }}
         end
       end)
@@ -126,7 +128,8 @@ defmodule Legion.ParallelAndPipelineTest do
            id: "cancel",
            model: "test",
            context: nil,
-           object: %{"action" => "eval_and_continue", "code" => "1 + 1", "result" => ""}
+           object: %{"action" => "eval_and_continue", "code" => "1 + 1", "result" => ""},
+           usage: %{total_tokens: 0}
          }}
       end)
 
