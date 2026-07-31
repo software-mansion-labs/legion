@@ -21,7 +21,12 @@ defmodule Legion.Store.PostgresDbTest do
       parent_agent_id: "parent-1",
       status: :idle,
       started_at: ~N[2026-01-01 00:00:00.000000],
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [x: 42],
+        execution: nil
+      },
+      total_tokens: 100
     }
 
     assert :ok = Store.save(payload)
@@ -36,7 +41,7 @@ defmodule Legion.Store.PostgresDbTest do
 
     assert :ok = Store.save(payload)
     assert {:ok, stored} = Store.get("state-only")
-    assert stored == %{payload | status: :idle}
+    assert stored == %{payload | status: :idle, total_tokens: 0}
   end
 
   test "save/1 partial upsert preserves omitted fields and advances updated_at" do
@@ -46,7 +51,12 @@ defmodule Legion.Store.PostgresDbTest do
       parent_agent_id: "parent-1",
       status: :running,
       started_at: ~N[2026-01-01 00:00:00.000000],
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [x: 42],
+        execution: nil
+      },
+      total_tokens: 100
     }
 
     assert :ok = Store.save(initial)
@@ -63,7 +73,12 @@ defmodule Legion.Store.PostgresDbTest do
               parent_agent_id: "parent-1",
               status: :idle,
               started_at: ~N[2026-01-01 00:00:00.000000],
-              conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+              conversation_state: %{
+                messages: [%{role: "user", content: "hi"}],
+                bindings: [x: 42],
+                execution: nil
+              },
+              total_tokens: 100
             }} = Store.get("user_42")
 
     %{rows: [[updated_at]]} =

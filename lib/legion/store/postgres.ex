@@ -91,6 +91,7 @@ defmodule Legion.Store.Postgres do
           field :status, :string
           field :started_at, :naive_datetime_usec
           field :conversation_state, :binary
+          field :total_tokens, :integer
           field :inserted_at, :naive_datetime_usec
           field :updated_at, :naive_datetime_usec
         end
@@ -170,7 +171,8 @@ defmodule Legion.Store.Postgres do
       parent_agent_id: record.parent_agent_id,
       status: decode_status(record.status),
       started_at: record.started_at,
-      conversation_state: decode_conversation_state(record.conversation_state)
+      conversation_state: decode_conversation_state(record.conversation_state),
+      total_tokens: record.total_tokens
     }
   end
 
