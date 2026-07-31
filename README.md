@@ -191,7 +191,9 @@ defmodule MyApp.AgentStore do
 end
 ```
 
-Step persistence records the latest recoverable state, but Legion does not automatically continue an interrupted turn.
+Step persistence records the latest recoverable state. When you configure
+`:recovery` below, Legion scans persisted runs once at application startup and
+automatically attempts to recover eligible interrupted root runs.
 
 ## Multi-Agent Systems
 
@@ -273,6 +275,33 @@ config :legion, :store, MyApp.AgentStore
 ```
 
 A `store:` passed to `Legion.start_link/2` overrides the global store. With a global store configured, pass only `agent_id:` to select an existing conversation; if you omit it, Legion generates one.
+
+To recover interrupted root runs when the application starts, configure the
+stores to scan and a recovery limit:
+
+```elixir
+config :legion, :recovery,
+  stores: [MyApp.AgentStore],
+  limit: 10
+```
+
+Recovery starts a temporary worker asynchronously, so it does not delay
+application startup. The worker calls `list(limit)` on every configured store,
+selects interrupted root runs, and calls `Legion.recover/2` for each. `limit`
+is both the maximum number of runs read from each store and the maximum number
+of recoveries in flight across all stores. The worker performs the recovery
+scan, then exits and is not restarted. Omit `:recovery` to disable it.
+
+To recover a known interrupted root run directly:
+
+```elixir
+case Legion.recover("user_42:chat_7", store: MyApp.AgentStore) do
+  :ok -> :recovered
+  {:error, :already_running} -> :already_running
+  {:error, :not_recoverable} -> :not_an_interrupted_root
+  {:error, reason} -> {:recovery_failed, reason}
+end
+```
 
 Configure model and runtime options separately:
 

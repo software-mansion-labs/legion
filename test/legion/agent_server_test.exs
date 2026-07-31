@@ -92,6 +92,17 @@ defmodule Legion.AgentServerTest do
     end
   end
 
+  describe "start_monitor/2" do
+    test "starts an agent and returns a monitor reference" do
+      assert {:ok, {pid, monitor_ref}} = Legion.AgentServer.start_monitor(MathAgent)
+      assert Process.alive?(pid)
+
+      GenServer.stop(pid)
+
+      assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}
+    end
+  end
+
   describe "config validation" do
     test "warns about unknown config keys" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -463,9 +474,14 @@ defmodule Legion.AgentServerTest do
 
         merged = merge(existing, payload)
 
+        state =
+          state
+          |> Map.put(payload.agent_id, {:ok, merged})
+          |> Map.update({:writes, payload.agent_id}, [payload], &[payload | &1])
+
+        if watcher = Map.get(state, :save_watcher), do: send(watcher, {:store_saved, payload})
+
         state
-        |> Map.put(payload.agent_id, {:ok, merged})
-        |> Map.update({:writes, payload.agent_id}, [payload], &[payload | &1])
       end)
 
       :ok
@@ -476,6 +492,10 @@ defmodule Legion.AgentServerTest do
     def writes(agent_id) do
       Agent.get(__MODULE__, &Map.get(&1, {:writes, agent_id}, []))
       |> Enum.reverse()
+    end
+
+    def watch_saves(test_pid) do
+      Agent.update(__MODULE__, &Map.put(&1, :save_watcher, test_pid))
     end
 
     def statuses(agent_id) do
@@ -532,6 +552,13 @@ defmodule Legion.AgentServerTest do
     setup do
       start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
       :ok
+    end
+
+    test "passes the store persistence frequency into the agent server state" do
+      {:ok, pid} =
+        Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-frequency")
+
+      assert %{persistence_frequency: :step} = :sys.get_state(pid)
     end
 
     test "brackets each turn with :running and :idle status writes" do
@@ -691,7 +718,11 @@ defmodule Legion.AgentServerTest do
 
       assert %Payload{
                status: :running,
-               conversation_state: %{messages: [%{type: :user}], bindings: []}
+               conversation_state: %{
+                 messages: [%{type: :user}],
+                 bindings: [],
+                 execution: nil
+               }
              } = running
 
       assert %Payload{
@@ -705,7 +736,7 @@ defmodule Legion.AgentServerTest do
 
       assert %Payload{status: :idle, conversation_state: final_state} = completed
       assert final_state.bindings == []
-      refute Map.has_key?(final_state, :execution)
+      assert final_state.execution == nil
     end
 
     test "a :step store persists eval_and_complete before the final snapshot" do
@@ -728,7 +759,7 @@ defmodule Legion.AgentServerTest do
              } = checkpoint
 
       assert %Payload{status: :idle, conversation_state: final_state} = completed
-      refute Map.has_key?(final_state, :execution)
+      assert final_state.execution == nil
     end
 
     test "a :step store persists retry state after an error message" do
@@ -935,10 +966,145 @@ defmodule Legion.AgentServerTest do
              ] = Legion.get_messages(revived)
     end
 
+    test "an awaiting-LLM checkpoint resumes with one request and finishes idle" do
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "resume-awaiting-llm",
+                 agent_module: MathAgent,
+                 status: :running,
+                 conversation_state: %{
+                   messages: [%{role: "user", type: :user, content: "compute"}],
+                   bindings: [x: 42],
+                   execution: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+                 }
+               })
+
+      MemoryStore.watch_saves(self())
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_pid, :llm_requested)
+        llm_response("done")
+      end)
+
+      assert {:ok, _pid} = Legion.resume("resume-awaiting-llm", store: MemoryStore)
+      assert_receive :llm_requested
+
+      assert_receive {:store_saved,
+                      %Payload{status: :idle, conversation_state: %{execution: nil}}}
+
+      refute_receive :llm_requested, 50
+    end
+
+    test "a completing checkpoint resumes without a request and finishes idle" do
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "resume-completing",
+                 agent_module: MathAgent,
+                 status: :running,
+                 conversation_state: %{
+                   messages: [%{role: "user", type: :user, content: "compute"}],
+                   bindings: [x: 42],
+                   execution: %{phase: :completing, iteration: 1, retries: 0}
+                 }
+               })
+
+      MemoryStore.watch_saves(self())
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_pid, :llm_requested)
+        llm_response("unexpected")
+      end)
+
+      assert {:ok, _pid} = Legion.resume("resume-completing", store: MemoryStore)
+
+      assert_receive {:store_saved,
+                      %Payload{status: :idle, conversation_state: %{execution: nil}}}
+
+      refute_receive :llm_requested, 100
+    end
+
     test "resume/2 raises for an agent_id the store has no run for" do
       assert_raise ArgumentError, ~r/no run recorded/, fn ->
         Legion.resume("ghost", store: MemoryStore)
       end
+    end
+
+    test "resume/2 identifies itself when no store is configured" do
+      assert_raise ArgumentError, ~r/resume\/2 requires a :store/, fn ->
+        Legion.resume("missing-store")
+      end
+    end
+
+    test "recover/2 completes an interrupted root run and stops its process" do
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "recover-awaiting-llm",
+                 parent_agent_id: nil,
+                 agent_module: MathAgent,
+                 status: :running,
+                 conversation_state: %{
+                   messages: [%{role: "user", type: :user, content: "compute"}],
+                   bindings: [x: 42],
+                   execution: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+                 }
+               })
+
+      assert :ok = Legion.recover("recover-awaiting-llm", store: MemoryStore)
+
+      assert {:ok, %Payload{status: :idle, conversation_state: %{execution: nil}}} =
+               MemoryStore.get("recover-awaiting-llm")
+
+      assert(
+        case Legion.lookup("recover-awaiting-llm") do
+          :error -> true
+          {:ok, pid} -> not Process.alive?(pid)
+        end
+      )
+    end
+
+    test "recover/2 returns error when agent is running" do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "recover-running")
+
+      assert {:error, :already_running} = Legion.recover("recover-running", store: MemoryStore)
+
+      assert Legion.running?(pid)
+    end
+
+    test "recover/2 refuses an idle root run" do
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "recover-idle-root",
+                 parent_agent_id: nil,
+                 agent_module: MathAgent,
+                 status: :idle,
+                 conversation_state: %{
+                   messages: [%{role: "user", type: :user, content: "compute"}],
+                   bindings: [x: 42],
+                   execution: %{phase: :completing, iteration: 1, retries: 0}
+                 }
+               })
+
+      assert {:error, :not_recoverable} = Legion.recover("recover-idle-root", store: MemoryStore)
+    end
+
+    test "recover/2 refuses a running child run" do
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "recover-running-child",
+                 parent_agent_id: "recover-parent",
+                 agent_module: MathAgent,
+                 status: :running,
+                 conversation_state: %{
+                   messages: [%{role: "user", type: :user, content: "compute"}],
+                   bindings: [x: 42],
+                   execution: %{phase: :completing, iteration: 1, retries: 0}
+                 }
+               })
+
+      assert {:error, :not_recoverable} =
+               Legion.recover("recover-running-child", store: MemoryStore)
     end
 
     test "sub-agents inherit the parent store and link to the parent conversation" do

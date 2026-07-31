@@ -71,10 +71,11 @@ defmodule Legion.Store do
   Stores must implement `get/1`, `list/1`, and `save/1`.
 
   `save/1` receives a `Legion.Store.Payload`. Its `:conversation_state` is a
-  map containing the conversation's `:messages` (without the system prompt)
-  and `:bindings` from evaluated code. Step snapshots also contain an
-  `:execution` map with `:phase`, `:iteration`, and `:retries`. `:status`
-  records whether the agent is mid-turn. The payload also carries the agent
+  map containing the conversation's `:messages` (without the system prompt),
+  `:bindings` from evaluated code, and `:execution`. `:execution` is `nil`
+  for ordinary snapshots and is a map with `:phase`, `:iteration`, and
+  `:retries` for step checkpoints. `:status` records whether the agent is
+  mid-turn. The payload also carries the agent
   module, parent conversation, and start time when those values are known.
 
   With `binding_scope: :turn`, active bindings are included in step snapshots
@@ -96,8 +97,10 @@ defmodule Legion.Store do
 
   Step persistence accepts a replay window between an LLM selecting an eval
   action and the following result or error checkpoint. A crash in that window
-  can replay the action and any external side effects. Automatic continuation
-  of an interrupted turn is not currently performed.
+  can replay the action and any external side effects. Configure
+  `:recovery` with stores and a limit to recover interrupted root turns once
+  when the Legion application starts; see `Legion.Recovery` and
+  `Legion.recover/2`.
 
   ## Reading conversations
 

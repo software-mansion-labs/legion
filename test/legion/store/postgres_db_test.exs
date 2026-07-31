@@ -36,7 +36,11 @@ defmodule Legion.Store.PostgresDbTest do
   test "save/1 partially inserts only the supplied payload fields" do
     payload = %Payload{
       agent_id: "state-only",
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: []}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [],
+        execution: nil
+      }
     }
 
     assert :ok = Store.save(payload)

@@ -4,6 +4,10 @@ defmodule Legion.AgentServer do
 
   Holds the message history across multiple turns. Each `call` or `cast`
   appends the user message and runs `Executor` to completion (blocking).
+
+  When Legion starts an agent in resume or recovery mode, the server restores
+  the persisted conversation and executor checkpoint, then continues it during
+  startup. Recovery stops the temporary process after that execution finishes.
   """
 
   use GenServer
@@ -21,12 +25,26 @@ defmodule Legion.AgentServer do
     :store,
     :agent_id,
     :persistence_frequency,
+    :execution,
     bindings: []
   ]
 
   # Client API
 
   def start_link(agent_module, opts \\ []) do
+    {init_arg, gen_opts} = start_args(agent_module, opts)
+
+    GenServer.start_link(__MODULE__, init_arg, gen_opts)
+  end
+
+  @doc false
+  def start_monitor(agent_module, opts \\ []) do
+    {init_arg, gen_opts} = start_args(agent_module, opts)
+
+    :gen_server.start_monitor(__MODULE__, init_arg, gen_opts)
+  end
+
+  defp start_args(agent_module, opts) do
     {name, opts} = Keyword.pop(opts, :name)
     {store, opts} = Keyword.pop(opts, :store)
     {agent_id, opts} = Keyword.pop(opts, :agent_id)
@@ -44,11 +62,7 @@ defmodule Legion.AgentServer do
     gen_opts = if name, do: [name: name], else: []
     config = resolve_config(agent_module, opts)
 
-    GenServer.start_link(
-      __MODULE__,
-      {agent_module, config, store, agent_id, persistence_frequency},
-      gen_opts
-    )
+    {{agent_module, config, store, agent_id, persistence_frequency}, gen_opts}
   end
 
   def call(agent, message, timeout \\ :infinity) do
@@ -72,6 +86,7 @@ defmodule Legion.AgentServer do
   @impl true
   def init({agent_module, config, store, agent_id, persistence_frequency}) do
     parent_agent_id = Vault.get(:agent_id)
+    mode = Map.get(config, :start_mode, :normal)
 
     Vault.unsafe_put(:agent_id, agent_id)
     Vault.unsafe_put(:parent_agent_id, parent_agent_id)
@@ -95,13 +110,16 @@ defmodule Legion.AgentServer do
       %{agent: agent_module}
     )
 
-    {saved_messages, saved_bindings} =
+    {saved_messages, saved_bindings, saved_execution} =
       case store && store.get(agent_id) do
-        {:ok, %Payload{conversation_state: %{messages: messages, bindings: bindings}}} ->
-          {messages, bindings}
+        {:ok,
+         %Payload{
+           conversation_state: %{messages: messages, bindings: bindings, execution: execution}
+         }} ->
+          {messages, bindings, execution}
 
         _no_state ->
-          {[], []}
+          {[], [], nil}
       end
 
     state = %__MODULE__{
@@ -111,7 +129,8 @@ defmodule Legion.AgentServer do
       store: store,
       agent_id: agent_id,
       persistence_frequency: persistence_frequency,
-      bindings: saved_bindings
+      bindings: saved_bindings,
+      execution: saved_execution
     }
 
     {:ok,
@@ -119,7 +138,22 @@ defmodule Legion.AgentServer do
        agent_module: state.agent_module,
        parent_agent_id: parent_agent_id,
        started_at: NaiveDateTime.utc_now()
-     )}
+     ), {:continue, %{start_mode: mode, execution: saved_execution}}}
+  end
+
+  @impl true
+  def handle_continue(%{start_mode: :normal}, state), do: {:noreply, state}
+
+  @impl true
+  def handle_continue(%{start_mode: :resume, execution: execution}, state) do
+    {_reply, state} = perform_run(state, execution)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_continue(%{start_mode: :recover, execution: execution}, state) do
+    {_reply, state} = perform_run(state, execution)
+    {:stop, :normal, state}
   end
 
   @impl true
@@ -168,7 +202,6 @@ defmodule Legion.AgentServer do
   """
   def handle_message(message, state) do
     content = stringify(message, state.config[:max_message_length])
-    conversation_scope? = Map.get(state.config, :binding_scope, :turn) == :conversation
 
     # Persist the user message before the turn runs so store-backed views
     # (e.g. the legion_web database source) show it without waiting for the
@@ -177,6 +210,12 @@ defmodule Legion.AgentServer do
       state
       |> Map.update!(:messages, &(&1 ++ [Executor.message(:user, content)]))
       |> persist([:conversation_state, status: :running])
+
+    perform_run(state)
+  end
+
+  defp perform_run(state, execution \\ nil) do
+    conversation_scope? = Map.get(state.config, :binding_scope, :turn) == :conversation
 
     checkpoint =
       if state.persistence_frequency == :step do
@@ -191,7 +230,7 @@ defmodule Legion.AgentServer do
     {status, value, final_messages, final_bindings} =
       Telemetry.span(
         [:legion, :agent, :message],
-        %{agent: state.agent_module, message: content},
+        %{agent: state.agent_module, message: state.messages |> List.last() |> Map.get(:content)},
         fn ->
           messages = state.messages
           prev_count = Enum.count(messages, &(&1[:role] == "assistant"))
@@ -199,7 +238,14 @@ defmodule Legion.AgentServer do
           initial_bindings = if conversation_scope?, do: state.bindings, else: []
 
           {status, value, messages, bindings} =
-            result = Executor.run(state.agent_module, messages, executor_config, initial_bindings)
+            result =
+            Executor.run(
+              state.agent_module,
+              messages,
+              executor_config,
+              initial_bindings,
+              execution
+            )
 
           iterations = Enum.count(messages, &(&1[:role] == "assistant")) - prev_count
           {result, %{iterations: iterations, status: status, result: value, bindings: bindings}}
@@ -242,7 +288,7 @@ defmodule Legion.AgentServer do
   defp persisted_conversation_state(%__MODULE__{} = state) do
     [%{role: "system"} | messages] = state.messages
 
-    %{messages: messages, bindings: state.bindings}
+    %{messages: messages, bindings: state.bindings, execution: nil}
   end
 
   defp persisted_conversation_state(%{
@@ -275,7 +321,7 @@ defmodule Legion.AgentServer do
     |> Executor.truncate_content(max_length)
   end
 
-  @known_config_keys ~w(binding_scope max_iterations max_message_length max_retries model sandbox_timeout)a
+  @known_config_keys ~w(binding_scope max_iterations max_message_length max_retries model sandbox_timeout start_mode)a
 
   defp resolve_config(agent_module, opts) do
     app_config = Application.get_env(:legion, :config, %{})
