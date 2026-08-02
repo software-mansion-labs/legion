@@ -57,6 +57,9 @@ defmodule Legion.Store.Postgres do
   `'idle'` when it completes. Step writes update only the conversation state,
   leaving the running status unchanged.
 
+  Usage is stored as a `jsonb[]`: each element contains one complete LLM usage
+  map. PostgreSQL JSON decoding returns string-keyed maps.
+
   `list/1` and `get/1` read persisted
   conversations back from the same table.
 
@@ -91,7 +94,7 @@ defmodule Legion.Store.Postgres do
           field :status, :string
           field :started_at, :naive_datetime_usec
           field :conversation_state, :binary
-          field :total_tokens, :integer
+          field :usage, {:array, :map}
           field :inserted_at, :naive_datetime_usec
           field :updated_at, :naive_datetime_usec
         end
@@ -172,7 +175,7 @@ defmodule Legion.Store.Postgres do
       status: decode_status(record.status),
       started_at: record.started_at,
       conversation_state: decode_conversation_state(record.conversation_state),
-      total_tokens: record.total_tokens
+      usage: record.usage
     }
   end
 

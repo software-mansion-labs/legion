@@ -10,7 +10,6 @@ defmodule Legion.Executor do
   """
 
   alias Legion.{Sandbox, Telemetry}
-  alias ReqLLM.Usage
 
   @default_config %{
     model: "openai:gpt-5.4",
@@ -108,52 +107,52 @@ defmodule Legion.Executor do
   `bindings` seeds the code-evaluation binding. `execution` resumes a step
   checkpoint when present: `:awaiting_llm` continues from its saved iteration
   and retry counters, while `:completing` finishes without another LLM request.
-  Pass `nil` to start a new loop. `:turn_tokens` is the number of tokens used
-  in the current turn so far.
+  Pass `nil` to start a new loop. `:turn_usage` is the complete, ordered list
+  of usage maps returned by LLM requests in the current turn.
 
-  Returns `{:ok, result, messages, bindings, turn_tokens}` or
-  `{:cancel, reason, messages, bindings, turn_tokens}`.
+  Returns `{:ok, result, messages, bindings, turn_usage}` or
+  `{:cancel, reason, messages, bindings, turn_usage}`.
   """
   def run(agent_module, messages, config, bindings \\ [], execution \\ nil) do
     config = Map.merge(@default_config, config)
 
     case execution do
       nil ->
-        loop(agent_module, messages, config, 0, 0, bindings, 0)
+        loop(agent_module, messages, config, 0, 0, bindings, [])
 
       %{phase: :awaiting_llm, iteration: i, retries: r} ->
-        loop(agent_module, messages, config, i, r, bindings, 0)
+        loop(agent_module, messages, config, i, r, bindings, [])
 
       %{phase: :completing, iteration: _i, retries: _r} ->
-        {:ok, nil, messages, bindings, 0}
+        {:ok, nil, messages, bindings, []}
     end
   end
 
-  defp loop(agent_module, messages, config, iteration, retries, bindings, turn_tokens) do
+  defp loop(agent_module, messages, config, iteration, retries, bindings, turn_usage) do
     if iteration >= config.max_iterations do
-      {:cancel, :reached_max_iterations, messages, bindings, turn_tokens}
+      {:cancel, :reached_max_iterations, messages, bindings, turn_usage}
     else
       Telemetry.span(
         [:legion, :iteration],
         %{agent: agent_module, iteration: iteration},
         fn ->
-          iterate(agent_module, messages, config, iteration, retries, bindings, turn_tokens)
+          iterate(agent_module, messages, config, iteration, retries, bindings, turn_usage)
         end
       )
     end
   end
 
-  defp iterate(agent_module, messages, config, iteration, retries, bindings, turn_tokens) do
+  defp iterate(agent_module, messages, config, iteration, retries, bindings, turn_usage) do
     # credo:disable-for-next-line
     llm_result =
       try do
-        call_llm(agent_module, messages, config, iteration, turn_tokens)
+        call_llm(agent_module, messages, config, iteration, turn_usage)
       rescue
-        error -> {:error, error, turn_tokens}
+        error -> {:error, error, turn_usage}
       end
 
     case llm_result do
-      {:ok, action, messages, turn_tokens} ->
+      {:ok, action, messages, turn_usage} ->
         case validate_action_type(agent_module, action) do
           :ok ->
             result =
@@ -165,7 +164,7 @@ defmodule Legion.Executor do
                 iteration,
                 retries,
                 bindings,
-                turn_tokens
+                turn_usage
               )
 
             {result, %{action: action["action"]}}
@@ -180,13 +179,13 @@ defmodule Legion.Executor do
                 iteration,
                 retries,
                 bindings,
-                turn_tokens
+                turn_usage
               )
 
             {result, %{action: nil}}
         end
 
-      {:error, reason, turn_tokens} ->
+      {:error, reason, turn_usage} ->
         result =
           handle_execution_error(
             agent_module,
@@ -196,46 +195,44 @@ defmodule Legion.Executor do
             iteration,
             retries,
             bindings,
-            turn_tokens
+            turn_usage
           )
 
         {result, %{action: nil}}
     end
   end
 
-  defp call_llm(agent_module, messages, config, iteration, turn_tokens) do
+  defp call_llm(agent_module, messages, config, iteration, turn_usage) do
     Telemetry.span(
       [:legion, :llm, :request],
       %{
         agent: agent_module,
         model: config.model,
         message_count: length(messages),
-        iteration: iteration,
-        turn_tokens: turn_tokens
+        iteration: iteration
       },
       fn ->
         case ReqLLM.generate_object(config.model, messages, action_schema(agent_module)) do
           {:ok, response} ->
-            handle_llm_response(response, messages, turn_tokens)
+            handle_llm_response(response, messages, turn_usage)
 
           {:error, reason} ->
-            {{:error, "LLM request failed: #{inspect(reason)}", turn_tokens}, %{error: reason}}
+            {{:error, "LLM request failed: #{inspect(reason)}", turn_usage}, %{error: reason}}
         end
       end
     )
   end
 
-  defp handle_llm_response(response, messages, turn_tokens) do
-    usage = Usage.normalize(response.usage)
-    turn_tokens = turn_tokens + usage.total_tokens
+  defp handle_llm_response(response, messages, turn_usage) do
+    turn_usage = turn_usage ++ [response.usage]
 
     case extract_object(response) do
       {:ok, action} when is_map(action) ->
         messages = messages ++ [message(:assistant, Jason.encode!(action))]
-        {{:ok, action, messages, turn_tokens}, %{object: action}}
+        {{:ok, action, messages, turn_usage}, %{object: action}}
 
       {:error, reason} ->
-        {{:error, "LLM response object invalid: #{inspect(reason)}", turn_tokens},
+        {{:error, "LLM response object invalid: #{inspect(reason)}", turn_usage},
          %{error: reason}}
     end
   end
@@ -267,9 +264,9 @@ defmodule Legion.Executor do
          _i,
          _r,
          bindings,
-         turn_tokens
+         turn_usage
        ),
-       do: {:ok, result, messages, bindings, turn_tokens}
+       do: {:ok, result, messages, bindings, turn_usage}
 
   defp handle_action(
          _agent,
@@ -279,9 +276,9 @@ defmodule Legion.Executor do
          _i,
          _r,
          bindings,
-         turn_tokens
+         turn_usage
        ),
-       do: {:ok, nil, messages, bindings, turn_tokens}
+       do: {:ok, nil, messages, bindings, turn_usage}
 
   defp handle_action(
          agent,
@@ -291,7 +288,7 @@ defmodule Legion.Executor do
          i,
          retries,
          bindings,
-         turn_tokens
+         turn_usage
        )
        when eval in ["eval_and_continue", "eval_and_complete"] and code != "" do
     # Tools that must see the answer come back to the model (e.g. HumanTool)
@@ -315,15 +312,15 @@ defmodule Legion.Executor do
         checkpoint!(config, messages, new_bindings, execution)
 
         if eval == "eval_and_continue",
-          do: loop(agent, messages, config, i + 1, 0, new_bindings, turn_tokens),
-          else: {:ok, result, messages, new_bindings, turn_tokens}
+          do: loop(agent, messages, config, i + 1, 0, new_bindings, turn_usage),
+          else: {:ok, result, messages, new_bindings, turn_usage}
 
       {:error, error} ->
-        handle_execution_error(agent, messages, config, error, i, retries, bindings, turn_tokens)
+        handle_execution_error(agent, messages, config, error, i, retries, bindings, turn_usage)
     end
   end
 
-  defp handle_action(agent, messages, config, action, i, retries, bindings, turn_tokens),
+  defp handle_action(agent, messages, config, action, i, retries, bindings, turn_usage),
     do:
       handle_execution_error(
         agent,
@@ -333,7 +330,7 @@ defmodule Legion.Executor do
         i,
         retries,
         bindings,
-        turn_tokens
+        turn_usage
       )
 
   defp eval_in_span(agent_module, code, config, bindings) do
@@ -368,10 +365,10 @@ defmodule Legion.Executor do
          iteration,
          retries,
          bindings,
-         turn_tokens
+         turn_usage
        ) do
     if retries >= config.max_retries do
-      {:cancel, :reached_max_retries, messages, bindings, turn_tokens}
+      {:cancel, :reached_max_retries, messages, bindings, turn_usage}
     else
       error_text = error |> format_error() |> truncate_content(config[:max_message_length])
 
@@ -392,7 +389,7 @@ defmodule Legion.Executor do
         retries: next_retries
       })
 
-      loop(agent_module, messages, config, iteration, next_retries, bindings, turn_tokens)
+      loop(agent_module, messages, config, iteration, next_retries, bindings, turn_usage)
     end
   end
 

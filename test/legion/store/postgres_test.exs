@@ -37,7 +37,7 @@ defmodule Legion.Store.PostgresTest do
         status: "idle",
         started_at: nil,
         conversation_state: nil,
-        total_tokens: 0,
+        usage: [],
         inserted_at: nil,
         updated_at: nil
       }
@@ -76,7 +76,7 @@ defmodule Legion.Store.PostgresTest do
         bindings: [x: 42],
         execution: nil
       },
-      total_tokens: 100
+      usage: [%{total_tokens: 100}]
     }
 
     assert :ok = Store.save(payload)
@@ -93,7 +93,7 @@ defmodule Legion.Store.PostgresTest do
       }
     }
 
-    expected_payload = %{payload | status: :idle, total_tokens: 0}
+    expected_payload = %{payload | status: :idle, usage: []}
     assert :ok = Store.save(payload)
     assert {:ok, ^expected_payload} = Store.get("state-only")
   end
@@ -113,7 +113,7 @@ defmodule Legion.Store.PostgresTest do
 
     assert :ok = Store.save(payload)
 
-    expected_payload = %{payload | total_tokens: 0}
+    expected_payload = %{payload | usage: []}
     assert {:ok, ^expected_payload} = Store.get("step-state")
   end
 
@@ -129,7 +129,7 @@ defmodule Legion.Store.PostgresTest do
         bindings: [x: 42],
         execution: nil
       },
-      total_tokens: 100
+      usage: [%{total_tokens: 100}]
     }
 
     assert :ok = Store.save(initial)
@@ -148,7 +148,7 @@ defmodule Legion.Store.PostgresTest do
                 bindings: [x: 42],
                 execution: nil
               },
-              total_tokens: 100
+              usage: [%{total_tokens: 100}]
             }} = Store.get("user_42")
 
     assert NaiveDateTime.compare(FakeRepo.run("user_42").updated_at, previous_updated_at) == :gt

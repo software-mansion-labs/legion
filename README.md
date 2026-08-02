@@ -195,6 +195,23 @@ Step persistence records the latest recoverable state. When you configure
 `:recovery` below, Legion scans persisted runs once at application startup and
 automatically attempts to recover eligible interrupted root runs.
 
+### Usage tracking
+
+Legion stores one complete `ReqLLM.Response.usage` map for each successful LLM
+request, in request order. Usage tracking is enabled by default.
+
+Disable it globally before starting agents:
+
+```elixir
+config :legion, :track_usage, false
+```
+
+The setting is read when an agent starts. Disabled agents do not load or update
+usage, so existing stored usage remains unchanged.
+
+With `Legion.Store.Postgres`, usage is stored as a `jsonb[]`. PostgreSQL reloads
+JSON maps with string keys.
+
 ## Multi-Agent Systems
 
 Agents orchestrate other agents through the built-in `AgentTool`:

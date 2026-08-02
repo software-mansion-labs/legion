@@ -196,7 +196,7 @@ defmodule Legion.RecoveryTest do
       parent_agent_id: nil,
       agent_module: RecoveryAgent,
       status: :running,
-      total_tokens: 0,
+      usage: [],
       conversation_state: %{
         messages: [%{role: "user", type: :user, content: "recover me"}],
         bindings: [],

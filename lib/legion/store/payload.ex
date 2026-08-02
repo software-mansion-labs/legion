@@ -19,7 +19,7 @@ defmodule Legion.Store.Payload do
     :status,
     :started_at,
     :conversation_state,
-    :total_tokens
+    :usage
   ]
 
   @type status :: :idle | :running
@@ -43,6 +43,6 @@ defmodule Legion.Store.Payload do
           status: status() | nil,
           started_at: NaiveDateTime.t() | nil,
           conversation_state: state() | nil,
-          total_tokens: non_neg_integer() | nil
+          usage: [map()] | nil
         }
 end

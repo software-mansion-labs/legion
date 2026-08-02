@@ -91,16 +91,39 @@ defmodule Legion.ExecutorTest do
   end
 
   describe "run/3-5" do
-    test "returns tokens used by a single LLM request" do
+    test "returns raw usage from a single LLM request" do
+      usage = %{
+        input_tokens: 12,
+        output_tokens: 5,
+        total_tokens: 17,
+        tool_usage: %{web_search: 1}
+      }
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        {:ok,
+         %ReqLLM.Response{
+           id: "test",
+           model: "test",
+           context: nil,
+           object: %{"action" => "return", "code" => "", "result" => "42"},
+           usage: usage
+         }}
+      end)
+
+      assert {:ok, "42", _messages, [], [^usage]} =
+               Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
+    end
+
+    test "returns usage list from a single LLM request" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         response(%{"action" => "return", "code" => "", "result" => "42"}, 17)
       end)
 
-      assert {:ok, "42", _messages, [], 17} =
+      assert {:ok, "42", _messages, [], [%{total_tokens: 17}]} =
                Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
     end
 
-    test "normalizes provider usage before adding turn tokens" do
+    test "does not normalize provider usage" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         {:ok,
          %ReqLLM.Response{
@@ -112,11 +135,11 @@ defmodule Legion.ExecutorTest do
          }}
       end)
 
-      assert {:ok, "42", _messages, [], 17} =
+      assert {:ok, "42", _messages, [], [%{input_tokens: 12, output_tokens: 5}]} =
                Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
     end
 
-    test "adds each LLM response total across a multi-response turn" do
+    test "preserves usage order across a multi-response turn" do
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -128,7 +151,7 @@ defmodule Legion.ExecutorTest do
         end
       end)
 
-      assert {:ok, "done", _messages, [x: 10], 18} =
+      assert {:ok, "done", _messages, [x: 10], [%{total_tokens: 7}, %{total_tokens: 11}]} =
                Legion.Executor.run(
                  MathAgent,
                  executor_messages("compute"),
@@ -136,7 +159,7 @@ defmodule Legion.ExecutorTest do
                )
     end
 
-    test "retains tokens from an invalid response while retrying" do
+    test "retains usage from an invalid response while retrying" do
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -148,7 +171,7 @@ defmodule Legion.ExecutorTest do
         end
       end)
 
-      assert {:ok, "recovered", _messages, [], 18} =
+      assert {:ok, "recovered", _messages, [], [%{total_tokens: 7}, %{total_tokens: 11}]} =
                Legion.Executor.run(MathAgent, executor_messages("recover"), %{})
     end
 
@@ -239,7 +262,7 @@ defmodule Legion.ExecutorTest do
         end
       end)
 
-      assert {:ok, "recovered", _messages, [], 11} =
+      assert {:ok, "recovered", _messages, [], [%{total_tokens: 11}]} =
                Legion.Executor.run(MathAgent, executor_messages("retry raised error"), %{})
     end
 
