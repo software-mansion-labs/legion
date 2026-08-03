@@ -45,8 +45,7 @@ defmodule Legion.Telemetry do
 
   - `[:legion, :sandbox, :eval, :start | :stop | :exception]`
     - Metadata includes: `agent`, `agent_id`, `code`
-    - Stop adds: `success`, `result` or `error`, and `denied_by` when a
-      `Legion.EvalGuard` refused the code (in which case it never ran)
+    - Stop adds: `success` and `result` or `error`.
 
   ## Eval Guard Events
 

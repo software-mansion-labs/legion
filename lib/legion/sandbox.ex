@@ -30,6 +30,13 @@ defmodule Legion.Sandbox do
 
   alias Legion.Sandbox.ASTChecker
 
+  # Generated code runs with a memory budget whether or not the caller asked
+  # for one - unbounded is never the right default for code an LLM wrote.
+  @default_max_heap 256_000_000
+
+  @doc false
+  def default_max_heap, do: @default_max_heap
+
   @doc """
   Evaluates `code_string` in a sandboxed process.
 
@@ -37,11 +44,16 @@ defmodule Legion.Sandbox do
   `allowed_modules` are aliased and made available to the evaluated code
   (on top of the built-in safe modules).
 
-  `limits` bound the resources of the evaluating process (each `:infinity` to
-  disable, the default):
+  `limits` bound what the evaluating process may take from the node:
 
-    - `:max_heap` — heap budget in bytes; the VM kills the eval on excess
-    - `:max_reductions` — CPU budget in reductions, enforced by polling
+    - `:max_heap` — memory budget in bytes, applied twice: the VM kills the eval
+      when its heap and stack exceed it, and the parent kills it when the
+      binaries it references do (those live off-heap, so the VM flag misses them).
+      Set `:infinity` to disable (default: `#{@default_max_heap}`)
+    - `:max_reductions` — CPU budget in reductions, enforced by polling. Set
+      `:infinity` to disable (default: `:infinity`)
+    - `:priority` — scheduler priority for the eval, any value `Process.flag/2`
+      accepts (default: `:low`, so generated code yields to the rest of the node)
 
   Returns `{:ok, {result, new_bindings}}` on success, or `{:error, reason}` on
   validation failure, runtime exception, crash, timeout, or exceeded limit.
@@ -70,18 +82,24 @@ defmodule Legion.Sandbox do
   # sobelow_skip ["RCE.CodeModule"]
   defp eval(code_string, timeout_ms, bindings, limits) do
     parent = self()
-    max_heap_bytes = Keyword.get(limits, :max_heap, :infinity)
+    max_heap_bytes = Keyword.get(limits, :max_heap, @default_max_heap)
     max_reductions = Keyword.get(limits, :max_reductions, :infinity)
+    priority = Keyword.get(limits, :priority, :low)
 
     {pid, ref} =
       spawn_monitor(fn ->
-        # Generated code must not starve the node (low priority) or OOM it
-        # (max_heap_size makes the VM kill this process at the budget).
-        # Both flags also cover tool code called inline from the eval.
-        Process.flag(:priority, :low)
+        # Generated code must not starve the node (hence the default :low
+        # priority) or OOM it (max_heap_size makes the VM kill this process once
+        # its heap and stack pass the budget; binaries are the parent's job, see
+        # await_result/5). Both flags also cover tool code called inline.
+        Process.flag(:priority, priority)
 
         if is_integer(max_heap_bytes) do
-          heap_words = div(max_heap_bytes, :erlang.system_info(:wordsize))
+          # A size of 0 means "no limit" and the VM rejects anything under its
+          # own minimum heap, so a small budget floors at that minimum - left
+          # alone, it would silently disable the flag or fail to set it at all.
+          {:min_heap_size, min_words} = :erlang.system_info(:min_heap_size)
+          heap_words = max(div(max_heap_bytes, :erlang.system_info(:wordsize)), min_words)
           Process.flag(:max_heap_size, %{size: heap_words, kill: true, error_logger: false})
         end
 
@@ -109,10 +127,10 @@ defmodule Legion.Sandbox do
     await_result(pid, ref, deadline, max_reductions, max_heap_bytes)
   end
 
-  # How often the parent samples the eval's reduction counter. Only relevant
-  # when a :max_reductions limit is set - the budget can be overshot by up to
-  # one interval's worth of work.
-  @reduction_poll_interval_ms 50
+  # How often the parent samples the eval's reduction counter and binary
+  # footprint. Only relevant when one of those limits is set - either budget
+  # can be overshot by up to one interval's worth of work.
+  @poll_interval_ms 50
 
   defp await_result(pid, ref, deadline, max_reductions, max_heap_bytes) do
     receive do
@@ -123,13 +141,14 @@ defmodule Legion.Sandbox do
       # A :killed exit with a heap budget set is the VM enforcing it - nothing
       # else brutally kills the eval while we still hold its monitor.
       {:DOWN, ^ref, :process, _pid, :killed} when is_integer(max_heap_bytes) ->
-        {:error, "evaluation exceeded the memory limit and was killed"}
+        {:error, memory_limit_error()}
 
       {:DOWN, ^ref, :process, _pid, reason} ->
         {:error, {:process_crashed, reason}}
     after
-      wait_ms(deadline, max_reductions) ->
+      wait_ms(deadline, polling?(max_reductions, max_heap_bytes)) ->
         reductions = reductions_over_budget(pid, max_reductions)
+        binary_bytes = binaries_over_budget(pid, max_heap_bytes)
 
         cond do
           deadline != :infinity and System.monotonic_time(:millisecond) >= deadline ->
@@ -142,21 +161,30 @@ defmodule Legion.Sandbox do
             {:error,
              "evaluation exceeded the reduction (CPU) limit after ~#{reductions} reductions and was killed"}
 
+          binary_bytes != nil ->
+            kill(pid, ref)
+            {:error, memory_limit_error()}
+
           true ->
             await_result(pid, ref, deadline, max_reductions, max_heap_bytes)
         end
     end
   end
 
-  defp wait_ms(:infinity, :infinity), do: :infinity
-  defp wait_ms(deadline, :infinity), do: max(deadline - System.monotonic_time(:millisecond), 0)
-  defp wait_ms(:infinity, _max_reductions), do: @reduction_poll_interval_ms
+  defp memory_limit_error, do: "evaluation exceeded the memory limit and was killed"
 
-  defp wait_ms(deadline, _max_reductions) do
+  defp polling?(max_reductions, max_heap_bytes),
+    do: is_integer(max_reductions) or is_integer(max_heap_bytes)
+
+  defp wait_ms(:infinity, false), do: :infinity
+  defp wait_ms(deadline, false), do: max(deadline - System.monotonic_time(:millisecond), 0)
+  defp wait_ms(:infinity, true), do: @poll_interval_ms
+
+  defp wait_ms(deadline, true) do
     deadline
     |> Kernel.-(System.monotonic_time(:millisecond))
     |> max(0)
-    |> min(@reduction_poll_interval_ms)
+    |> min(@poll_interval_ms)
   end
 
   defp reductions_over_budget(_pid, :infinity), do: nil
@@ -167,6 +195,22 @@ defmodule Legion.Sandbox do
     case Process.info(pid, :reductions) do
       {:reductions, reductions} when reductions > max_reductions -> reductions
       _ -> nil
+    end
+  end
+
+  defp binaries_over_budget(_pid, :infinity), do: nil
+
+  defp binaries_over_budget(pid, max_heap_bytes) do
+    # :max_heap_size counts the heap and stack only, so binaries over 64 bytes
+    # - the cheapest way for generated code to eat the node - slip past it.
+    # A process can reference the same binary many times, hence the uniq.
+    with {:binary, entries} <- Process.info(pid, :binary) do
+      bytes =
+        entries
+        |> Enum.uniq_by(&elem(&1, 0))
+        |> Enum.sum_by(&elem(&1, 1))
+
+      if bytes > max_heap_bytes, do: bytes
     end
   end
 

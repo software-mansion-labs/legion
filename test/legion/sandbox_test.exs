@@ -40,7 +40,9 @@ defmodule Legion.SandboxTest do
     # The AST checker blocks Process for generated code; allowing it here is
     # the only way to provoke the :killed exit an external kill would cause.
     assert {:error, {:process_crashed, :killed}} =
-             Legion.Sandbox.execute("Process.exit(self(), :kill)", 15_000, [Process])
+             Legion.Sandbox.execute("Process.exit(self(), :kill)", 15_000, [Process], [],
+               max_heap: :infinity
+             )
   end
 
   test "heap budget leaves ordinary evals untouched" do
@@ -60,6 +62,50 @@ defmodule Legion.SandboxTest do
   test "reduction budget leaves ordinary evals untouched" do
     assert {:ok, {499_500, _}} =
              Legion.Sandbox.execute("Enum.sum(1..999)", 15_000, [], [], max_reductions: 1_000_000)
+  end
+
+  test "eval piling up binaries is killed by the heap budget even though they live off-heap" do
+    code = """
+    chunk = String.duplicate("x", 1_000_000)
+    Enum.reduce(1..500, "", fn _, acc -> acc <> chunk end) |> byte_size()
+    """
+
+    assert {:error, message} = Legion.Sandbox.execute(code, 30_000, [], [], max_heap: 10_000_000)
+    assert message =~ "memory limit"
+  end
+
+  test "binaries under the heap budget are left alone, even referenced many times over" do
+    code = """
+    chunk = String.duplicate("x", 1_000_000)
+    List.duplicate(chunk, 500) |> Enum.map(&byte_size/1) |> Enum.sum()
+    """
+
+    assert {:ok, {500_000_000, _}} =
+             Legion.Sandbox.execute(code, 30_000, [], [], max_heap: 10_000_000)
+  end
+
+  test "a heap budget below the VM's minimum still bounds the eval" do
+    assert {:error, message} =
+             Legion.Sandbox.execute("Enum.to_list(1..3_000_000)", 15_000, [], [], max_heap: 4)
+
+    assert message =~ "memory limit"
+  end
+
+  test "priority defaults to low and is configurable" do
+    # Process is off limits to generated code; the test allows it to read the flag back.
+    code = "Process.info(self(), :priority)"
+
+    assert {:ok, {{:priority, :low}, _}} = Legion.Sandbox.execute(code, 15_000, [Process])
+
+    assert {:ok, {{:priority, :normal}, _}} =
+             Legion.Sandbox.execute(code, 15_000, [Process], [], priority: :normal)
+  end
+
+  test "generated code cannot raise its own priority" do
+    assert {:error, message} =
+             Legion.Sandbox.execute("Process.flag(:priority, :high)", 15_000)
+
+    assert message =~ "Module Process is not allowed"
   end
 
   test "compile error surfaces diagnostics instead of the generic wrapper message" do

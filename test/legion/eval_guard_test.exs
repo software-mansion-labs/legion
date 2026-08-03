@@ -1,6 +1,8 @@
 defmodule Legion.EvalGuardTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   defmodule DenyEverything do
     @behaviour Legion.EvalGuard
 
@@ -40,6 +42,7 @@ defmodule Legion.EvalGuardTest do
     assert reason =~ "renovations"
   end
 
+  @tag capture_log: true
   test "a denial emits telemetry carrying the code and reason" do
     :telemetry.attach(
       "guard-denied-test",
@@ -56,6 +59,42 @@ defmodule Legion.EvalGuardTest do
     assert metadata.guard == DenyEverything
     assert metadata.code == "Shop.checkout()"
     assert metadata.reason =~ "renovations"
+  end
+
+  defmodule Broken do
+    @behaviour Legion.EvalGuard
+
+    @impl true
+    def check("raise", _context), do: raise("the reviewer is on fire")
+    def check("throw", _context), do: throw(:nope)
+    def check("exit", _context), do: exit(:shutdown)
+    def check("garbage", _context), do: :maybe
+  end
+
+  test "a guard that raises denies rather than taking the caller down" do
+    log =
+      capture_log(fn ->
+        assert {:deny, reason} = Legion.EvalGuard.check(Broken, "raise", @context)
+        assert reason =~ "the reviewer is on fire"
+      end)
+
+    assert log =~ "[error]"
+    assert log =~ "Broken failed to return a verdict"
+  end
+
+  @tag capture_log: true
+  test "a guard that throws or exits denies" do
+    assert {:deny, thrown} = Legion.EvalGuard.check(Broken, "throw", @context)
+    assert thrown =~ ":nope"
+
+    assert {:deny, exited} = Legion.EvalGuard.check(Broken, "exit", @context)
+    assert exited =~ ":shutdown"
+  end
+
+  @tag capture_log: true
+  test "a guard returning something that is not a verdict denies" do
+    assert {:deny, reason} = Legion.EvalGuard.check(Broken, "garbage", @context)
+    assert reason =~ ":maybe"
   end
 
   test "the guard receives the code and the agent context" do

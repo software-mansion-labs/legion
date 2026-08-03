@@ -10,14 +10,16 @@ defmodule Legion.Executor do
   """
 
   alias Legion.{EvalGuard, Sandbox, Telemetry}
+  alias Legion.Sandbox.ASTChecker
 
   @default_config %{
     model: "openai:gpt-5.4",
     max_iterations: 10,
     max_retries: 3,
     sandbox_timeout: 60_000,
-    sandbox_max_heap: 256_000_000,
+    sandbox_max_heap: Sandbox.default_max_heap(),
     sandbox_max_reductions: :infinity,
+    sandbox_priority: :low,
     eval_guard: nil,
     binding_scope: :turn,
     max_message_length: 20_000
@@ -290,19 +292,21 @@ defmodule Legion.Executor do
 
       sandbox_limits = [
         max_heap: config.sandbox_max_heap,
-        max_reductions: config.sandbox_max_reductions
+        max_reductions: config.sandbox_max_reductions,
+        priority: config.sandbox_priority
       ]
 
       guard_context = %{agent: agent_module, agent_id: Vault.get(:agent_id), tools: tools}
 
-      with :allow <- EvalGuard.check(config.eval_guard, code, guard_context),
+      with :ok <- ASTChecker.check(code, allowed),
+           :allow <- EvalGuard.check(config.eval_guard, code, guard_context),
            {:ok, {value, new_bindings}} <-
              Sandbox.execute(code, config.sandbox_timeout, allowed, bindings, sandbox_limits) do
         {{:ok, {value, new_bindings}}, %{success: true, result: value}}
       else
         {:deny, reason} ->
           error = "refused by #{inspect(config.eval_guard)}: #{reason}"
-          {{:error, error}, %{success: false, error: error, denied_by: config.eval_guard}}
+          {{:error, error}, %{success: false, error: error}}
 
         {:error, error} ->
           {{:error, error}, %{success: false, error: error}}
