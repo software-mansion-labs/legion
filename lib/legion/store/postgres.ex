@@ -86,13 +86,13 @@ defmodule Legion.Store.Postgres do
         @primary_key {:agent_id, :string, autogenerate: false}
 
         schema unquote(table) do
-          field :agent_module, :string
-          field :parent_agent_id, :string
-          field :status, :string
-          field :started_at, :naive_datetime_usec
-          field :conversation_state, :binary
-          field :inserted_at, :naive_datetime_usec
-          field :updated_at, :naive_datetime_usec
+          field(:agent_module, :string)
+          field(:parent_agent_id, :string)
+          field(:status, :string)
+          field(:started_at, :naive_datetime_usec)
+          field(:conversation_state, :binary)
+          field(:inserted_at, :naive_datetime_usec)
+          field(:updated_at, :naive_datetime_usec)
         end
       end
 
@@ -182,9 +182,9 @@ defmodule Legion.Store.Postgres do
 
     %{
       messages: Map.get(state, :messages, []),
-      bindings: Map.get(state, :bindings, [])
+      bindings: Map.get(state, :bindings, []),
+      execution: Map.get(state, :execution, nil)
     }
-    |> Map.merge(Map.take(state, [:execution]))
   end
 
   defp decode_status("running"), do: :running

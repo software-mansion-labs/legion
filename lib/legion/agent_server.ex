@@ -146,8 +146,12 @@ defmodule Legion.AgentServer do
 
   @impl true
   def handle_continue(%{start_mode: :resume, execution: execution}, state) do
-    {_reply, state} = perform_run(state, execution)
-    {:noreply, state}
+    if match?(%{role: "user"}, List.last(state.messages)) do
+      {_reply, state} = perform_run(state, execution)
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
   end
 
   @impl true
