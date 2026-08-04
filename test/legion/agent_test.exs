@@ -70,10 +70,10 @@ defmodule Legion.AgentTest do
     end
 
     test "passes opts through to start args" do
-      spec = MinimalAgent.child_spec(name: :my_agent, model: "openai:gpt-4o")
+      spec = MinimalAgent.child_spec(model: "openai:gpt-4o", max_iterations: 5)
 
       assert spec.start ==
-               {Legion, :start_link, [MinimalAgent, [name: :my_agent, model: "openai:gpt-4o"]]}
+               {Legion, :start_link, [MinimalAgent, [model: "openai:gpt-4o", max_iterations: 5]]}
     end
   end
 

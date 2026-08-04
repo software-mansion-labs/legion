@@ -18,6 +18,10 @@ defmodule Legion.ApplicationTest do
     assert {Legion.Recovery, :error} in Legion.Application.children()
   end
 
+  test "does not start a local registry for agent names" do
+    refute Process.whereis(Legion.AgentRegistry)
+  end
+
   test "passes configured recovery options to the recovery child" do
     config = [
       stores: [RecoveryStore],

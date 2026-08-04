@@ -60,11 +60,9 @@ defmodule Legion.Store do
 
       Legion.start_link(ChatAgent, agent_id: "user_42:chat_7")
 
-  Omitting `:agent_id` makes Legion generate one. That
-  suits a brand-new conversation: read it back with `Legion.get_agent_id/1` and
-  persist the mapping if you want to resume the chat later. Pass your own id to
-  resume an existing conversation. Two agents started under the same id race onto
-  the same row, so route each conversation to a single process.
+  Omitting `:agent_id` makes Legion generate one. That suits a brand-new conversation:
+  read it back with `Legion.get_agent_id/1` and persist the mapping if you want to resume
+  the chat later.
 
   ## Required callbacks
 

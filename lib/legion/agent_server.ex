@@ -40,12 +40,12 @@ defmodule Legion.AgentServer do
   @doc false
   def start_monitor(agent_module, opts \\ []) do
     {init_arg, gen_opts} = start_args(agent_module, opts)
+    {name, gen_opts} = Keyword.pop!(gen_opts, :name)
 
-    :gen_server.start_monitor(__MODULE__, init_arg, gen_opts)
+    :gen_server.start_monitor(name, __MODULE__, init_arg, gen_opts)
   end
 
   defp start_args(agent_module, opts) do
-    {name, opts} = Keyword.pop(opts, :name)
     {store, opts} = Keyword.pop(opts, :store)
     {agent_id, opts} = Keyword.pop(opts, :agent_id)
 
@@ -59,7 +59,7 @@ defmodule Legion.AgentServer do
     agent_id = agent_id || generate_id()
     persistence_frequency = Store.persistence_frequency(store)
 
-    gen_opts = if name, do: [name: name], else: []
+    gen_opts = [name: Legion.AgentIndex.name(agent_id)]
     config = resolve_config(agent_module, opts)
 
     {{agent_module, config, store, agent_id, persistence_frequency}, gen_opts}
@@ -91,12 +91,6 @@ defmodule Legion.AgentServer do
     Vault.unsafe_put(:agent_id, agent_id)
     Vault.unsafe_put(:parent_agent_id, parent_agent_id)
     if store, do: Vault.unsafe_put(:store, store)
-
-    {:ok, _} =
-      Registry.register(Legion.AgentRegistry, agent_id, %{
-        parent_agent_id: parent_agent_id,
-        started_at: NaiveDateTime.utc_now()
-      })
 
     for tool <- agent_module.tools() do
       Vault.unsafe_put(tool, agent_module.tool_config(tool))

@@ -13,7 +13,6 @@ defmodule Legion.Application do
   @doc false
   def children do
     [
-      {Registry, keys: :unique, name: Legion.AgentRegistry},
       {Legion.Recovery, Application.fetch_env(:legion, :recovery)}
     ]
   end

@@ -174,6 +174,18 @@ Use a stable `agent_id` to continue the same conversation after a process or app
 {:ok, pid} = Legion.resume("user_42:chat_7", store: MyApp.AgentStore)
 ```
 
+An `agent_id` also names its live process across connected nodes. Only one
+process can own an id at a time. Concurrent `start_link/2` calls return
+`{:error, {:already_started, pid}}` to the loser, while `resume/2` returns
+`{:ok, pid}` for either the newly started or existing process.
+
+Disconnected network partitions can temporarily own the same id. When nodes
+reconnect, `:global` resolves the conflict by terminating one owner.
+
+`resume/2` returns `{:error, :not_resumable}` when the selected store has no
+payload containing an agent module. It raises when no store was passed or
+configured.
+
 If you omit `agent_id`, Legion generates one. Save it if you want to resume the conversation later:
 
 ```elixir
@@ -304,6 +316,10 @@ case Legion.recover("user_42:chat_7", store: MyApp.AgentStore) do
   {:error, reason} -> {:recovery_failed, reason}
 end
 ```
+
+`recover/2` validates the selected store before claiming the agent id. Missing
+payloads, payloads without an agent module, idle runs, and child runs return
+`{:error, :not_recoverable}`. It raises when no store was passed or configured.
 
 Configure model and runtime options separately:
 

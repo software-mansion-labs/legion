@@ -424,17 +424,6 @@ defmodule Legion.AgentServerTest do
     end
   end
 
-  describe "named registration" do
-    test "agent can be started with a registered name" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_response("42")
-      end)
-
-      {:ok, _pid} = Legion.start_link(MathAgent, name: :test_named_agent)
-      assert {:ok, "42"} = Legion.call(:test_named_agent, "What is 42?")
-    end
-  end
-
   defmodule MemoryStore do
     @behaviour Legion.Store
 
@@ -528,6 +517,19 @@ defmodule Legion.AgentServerTest do
         {field, value}, payload -> Map.put(payload, field, value)
       end)
     end
+  end
+
+  defmodule EmptyStore do
+    @behaviour Legion.Store
+
+    @impl Legion.Store
+    def get(_agent_id), do: :error
+
+    @impl Legion.Store
+    def list(_limit), do: []
+
+    @impl Legion.Store
+    def save(_payload), do: :ok
   end
 
   defmodule StepMemoryStore do
@@ -938,11 +940,62 @@ defmodule Legion.AgentServerTest do
       assert {:ok, ^pid} = Legion.lookup("lookup")
     end
 
+    test "allows only one live process to own an agent_id" do
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "unique")
+
+      assert {:error, {:already_started, ^pid}} =
+               Legion.start_link(MathAgent, store: MemoryStore, agent_id: "unique")
+    end
+
+    test "concurrent starts atomically choose one owner for an agent_id" do
+      caller = self()
+
+      contenders =
+        for _index <- 1..8 do
+          Task.async(fn ->
+            send(caller, {:ready, self()})
+
+            receive do
+              :start -> Legion.start_link(MathAgent, store: MemoryStore, agent_id: "race")
+            end
+          end)
+        end
+
+      contender_pids =
+        for _index <- 1..8 do
+          assert_receive {:ready, contender_pid}
+          contender_pid
+        end
+
+      Enum.each(contender_pids, &send(&1, :start))
+      results = Task.await_many(contenders)
+      started_pids = for {:ok, pid} <- results, do: pid
+
+      on_exit(fn ->
+        Enum.each(started_pids, fn pid ->
+          if Process.alive?(pid), do: GenServer.stop(pid)
+        end)
+      end)
+
+      assert [winner] = started_pids
+
+      assert Enum.count(results, &(&1 == {:error, {:already_started, winner}})) == 7
+      assert {:ok, ^winner} = Legion.lookup("race")
+    end
+
     test "resume/2 returns the recorded process while it is alive" do
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "resume-live")
 
-      assert Legion.running?(pid)
+      assert Process.alive?(pid)
       assert {:ok, ^pid} = Legion.resume("resume-live", store: MemoryStore)
+    end
+
+    test "resume/2 validates the requested store before resolving a live process" do
+      {:ok, _pid} =
+        Legion.start_link(MathAgent, store: MemoryStore, agent_id: "resume-wrong-store")
+
+      assert {:error, :not_resumable} =
+               Legion.resume("resume-wrong-store", store: EmptyStore)
     end
 
     test "resume/2 restarts a stopped conversation from its run metadata" do
@@ -953,11 +1006,11 @@ defmodule Legion.AgentServerTest do
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "resume-dead")
       {:ok, _} = Legion.call(pid, "What is the capital of France?")
       GenServer.stop(pid)
-      refute Legion.running?(pid)
+      refute Process.alive?(pid)
 
       {:ok, revived} = Legion.resume("resume-dead", store: MemoryStore)
 
-      assert Legion.running?(revived)
+      assert Process.alive?(revived)
 
       assert [
                %{role: "system"},
@@ -1025,10 +1078,19 @@ defmodule Legion.AgentServerTest do
       refute_receive :llm_requested, 100
     end
 
-    test "resume/2 raises for an agent_id the store has no run for" do
-      assert_raise ArgumentError, ~r/no run recorded/, fn ->
-        Legion.resume("ghost", store: MemoryStore)
-      end
+    test "resume/2 returns not_resumable for an agent_id the store has no run for" do
+      assert {:error, :not_resumable} = Legion.resume("ghost", store: MemoryStore)
+    end
+
+    test "resume/2 returns not_resumable when the stored run has no agent module" do
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "resume-missing-agent-module",
+                 agent_module: nil
+               })
+
+      assert {:error, :not_resumable} =
+               Legion.resume("resume-missing-agent-module", store: MemoryStore)
     end
 
     test "resume/2 identifies itself when no store is configured" do
@@ -1037,7 +1099,13 @@ defmodule Legion.AgentServerTest do
       end
     end
 
-    test "recover/2 completes an interrupted root run and stops its process" do
+    test "recover/2 identifies itself when no store is configured" do
+      assert_raise ArgumentError, ~r/recover\/2 requires a :store/, fn ->
+        Legion.recover("missing-store")
+      end
+    end
+
+    test "recover/2 completes an interrupted run and stops its process" do
       assert :ok =
                MemoryStore.save(%Payload{
                  agent_id: "recover-awaiting-llm",
@@ -1067,12 +1135,48 @@ defmodule Legion.AgentServerTest do
     test "recover/2 returns error when agent is running" do
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "recover-running")
 
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "recover-running",
+                 status: :running,
+                 conversation_state: %{
+                   messages: [%{role: "user", type: :user, content: "recover me"}],
+                   bindings: [],
+                   executor_state: nil
+                 }
+               })
+
       assert {:error, :already_running} = Legion.recover("recover-running", store: MemoryStore)
 
-      assert Legion.running?(pid)
+      assert Process.alive?(pid)
     end
 
-    test "recover/2 refuses an idle root run" do
+    test "recover/2 validates the requested store before resolving a live process" do
+      {:ok, _pid} =
+        Legion.start_link(MathAgent, store: MemoryStore, agent_id: "recover-wrong-store")
+
+      assert {:error, :not_recoverable} =
+               Legion.recover("recover-wrong-store", store: EmptyStore)
+    end
+
+    test "recover/2 returns not_recoverable for an agent_id the store has no run for" do
+      assert {:error, :not_recoverable} =
+               Legion.recover("recover-missing", store: MemoryStore)
+    end
+
+    test "recover/2 returns not_recoverable when the stored run has no agent module" do
+      assert :ok =
+               MemoryStore.save(%Payload{
+                 agent_id: "recover-missing-agent-module",
+                 agent_module: nil,
+                 status: :running
+               })
+
+      assert {:error, :not_recoverable} =
+               Legion.recover("recover-missing-agent-module", store: MemoryStore)
+    end
+
+    test "recover/2 refuses an idle run" do
       assert :ok =
                MemoryStore.save(%Payload{
                  agent_id: "recover-idle-root",
