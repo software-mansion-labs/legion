@@ -106,7 +106,7 @@ defmodule Legion.RecoveryTest do
     assert :ignore = Legion.Recovery.start_link(:error)
   end
 
-  test "lists every store and recovers runs with the configured concurrency limit" do
+  test "uses separate store scan and concurrent request limits" do
     stores = [RecoveryStoreOne, RecoveryStoreTwo]
 
     Enum.each(stores, fn store ->
@@ -127,7 +127,9 @@ defmodule Legion.RecoveryTest do
     end)
 
     assert {:ok, worker} =
-             Legion.Recovery.start_link({:ok, stores: stores, limit: 2})
+             Legion.Recovery.start_link(
+               {:ok, stores: stores, store_scan_limit: 2, concurrent_request_limit: 1}
+             )
 
     monitor_ref = Process.monitor(worker)
 
@@ -135,19 +137,23 @@ defmodule Legion.RecoveryTest do
     assert_receive {:listed, RecoveryStoreTwo, 2}
 
     assert_receive {:recovering, first}
-    assert_receive {:recovering, second}
-    refute first == second
     refute_receive {:recovering, _}, 50
 
     send(first, :complete_recovery)
+
+    assert_receive {:recovering, second}
+    refute_receive {:recovering, _}, 50
+
     send(second, :complete_recovery)
 
     assert_receive {:recovering, third}
-    assert_receive {:recovering, fourth}
-    refute third == fourth
     refute_receive {:recovering, _}, 50
 
     send(third, :complete_recovery)
+
+    assert_receive {:recovering, fourth}
+    refute_receive {:recovering, _}, 50
+
     send(fourth, :complete_recovery)
 
     assert_receive {:DOWN, ^monitor_ref, :process, ^worker, :normal}
@@ -156,6 +162,45 @@ defmodule Legion.RecoveryTest do
         suffix <- ["one", "two"] do
       assert {:ok, %Payload{status: :idle}} = StoreState.get(store, "#{store}-#{suffix}")
     end
+  end
+
+  test "defaults the concurrent request limit to three" do
+    StoreState.put(RecoveryStoreOne, [
+      interrupted_payload("one"),
+      interrupted_payload("two"),
+      interrupted_payload("three"),
+      interrupted_payload("four")
+    ])
+
+    test_pid = self()
+
+    stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+      send(test_pid, {:recovering, self()})
+
+      receive do
+        :complete_recovery -> llm_response("recovered")
+      end
+    end)
+
+    assert {:ok, worker} =
+             Legion.Recovery.start_link({:ok, stores: [RecoveryStoreOne], store_scan_limit: 4})
+
+    monitor_ref = Process.monitor(worker)
+
+    assert_receive {:recovering, first}
+    assert_receive {:recovering, second}
+    assert_receive {:recovering, third}
+    refute_receive {:recovering, _}, 50
+
+    send(first, :complete_recovery)
+
+    assert_receive {:recovering, fourth}
+
+    send(second, :complete_recovery)
+    send(third, :complete_recovery)
+    send(fourth, :complete_recovery)
+
+    assert_receive {:DOWN, ^monitor_ref, :process, ^worker, :normal}
   end
 
   test "filters out idle and child runs before recovering" do
@@ -176,7 +221,9 @@ defmodule Legion.RecoveryTest do
     end)
 
     assert {:ok, worker} =
-             Legion.Recovery.start_link({:ok, stores: [RecoveryStoreOne], limit: 3})
+             Legion.Recovery.start_link(
+               {:ok, stores: [RecoveryStoreOne], store_scan_limit: 3, concurrent_request_limit: 3}
+             )
 
     monitor_ref = Process.monitor(worker)
 
@@ -199,7 +246,7 @@ defmodule Legion.RecoveryTest do
       conversation_state: %{
         messages: [%{role: "user", type: :user, content: "recover me"}],
         bindings: [],
-        execution: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+        executor_state: %{phase: :awaiting_llm, iteration: 1, retries: 0}
       }
     }
   end

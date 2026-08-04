@@ -25,7 +25,7 @@ defmodule Legion.AgentServer do
     :store,
     :agent_id,
     :persistence_frequency,
-    :execution,
+    :executor_state,
     bindings: []
   ]
 
@@ -110,13 +110,17 @@ defmodule Legion.AgentServer do
       %{agent: agent_module}
     )
 
-    {saved_messages, saved_bindings, saved_execution} =
+    {saved_messages, saved_bindings, saved_executor_state} =
       case store && store.get(agent_id) do
         {:ok,
          %Payload{
-           conversation_state: %{messages: messages, bindings: bindings, execution: execution}
+           conversation_state: %{
+             messages: messages,
+             bindings: bindings,
+             executor_state: executor_state
+           }
          }} ->
-          {messages, bindings, execution}
+          {messages, bindings, executor_state}
 
         _no_state ->
           {[], [], nil}
@@ -130,7 +134,7 @@ defmodule Legion.AgentServer do
       agent_id: agent_id,
       persistence_frequency: persistence_frequency,
       bindings: saved_bindings,
-      execution: saved_execution
+      executor_state: saved_executor_state
     }
 
     {:ok,
@@ -138,16 +142,16 @@ defmodule Legion.AgentServer do
        agent_module: state.agent_module,
        parent_agent_id: parent_agent_id,
        started_at: NaiveDateTime.utc_now()
-     ), {:continue, %{start_mode: mode, execution: saved_execution}}}
+     ), {:continue, %{start_mode: mode, executor_state: saved_executor_state}}}
   end
 
   @impl true
   def handle_continue(%{start_mode: :normal}, state), do: {:noreply, state}
 
   @impl true
-  def handle_continue(%{start_mode: :resume, execution: execution}, state) do
+  def handle_continue(%{start_mode: :resume, executor_state: executor_state}, state) do
     if match?(%{role: "user"}, List.last(state.messages)) do
-      {_reply, state} = perform_run(state, execution)
+      {_reply, state} = perform_run(state, executor_state)
       {:noreply, state}
     else
       {:noreply, state}
@@ -155,8 +159,8 @@ defmodule Legion.AgentServer do
   end
 
   @impl true
-  def handle_continue(%{start_mode: :recover, execution: execution}, state) do
-    {_reply, state} = perform_run(state, execution)
+  def handle_continue(%{start_mode: :recover, executor_state: executor_state}, state) do
+    {_reply, state} = perform_run(state, executor_state)
     {:stop, :normal, state}
   end
 
@@ -218,7 +222,7 @@ defmodule Legion.AgentServer do
     perform_run(state)
   end
 
-  defp perform_run(state, execution \\ nil) do
+  defp perform_run(state, executor_state \\ nil) do
     conversation_scope? = Map.get(state.config, :binding_scope, :turn) == :conversation
 
     checkpoint =
@@ -248,7 +252,7 @@ defmodule Legion.AgentServer do
               messages,
               executor_config,
               initial_bindings,
-              execution
+              executor_state
             )
 
           iterations = Enum.count(messages, &(&1[:role] == "assistant")) - prev_count
@@ -292,15 +296,15 @@ defmodule Legion.AgentServer do
   defp persisted_conversation_state(%__MODULE__{} = state) do
     [%{role: "system"} | messages] = state.messages
 
-    %{messages: messages, bindings: state.bindings, execution: nil}
+    %{messages: messages, bindings: state.bindings, executor_state: nil}
   end
 
   defp persisted_conversation_state(%{
          messages: [%{role: "system"} | messages],
          bindings: bindings,
-         execution: execution
+         executor_state: executor_state
        }) do
-    %{messages: messages, bindings: bindings, execution: execution}
+    %{messages: messages, bindings: bindings, executor_state: executor_state}
   end
 
   defp generate_id, do: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)

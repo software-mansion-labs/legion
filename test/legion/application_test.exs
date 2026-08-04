@@ -19,7 +19,12 @@ defmodule Legion.ApplicationTest do
   end
 
   test "passes configured recovery options to the recovery child" do
-    config = [stores: [RecoveryStore], limit: 3]
+    config = [
+      stores: [RecoveryStore],
+      store_scan_limit: 3,
+      concurrent_request_limit: 2
+    ]
+
     Application.put_env(:legion, :recovery, config)
 
     assert Enum.member?(Legion.Application.children(), {Legion.Recovery, {:ok, config}})

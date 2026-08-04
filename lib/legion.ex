@@ -32,11 +32,11 @@ defmodule Legion do
   Starts a long-lived agent process.
 
   ## Options
-    - `:name` - register the process under a name
     - `:store`, `:agent_id` - persist the conversation across restarts; see `Legion.Store`.
       A store set globally with `config :legion, :store, MyApp.AgentStore` applies to
       every agent, so you need only pass `:agent_id`. If a store is in effect but no
       `:agent_id` is given, Legion generates one - read it back with `get_agent_id/1`.
+    - `:agent_id`
     - Any config overrides (`:model`, `:max_iterations`, etc.)
 
   ## Examples
@@ -188,15 +188,14 @@ defmodule Legion do
   end
 
   @doc """
-  Recovers an interrupted persisted root run and waits for it to finish.
+  Recovers an interrupted persisted run and waits for it to finish.
 
-  The stored payload must have `status: :running` and no `parent_agent_id`.
-  `recover/2` starts a temporary agent process, waits without a timeout while
-  it drives the interrupted execution to completion, then stops that process.
-  Unlike `resume/2`, it does not revive the conversation as a live agent.
+  An interrupted run is signaled by a stored payload with `status: :running`. In addition
+  only runs without `parent_agent_id` are recoverable, since sub-agents are not restarted. Unlike
+  `resume/2`, a live agent is not returned.
 
-  The executor result is not returned. `:ok` means only that the temporary
-  process stopped normally, including when the executor cancelled the run.
+  The agent is only driven to completion, the executor result is not returned. `:ok` means
+  only that the temporary agent process stopped normally.
 
   Pass `:store` or configure one globally. Other options are passed through to
   `start_link/2`. Returns:
@@ -204,7 +203,7 @@ defmodule Legion do
     - `:ok` when the temporary process stops normally
     - `{:error, reason}` when the temporary process stops abnormally
     - `{:error, :already_running}` when a live process is registered for `agent_id`
-    - `{:error, :not_recoverable}` when the stored payload is not an interrupted root run
+    - `{:error, :not_recoverable}` when the stored payload is not an interrupted run
 
   Raises when no store is available, when the store has no payload for
   `agent_id`, or when the payload has no `agent_module`.
@@ -244,20 +243,18 @@ defmodule Legion do
          parent_agent_id: nil
        }}
       when not is_nil(agent_module) ->
-        with {:ok, pid} <- lookup(agent_id), true <- running?(pid) do
-          {:error, :already_running}
-        else
-          _ ->
-            {:ok, {_pid, ref}} =
-              AgentServer.start_monitor(
-                agent_module,
-                Keyword.merge(opts, agent_id: agent_id, store: store, start_mode: :recover)
-              )
-
+        case AgentServer.start_monitor(
+               agent_module,
+               Keyword.merge(opts, agent_id: agent_id, store: store, start_mode: :recover)
+             ) do
+          {:ok, {pid, ref}} ->
             receive do
-              {:DOWN, ^ref, :process, _pid, :normal} -> :ok
-              {:DOWN, ^ref, :process, _pid, reason} -> {:error, reason}
+              {:DOWN, ^ref, :process, ^pid, :normal} -> :ok
+              {:DOWN, ^ref, :process, ^pid, reason} -> {:error, reason}
             end
+
+          {:error, reason} ->
+            {:error, reason}
         end
 
       {:ok, %Legion.Store.Payload{agent_module: nil}} ->

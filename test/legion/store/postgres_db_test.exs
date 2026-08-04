@@ -24,7 +24,7 @@ defmodule Legion.Store.PostgresDbTest do
       conversation_state: %{
         messages: [%{role: "user", content: "hi"}],
         bindings: [x: 42],
-        execution: nil
+        executor_state: nil
       }
     }
 
@@ -38,7 +38,7 @@ defmodule Legion.Store.PostgresDbTest do
       conversation_state: %{
         messages: [%{role: "user", content: "hi"}],
         bindings: [],
-        execution: nil
+        executor_state: nil
       }
     }
 
@@ -57,7 +57,7 @@ defmodule Legion.Store.PostgresDbTest do
       conversation_state: %{
         messages: [%{role: "user", content: "hi"}],
         bindings: [x: 42],
-        execution: nil
+        executor_state: nil
       }
     }
 
@@ -78,7 +78,7 @@ defmodule Legion.Store.PostgresDbTest do
               conversation_state: %{
                 messages: [%{role: "user", content: "hi"}],
                 bindings: [x: 42],
-                execution: nil
+                executor_state: nil
               }
             }} = Store.get("user_42")
 

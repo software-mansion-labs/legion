@@ -104,17 +104,17 @@ defmodule Legion.Executor do
   Runs the LLM loop against the given message history.
 
   `messages` must already include the system prompt and the current user message.
-  `bindings` seeds the code-evaluation binding. `execution` resumes a step
+  `bindings` seeds the code-evaluation binding. `executor_state` resumes a step
   checkpoint when present: `:awaiting_llm` continues from its saved iteration
   and retry counters, while `:completing` finishes without another LLM request.
   Pass `nil` to start a new loop.
 
   Returns `{:ok, result, messages, bindings}` or `{:cancel, reason, messages, bindings}`.
   """
-  def run(agent_module, messages, config, bindings \\ [], execution \\ nil) do
+  def run(agent_module, messages, config, bindings \\ [], executor_state \\ nil) do
     config = Map.merge(@default_config, config)
 
-    case execution do
+    case executor_state do
       nil ->
         loop(agent_module, messages, config, 0, 0, bindings)
 
@@ -194,7 +194,7 @@ defmodule Legion.Executor do
     )
   end
 
-  defp checkpoint!(config, messages, bindings, execution) do
+  defp checkpoint!(config, messages, bindings, executor_state) do
     case config[:checkpoint] do
       nil ->
         :ok
@@ -205,7 +205,7 @@ defmodule Legion.Executor do
             callback.(%{
               messages: messages,
               bindings: bindings,
-              execution: execution
+              executor_state: executor_state
             })
         rescue
           error -> exit({:checkpoint_persistence_failed, error})

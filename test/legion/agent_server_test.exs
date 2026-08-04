@@ -721,7 +721,7 @@ defmodule Legion.AgentServerTest do
                conversation_state: %{
                  messages: [%{type: :user}],
                  bindings: [],
-                 execution: nil
+                 executor_state: nil
                }
              } = running
 
@@ -730,13 +730,13 @@ defmodule Legion.AgentServerTest do
                conversation_state: %{
                  messages: [%{type: :user}, %{type: :assistant}, %{type: :eval_result}],
                  bindings: [x: 42],
-                 execution: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+                 executor_state: %{phase: :awaiting_llm, iteration: 1, retries: 0}
                }
              } = checkpoint
 
       assert %Payload{status: :idle, conversation_state: final_state} = completed
       assert final_state.bindings == []
-      assert final_state.execution == nil
+      assert final_state.executor_state == nil
     end
 
     test "a :step store persists eval_and_complete before the final snapshot" do
@@ -754,12 +754,12 @@ defmodule Legion.AgentServerTest do
       assert %Payload{
                status: nil,
                conversation_state: %{
-                 execution: %{phase: :completing, iteration: 0, retries: 0}
+                 executor_state: %{phase: :completing, iteration: 0, retries: 0}
                }
              } = checkpoint
 
       assert %Payload{status: :idle, conversation_state: final_state} = completed
-      assert final_state.execution == nil
+      assert final_state.executor_state == nil
     end
 
     test "a :step store persists retry state after an error message" do
@@ -784,7 +784,7 @@ defmodule Legion.AgentServerTest do
                conversation_state: %{
                  messages: messages,
                  bindings: [],
-                 execution: %{phase: :awaiting_llm, iteration: 0, retries: 1}
+                 executor_state: %{phase: :awaiting_llm, iteration: 0, retries: 1}
                }
              } = checkpoint
 
@@ -975,7 +975,7 @@ defmodule Legion.AgentServerTest do
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "compute"}],
                    bindings: [x: 42],
-                   execution: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+                   executor_state: %{phase: :awaiting_llm, iteration: 1, retries: 0}
                  }
                })
 
@@ -991,7 +991,7 @@ defmodule Legion.AgentServerTest do
       assert_receive :llm_requested
 
       assert_receive {:store_saved,
-                      %Payload{status: :idle, conversation_state: %{execution: nil}}}
+                      %Payload{status: :idle, conversation_state: %{executor_state: nil}}}
 
       refute_receive :llm_requested, 50
     end
@@ -1005,7 +1005,7 @@ defmodule Legion.AgentServerTest do
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "compute"}],
                    bindings: [x: 42],
-                   execution: %{phase: :completing, iteration: 1, retries: 0}
+                   executor_state: %{phase: :completing, iteration: 1, retries: 0}
                  }
                })
 
@@ -1020,7 +1020,7 @@ defmodule Legion.AgentServerTest do
       assert {:ok, _pid} = Legion.resume("resume-completing", store: MemoryStore)
 
       assert_receive {:store_saved,
-                      %Payload{status: :idle, conversation_state: %{execution: nil}}}
+                      %Payload{status: :idle, conversation_state: %{executor_state: nil}}}
 
       refute_receive :llm_requested, 100
     end
@@ -1047,13 +1047,13 @@ defmodule Legion.AgentServerTest do
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "compute"}],
                    bindings: [x: 42],
-                   execution: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+                   executor_state: %{phase: :awaiting_llm, iteration: 1, retries: 0}
                  }
                })
 
       assert :ok = Legion.recover("recover-awaiting-llm", store: MemoryStore)
 
-      assert {:ok, %Payload{status: :idle, conversation_state: %{execution: nil}}} =
+      assert {:ok, %Payload{status: :idle, conversation_state: %{executor_state: nil}}} =
                MemoryStore.get("recover-awaiting-llm")
 
       assert(
@@ -1082,7 +1082,7 @@ defmodule Legion.AgentServerTest do
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "compute"}],
                    bindings: [x: 42],
-                   execution: %{phase: :completing, iteration: 1, retries: 0}
+                   executor_state: %{phase: :completing, iteration: 1, retries: 0}
                  }
                })
 
@@ -1099,7 +1099,7 @@ defmodule Legion.AgentServerTest do
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "compute"}],
                    bindings: [x: 42],
-                   execution: %{phase: :completing, iteration: 1, retries: 0}
+                   executor_state: %{phase: :completing, iteration: 1, retries: 0}
                  }
                })
 
