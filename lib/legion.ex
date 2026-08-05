@@ -32,7 +32,7 @@ defmodule Legion do
         end
       end
   """
-  def start_link(opts) when is_list(opts) do
+  def start_link(_opts) when is_list(_opts) do
     Supervisor.start_link(__MODULE__, nil, name: __MODULE__)
   end
 
