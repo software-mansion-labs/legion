@@ -25,6 +25,7 @@ defmodule Legion.AgentPrompt do
         description: description,
         tool_contents: tool_contents,
         action_types: agent.action_types(),
+        plain_text_result?: match?(%{"type" => "string"}, agent.output_schema()),
         elixir_version: System.version(),
         binding_scope: binding_scope
       )

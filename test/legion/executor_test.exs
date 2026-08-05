@@ -144,6 +144,56 @@ defmodule Legion.ExecutorTest do
       assert {:cancel, :reached_max_retries} = Legion.execute(MathAgent, "fail")
     end
 
+    test "eval_guard denial stops the code from running and reaches the agent" do
+      defmodule NoArithmetic do
+        @behaviour Legion.EvalGuard
+
+        @impl true
+        def check(code, _context) do
+          if String.contains?(code, "+"),
+            do: {:deny, "addition is off limits here"},
+            else: :allow
+        end
+      end
+
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 ->
+            response(%{"action" => "eval_and_complete", "code" => "1 + 1", "result" => ""})
+
+          2 ->
+            # The agent is told why, in the conversation, and can adapt.
+            assert Enum.any?(
+                     messages,
+                     &(is_binary(&1.content) and &1.content =~ "addition is off limits")
+                   )
+
+            response(%{"action" => "eval_and_complete", "code" => "21 * 2", "result" => ""})
+        end
+      end)
+
+      assert {:ok, 42} = Legion.execute(MathAgent, "add things", eval_guard: NoArithmetic)
+    end
+
+    test "eval_guard allowing code leaves execution untouched" do
+      defmodule AllowAll do
+        @behaviour Legion.EvalGuard
+
+        @impl true
+        def check(_code, _context), do: :allow
+      end
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        response(%{"action" => "eval_and_complete", "code" => "2 + 2", "result" => ""})
+      end)
+
+      assert {:ok, 4} = Legion.execute(MathAgent, "add", eval_guard: AllowAll)
+    end
+
     test "LLM error triggers retry" do
       call_count = :counters.new(1, [:atomics])
 
