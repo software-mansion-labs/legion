@@ -198,6 +198,7 @@ defmodule Legion.Tools.AgentTool do
   first `{:cancel, reason}`. Raises if any agent is not in the allowed list.
   """
   def parallel(tasks, timeout \\ :infinity) when is_list(tasks) do
+    tasks = Enum.map(tasks, &normalize_pair/1)
     for {agent, _task} <- tasks, do: check_allowed!(agent)
     Legion.parallel(tasks, timeout)
   end
@@ -210,9 +211,15 @@ defmodule Legion.Tools.AgentTool do
   next call. Halts early on the first `{:cancel, reason}`.
   """
   def pipeline(steps) when is_list(steps) do
+    steps = Enum.map(steps, &normalize_pair/1)
     for {agent, _} <- steps, do: check_allowed!(agent)
     Legion.pipeline(steps)
   end
+
+  # Lua has no tuples - code from the Lua sandbox sends each `{Agent, task}`
+  # pair as a 2-element array, which the bridge decodes to a 2-element list.
+  defp normalize_pair([agent, task]) when is_atom(agent), do: {agent, task}
+  defp normalize_pair(pair), do: pair
 
   @doc """
   Chains a sub-agent call after a previous `{:ok, result}`. Passes

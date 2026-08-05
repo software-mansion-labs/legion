@@ -708,6 +708,31 @@ defmodule Legion.Sandbox.ASTCheckerTest do
       assert msg =~ "__struct__"
     end
 
+    # The :__struct__ atom is recoverable at runtime (not just as a literal):
+    # a struct handed to a callback-based Map HOF yields {:__struct__, Mod},
+    # which `throw` smuggles out, forging a fake struct. These must stay closed.
+    for func <- ~w(map filter reject split_with)a do
+      test "Map.#{func} (callback leaks the :__struct__ pair of a struct) is rejected" do
+        code = "Map.#{unquote(func)}(%URI{}, fn {k, _v} -> throw(k) end)"
+        assert {:error, msg} = ASTChecker.check(code, [])
+        assert msg =~ "Map.#{unquote(func)}"
+        assert msg =~ "Enum.#{unquote(func)}"
+      end
+    end
+
+    for func <- ~w(merge intersect)a do
+      test "Map.#{func}/3 (callback leaks the :__struct__ key) is rejected" do
+        code = "Map.#{unquote(func)}(%URI{}, %URI{}, fn k, _v1, _v2 -> throw(k) end)"
+        assert {:error, msg} = ASTChecker.check(code, [])
+        assert msg =~ "Map.#{unquote(func)}/3"
+        assert msg =~ "__struct__"
+      end
+
+      test "Map.#{func}/2 (no callback) stays allowed" do
+        assert :ok = ASTChecker.check("Map.#{unquote(func)}(%{a: 1}, %{b: 2})", [])
+      end
+    end
+
     test "interpolated ~w(...)a is rejected" do
       assert {:error, msg} = ASTChecker.check(~S|s = "foo"; ~w(#{s})a|, [])
       assert msg =~ "interpolation"

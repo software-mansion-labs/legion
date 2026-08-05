@@ -271,6 +271,7 @@ config :legion, :config, %{
 | `model`              | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm), e.g. `"openai:gpt-5.4"`.                                  |
 | `max_iterations`     | Successful execution steps before the agent is stopped.                                                                    |
 | `max_retries`        | Consecutive failures (bad code, tool errors) before giving up. Resets after each success.                                  |
+| `sandbox`            | Sandbox module evaluating generated code: `Legion.Sandbox.Elixir` (default) or `Legion.Sandbox.Lua`. See [Sandboxing](#sandboxing). |
 | `sandbox_timeout`    | Milliseconds a single code evaluation may run before it is killed.                                                         |
 | `binding_scope`      | `:iteration` (fresh each step), `:turn` (persist within a message, default), or `:conversation` (persist across messages). |
 | `max_message_length` | Byte limit for any single message. Longer content is truncated. Set to `:infinity` to disable.                             |
@@ -307,21 +308,14 @@ Events emitted at every level:
 
 ### Sandboxing
 
-Legion's sandbox restricts what LLM-generated code can do, but it is not full process isolation. Generated code runs inside the same BEAM VM as your application.
+Sandboxes are pluggable via the `sandbox` config key. Both built-in sandboxes run evaluations in a monitored process with timeout, memory, and CPU budgets (`sandbox_timeout`, `sandbox_max_heap`, `sandbox_max_reductions`); they differ in language and trust model:
 
-**What the sandbox does:**
+- **`Legion.Sandbox.Elixir`** (default) - agents write Elixir. Dangerous constructs (`defmodule`, `import`, `spawn`, `send`, `apply`, ...) are blocked at the AST level and module access is limited to an allowlist (stdlib + your tools). Powerful - tools are plain Elixir calls - but the allowlist guards an enormous language surface, and new escape vectors could be found. Use it for trusted code generators (your own LLM-backed agents with controlled tool access), not arbitrary code from unknown sources.
+- **`Legion.Sandbox.Lua`** - agents write Lua, evaluated by [luerl](https://github.com/rvirding/luerl), a Lua VM implemented in pure Erlang. Lua code has no way to reach the host BEAM at all - the only bridges out of the VM are the tool functions Legion registers - which makes it the safer choice when the generated code is less trusted. Tool arguments and results are converted at the boundary (Lua tables to maps/lists and back; Elixir tuples become arrays, atoms become strings).
 
-- Blocks dangerous constructs at the AST level: `defmodule`, `import`, `spawn`, `send`, `receive`, `apply`, and others
-- Restricts module access to an explicit allowlist (stdlib + your tools)
-- Kills evaluation if it exceeds `sandbox_timeout`
+Neither sandbox is full OS-level isolation - evaluation still runs inside your BEAM VM. If your threat model requires that, run agents in a separate BEAM instance.
 
-**What it does not do _yet_:**
-
-- Isolate memory - runaway allocations affect the whole VM
-- Prevent atom table exhaustion - `String.to_atom/1` is available and atoms are never garbage collected
-- Restrict access to BEAM node name, process pid, or refs
-
-Legion is built for trusted code generators (your own LLM-backed agents with controlled tool access), not for running arbitrary code from unknown sources. If your threat model requires full isolation, run agents in a separate BEAM instance.
+Custom sandboxes (for example, executing in the user's browser via [popcorn](https://github.com/software-mansion/popcorn/)) implement the `Legion.Sandbox` behaviour.
 
 
 ## Web Dashboard

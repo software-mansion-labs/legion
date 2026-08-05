@@ -49,7 +49,7 @@ defmodule Legion.Sandbox.ASTChecker do
   Caller-supplied tool modules are **fully trusted**: every function on every
   arity is allowed, and `%Tool{...}` struct literals are allowed. The host is
   responsible for vetting whatever it exposes — if you hand `File`, `System`,
-  `Code`, or any other stdlib module to `Legion.Sandbox.execute/4` as a
+  `Code`, or any other stdlib module to `Legion.Sandbox.Elixir.execute/5` as a
   "tool", you have opted out of the sandbox for that module. Expose a thin
   facade module that wraps only the operations you actually want available.
 
@@ -72,7 +72,7 @@ defmodule Legion.Sandbox.ASTChecker do
     site is denied.
   - Most denial-of-service vectors (CPU, memory, message queue depth,
     long-running comprehensions, ...). Wallclock timeouts in
-    `Legion.Sandbox.execute/4` are the only mitigation.
+    `Legion.Sandbox.Elixir.execute/5` are the only mitigation.
   """
 
   # Bare forms: every non-prefixed call/identifier in user code must resolve
@@ -178,12 +178,21 @@ defmodule Legion.Sandbox.ASTChecker do
   # build a fake struct (e.g. forge `%File.Stream{}` to write files via `for
   # ..., into:`). `values/1` is kept: it doesn't expose the `:__struct__` key,
   # which is the literal needed to repopulate the struct slot.
+  #
+  # `map`, `filter`, `reject`, `split_with`, `merge/3`, and `intersect/3` are
+  # absent for the same reason by a different route: applied to a struct they
+  # hand the raw `{:__struct__, Mod}` pair (or the bare key) to a user callback,
+  # which can `throw` the key out to recover the atom at runtime — defeating the
+  # literal `:__struct__` check and re-enabling struct forging. Their `Enum`
+  # equivalents raise on structs (structs aren't `Enumerable`), so route map
+  # transforms through `Enum` and rebuild with `Map.new/1`. The callback-free
+  # `merge/2` and `intersect/2` are capped in and kept.
   @map_allowed ~w(
-    delete drop equal? fetch fetch! filter from_keys from_struct get
-    get_and_update get_and_update! get_lazy has_key? intersect map merge
-    new pop pop! pop_lazy put put_new put_new_lazy reject replace replace!
-    replace_lazy size split split_with take update update! values
-  )a
+    delete drop equal? fetch fetch! from_keys from_struct get
+    get_and_update get_and_update! get_lazy has_key?
+    new pop pop! pop_lazy put put_new put_new_lazy replace replace!
+    replace_lazy size split take update update! values
+  )a ++ [{:merge, 2}, {:intersect, 2}]
 
   @mapset_allowed ~w(
     delete difference disjoint? equal? filter intersection member? new put
@@ -755,6 +764,12 @@ defmodule Legion.Sandbox.ASTChecker do
     end
   end
 
+  defp arity_capped_error(Map, func, arity) when func in [:merge, :intersect] do
+    "Map.#{func}/#{arity} is not allowed - its callback receives every common " <>
+      "key, which leaks the internal `:__struct__` key of any struct value. " <>
+      "Use `Map.#{func}/2` and resolve key conflicts beforehand."
+  end
+
   defp arity_capped_error(module, func, arity) do
     "#{inspect(module)}.#{func}/#{arity} is not allowed in the sandbox - " <>
       "this arity takes a calendar / time-zone-database module argument that " <>
@@ -822,6 +837,11 @@ defmodule Legion.Sandbox.ASTChecker do
   defp function_denied_error(Map, func) when func in [:keys, :to_list] do
     "Map.#{func} is not allowed - it would leak the :__struct__ atom from " <>
       "any struct value. Use `Map.values/1` or `Enum.map(map, fn {k, _} -> k end)`."
+  end
+
+  defp function_denied_error(Map, func) when func in [:map, :filter, :reject, :split_with] do
+    "Map.#{func} is not allowed - its callback receives the `{:__struct__, Mod}` " <>
+      "pair of any struct value. Use `Enum.#{func}/2` and rebuild with `Map.new/1`."
   end
 
   defp function_denied_error(module, func)
