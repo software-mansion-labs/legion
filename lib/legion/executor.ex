@@ -248,14 +248,14 @@ defmodule Legion.Executor do
         messages =
           messages ++ [message(:eval_result, format_result(result, new_bindings, config))]
 
-        execution =
+        executor_state =
           if eval == "eval_and_continue" do
             %{phase: :awaiting_llm, iteration: i + 1, retries: 0}
           else
             %{phase: :completing, iteration: i, retries: 0}
           end
 
-        checkpoint!(config, messages, new_bindings, execution)
+        checkpoint!(config, messages, new_bindings, executor_state)
 
         if eval == "eval_and_continue",
           do: loop(agent, messages, config, i + 1, 0, new_bindings),

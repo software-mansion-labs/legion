@@ -132,7 +132,7 @@ defmodule Legion.ExecutorTest do
                Legion.execute(MathAgent, "loop forever")
     end
 
-    test "retries on code executor_state error and cancels after max_retries" do
+    test "retries on code execution error and cancels after max_retries" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         response(%{
           "action" => "eval_and_complete",
@@ -360,7 +360,7 @@ defmodule Legion.ExecutorTest do
   end
 
   describe "max_message_length in result/error feedback" do
-    test "truncates large code executor_state results in the feedback message" do
+    test "truncates large code execution results in the feedback message" do
       test_pid = self()
       {:ok, counter} = Agent.start_link(fn -> 0 end)
 

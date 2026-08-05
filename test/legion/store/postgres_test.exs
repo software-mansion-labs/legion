@@ -96,7 +96,7 @@ defmodule Legion.Store.PostgresTest do
     assert {:ok, ^expected_payload} = Store.get("state-only")
   end
 
-  test "save/1 round trips step executor_state state" do
+  test "save/1 round trips executor_state for a step checkpoint" do
     executor_state = %{phase: :awaiting_llm, iteration: 2, retries: 1}
 
     payload = %Payload{
