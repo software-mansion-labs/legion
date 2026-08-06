@@ -74,7 +74,7 @@ defmodule Legion.Store.PostgresTest do
       conversation_state: %{
         messages: [%{role: "user", content: "hi"}],
         bindings: [x: 42],
-        execution: nil
+        executor_state: nil
       },
       usage: [%{total_tokens: 100}]
     }
@@ -89,7 +89,7 @@ defmodule Legion.Store.PostgresTest do
       conversation_state: %{
         messages: [%{role: "user", content: "hi"}],
         bindings: [],
-        execution: nil
+        executor_state: nil
       }
     }
 
@@ -98,8 +98,8 @@ defmodule Legion.Store.PostgresTest do
     assert {:ok, ^expected_payload} = Store.get("state-only")
   end
 
-  test "save/1 round trips step execution state" do
-    execution = %{phase: :awaiting_llm, iteration: 2, retries: 1}
+  test "save/1 round trips executor_state for a step checkpoint" do
+    executor_state = %{phase: :awaiting_llm, iteration: 2, retries: 1}
 
     payload = %Payload{
       agent_id: "step-state",
@@ -107,7 +107,7 @@ defmodule Legion.Store.PostgresTest do
       conversation_state: %{
         messages: [%{role: "user", content: "result"}],
         bindings: [x: 42],
-        execution: execution
+        executor_state: executor_state
       }
     }
 
@@ -127,7 +127,7 @@ defmodule Legion.Store.PostgresTest do
       conversation_state: %{
         messages: [%{role: "user", content: "hi"}],
         bindings: [x: 42],
-        execution: nil
+        executor_state: nil
       },
       usage: [%{total_tokens: 100}]
     }
@@ -146,7 +146,7 @@ defmodule Legion.Store.PostgresTest do
               conversation_state: %{
                 messages: [%{role: "user", content: "hi"}],
                 bindings: [x: 42],
-                execution: nil
+                executor_state: nil
               },
               usage: [%{total_tokens: 100}]
             }} = Store.get("user_42")

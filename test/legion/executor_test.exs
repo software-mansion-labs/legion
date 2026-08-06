@@ -335,7 +335,7 @@ defmodule Legion.ExecutorTest do
                        %{
                          messages: continuing_messages,
                          bindings: [x: 10],
-                         execution: %{phase: :awaiting_llm, iteration: 1, retries: 0}
+                         executor_state: %{phase: :awaiting_llm, iteration: 1, retries: 0}
                        }}
 
       assert List.last(continuing_messages).type == :eval_result
@@ -344,7 +344,7 @@ defmodule Legion.ExecutorTest do
                        %{
                          messages: completing_messages,
                          bindings: [x: 10],
-                         execution: %{phase: :completing, iteration: 1, retries: 0}
+                         executor_state: %{phase: :completing, iteration: 1, retries: 0}
                        }}
 
       assert List.last(completing_messages).type == :eval_result
@@ -386,7 +386,7 @@ defmodule Legion.ExecutorTest do
                        %{
                          messages: messages,
                          bindings: [],
-                         execution: %{phase: :awaiting_llm, iteration: 0, retries: 1}
+                         executor_state: %{phase: :awaiting_llm, iteration: 0, retries: 1}
                        }}
 
       assert List.last(messages).type == :error

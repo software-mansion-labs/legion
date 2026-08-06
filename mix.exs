@@ -42,7 +42,6 @@ defmodule Legion.MixProject do
 
   def application do
     [
-      mod: {Legion.Application, []},
       extra_applications: [:logger]
     ]
   end
@@ -60,7 +59,12 @@ defmodule Legion.MixProject do
       ],
       Runtime: [Legion.AgentServer, Legion.Executor, Legion.Recovery, ~r/^Legion\.Sandbox/],
       Tools: [~r/^Legion\.Tools\./],
-      Internals: [Legion.AgentPrompt, Legion.SourceRegistry, Legion.Telemetry]
+      Internals: [
+        Legion.AgentIndex,
+        Legion.AgentPrompt,
+        Legion.SourceRegistry,
+        Legion.Telemetry
+      ]
     ]
   end
 

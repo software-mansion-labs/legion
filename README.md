@@ -174,6 +174,18 @@ Use a stable `agent_id` to continue the same conversation after a process or app
 {:ok, pid} = Legion.resume("user_42:chat_7", store: MyApp.AgentStore)
 ```
 
+An `agent_id` also names its live process across connected nodes. Only one
+process can own an id at a time. Concurrent `start_link/2` calls return
+`{:error, {:already_started, pid}}` to the loser, while `resume/2` returns
+`{:ok, pid}` for either the newly started or existing process.
+
+Disconnected network partitions can temporarily own the same id. When nodes
+reconnect, `:global` resolves the conflict by terminating one owner.
+
+`resume/2` returns `{:error, :not_resumable}` when the selected store has no
+payload containing an agent module. It raises when no store was passed or
+configured.
+
 If you omit `agent_id`, Legion generates one. Save it if you want to resume the conversation later:
 
 ```elixir
@@ -193,7 +205,7 @@ end
 
 Step persistence records the latest recoverable state. When you configure
 `:recovery` below, Legion scans persisted runs once at application startup and
-automatically attempts to recover eligible interrupted root runs.
+automatically attempts to recover eligible interrupted runs.
 
 ### Usage tracking
 
@@ -293,32 +305,49 @@ config :legion, :store, MyApp.AgentStore
 
 A `store:` passed to `Legion.start_link/2` overrides the global store. With a global store configured, pass only `agent_id:` to select an existing conversation; if you omit it, Legion generates one.
 
-To recover interrupted root runs when the application starts, configure the
-stores to scan and a recovery limit:
+Legion is an embeddable supervisor. Add it to your application's supervision
+tree after dependencies required by its configured recovery stores. For a
+Repo-backed store, place it after your Repo:
+
+```elixir
+children = [
+  MyApp.Repo,
+  {Legion, []}
+]
+```
+
+To recover interrupted runs when the application starts, configure the
+stores to scan, how many runs to read from each, and how many recovery requests
+may run concurrently:
 
 ```elixir
 config :legion, :recovery,
   stores: [MyApp.AgentStore],
-  limit: 10
+  store_scan_limit: 100,
+  concurrent_request_limit: 10
 ```
 
 Recovery starts a temporary worker asynchronously, so it does not delay
-application startup. The worker calls `list(limit)` on every configured store,
-selects interrupted root runs, and calls `Legion.recover/2` for each. `limit`
-is both the maximum number of runs read from each store and the maximum number
-of recoveries in flight across all stores. The worker performs the recovery
-scan, then exits and is not restarted. Omit `:recovery` to disable it.
+application startup. The worker calls `list(store_scan_limit)` on every
+configured store, selects interrupted runs, and calls `Legion.recover/2`
+for each. `concurrent_request_limit` caps recoveries in flight across all
+stores and defaults to `3`. The worker performs the recovery scan, then exits
+and is not restarted. Omit `:recovery` to disable it.
 
-To recover a known interrupted root run directly:
+To recover a known interrupted run directly:
 
 ```elixir
 case Legion.recover("user_42:chat_7", store: MyApp.AgentStore) do
   :ok -> :recovered
   {:error, :already_running} -> :already_running
-  {:error, :not_recoverable} -> :not_an_interrupted_root
+  {:error, :not_recoverable} -> :not_interrupted
   {:error, reason} -> {:recovery_failed, reason}
 end
 ```
+
+`recover/2` validates the selected store before claiming the agent id. Missing
+payloads, payloads without an agent module, idle runs, and child runs return
+`{:error, :not_recoverable}`. It raises when no store was passed or configured.
 
 Configure model and runtime options separately:
 
