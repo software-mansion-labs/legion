@@ -2,7 +2,7 @@ defmodule Legion.Recovery do
   @moduledoc """
   Worker which runs the recovery process for interrupted runs.
 
-  `Legion.Application` starts this worker only when `:recovery` is configured:
+  Legion's supervisor starts this worker only when `:recovery` is configured:
 
       config :legion, :recovery,
         stores: [MyApp.AgentStore],

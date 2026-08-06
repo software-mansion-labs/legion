@@ -288,6 +288,17 @@ config :legion, :store, MyApp.AgentStore
 
 A `store:` passed to `Legion.start_link/2` overrides the global store. With a global store configured, pass only `agent_id:` to select an existing conversation; if you omit it, Legion generates one.
 
+Legion is an embeddable supervisor. Add it to your application's supervision
+tree after dependencies required by its configured recovery stores. For a
+Repo-backed store, place it after your Repo:
+
+```elixir
+children = [
+  MyApp.Repo,
+  {Legion, []}
+]
+```
+
 To recover interrupted runs when the application starts, configure the
 stores to scan, how many runs to read from each, and how many recovery requests
 may run concurrently:

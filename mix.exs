@@ -42,7 +42,6 @@ defmodule Legion.MixProject do
 
   def application do
     [
-      mod: {Legion.Application, []},
       extra_applications: [:logger]
     ]
   end
