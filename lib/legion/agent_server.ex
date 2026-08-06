@@ -132,7 +132,7 @@ defmodule Legion.AgentServer do
       agent_id: agent_id,
       persistence_frequency: persistence_frequency,
       bindings: saved_bindings,
-      executor_state: saved_executor_state
+      executor_state: saved_executor_state,
       track_usage: track_usage,
       usage: saved_usage
     }

@@ -643,7 +643,7 @@ defmodule Legion.AgentServerTest do
                MemoryStore.save(%Payload{
                  agent_id: "usage-restore",
                  usage: [%{total_tokens: 100}],
-                 conversation_state: %{messages: [], bindings: [], execution: nil}
+                 conversation_state: %{messages: [], bindings: [], executor_state: nil}
                })
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -671,7 +671,7 @@ defmodule Legion.AgentServerTest do
                MemoryStore.save(%Payload{
                  agent_id: "usage-disabled",
                  usage: [%{total_tokens: 100}],
-                 conversation_state: %{messages: [], bindings: [], execution: nil}
+                 conversation_state: %{messages: [], bindings: [], executor_state: nil}
                })
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
