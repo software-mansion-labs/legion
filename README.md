@@ -1,32 +1,41 @@
 # Legion
 
+<div align="center">
+
 [![CI](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml/badge.svg)](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml)
 [![License](https://img.shields.io/hexpm/l/legion.svg)](https://github.com/software-mansion-labs/legion/blob/main/LICENSE)
 [![Version](https://img.shields.io/hexpm/v/legion.svg)](https://hex.pm/packages/legion)
 [![Hex Docs](https://img.shields.io/badge/documentation-gray.svg)](https://hexdocs.pm/legion)
 
+</div>
 <!-- MDOC -->
 
-An Elixir framework for AI agents that live inside your application and get things done by writing code.
+**Legion is an Elixir framework for AI agents that live inside your application and get things done by writing code.** 
 
-Give an agent a task and it doesn't pick from a menu of tool calls. It reads the source of the modules you expose to it, writes a snippet that does the job, and runs it right there in your app. Then it looks at the result and writes the next one. That's the whole loop.
+Define an agent's responsibilities, give it tools to interact with your app safely, and hand it a task from one of your users. It will read the source of the modules you expose, write an Elixir (or Lua) snippet, run it in a sandbox, look at the result, and write the next one - until the task is done.
 
-The code it writes is disposable, like a shell one-liner: made to do one thing, right now, then thrown away. No human reads it, reviews it, or commits it. Legion is a runtime, not a coding assistant.
+One evaluation can filter, branch, and loop - work that would cost a tool-calling agent an LLM round trip per step ([Anthropic on why code execution beats tool calling](https://www.anthropic.com/engineering/code-execution-with-mcp)).
 
-Why bother? Because function calling is expensive. A traditional agent pays an LLM round trip for every step: fetch, wait, look, call the next tool, wait again. A Legion agent does all of it in one evaluation, with pipelines, pattern matching, and the standard library at its disposal. Fewer round trips, fewer tokens, smarter behavior. [Anthropic has the numbers on why code execution beats function calling.](https://www.anthropic.com/engineering/code-execution-with-mcp)
+## Usage
 
-Everything else is three ideas:
+1. Add Legion to your `mix.exs`:
 
-- **Tools are plain Elixir modules.** The LLM reads their source directly - no schemas, no wrappers, no glue.
-- **Agents are BEAM processes.** Supervise them, pool them, `call` and `cast` them like GenServers.
-- **Generated code runs in a sandbox.** Dangerous constructs are blocked at the AST level; module access is allowlisted.
+```elixir
+def deps do
+  [
+    {:legion, "~> 0.4"}
+  ]
+end
+```
 
-## Quick Start
+2. Configure an LLM provider ([all options](https://hexdocs.pm/req_llm/ReqLLM.html#module-configuration)):
 
-### 1. Define your tools
+```elixir
+# config/runtime.exs
+config :req_llm, openai_api_key: System.get_env("OPENAI_API_KEY")
+```
 
-Tools are regular Elixir modules. The LLM sees their source code and can call any public function.
-
+3. Expose existing or new modules as tools and hand them to an agent:
 ```elixir
 defmodule MyApp.Tools.ScraperTool do
   use Legion.Tool
@@ -43,33 +52,22 @@ defmodule MyApp.Tools.DatabaseTool do
   @doc "Saves a post title to the database"
   def insert_post(title), do: Repo.insert!(%Post{title: title})
 end
-```
 
-### 2. Define an agent
-
-Agents are Elixir processes that receive tasks, write code to solve them, and maintain conversation state.
-
-```elixir
 defmodule MyApp.ResearchAgent do
-  @moduledoc """
-  Fetch posts, evaluate their relevance and quality, and save the good ones.
-  """
+  @moduledoc "Fetch posts, evaluate their relevance and quality, and save the good ones."
   use Legion.Agent
 
   def tools, do: [MyApp.Tools.ScraperTool, MyApp.Tools.DatabaseTool]
 end
 ```
 
-### 3. Run it
-
+4. Run it!
 ```elixir
-{:ok, result} = Legion.execute(MyApp.ResearchAgent, "Find cool Elixir posts about Advent of Code and save them")
-# => {:ok, "Found 3 relevant posts and saved 2 that met quality criteria."}
+Legion.execute(MyApp.ResearchAgent, "Find cool Elixir posts about Advent of Code and save them")
+#=> {:ok, "Found 3 relevant posts and saved 2 that met quality criteria."}
 ```
 
-## How It Works
-
-When you send _"Find cool Elixir posts about Advent of Code and save them"_, the agent writes:
+To solve this task, the agent wrote and ran:
 
 ```elixir
 ScraperTool.fetch_posts()
@@ -79,206 +77,185 @@ ScraperTool.fetch_posts()
 end)
 ```
 
-It sees the results, decides which posts are worth saving, and writes:
+...looked at the output, judged which posts were worth keeping, and followed up with:
 
 ```elixir
 ["Elixir Advent of Code 2024 - Day 5 walkthrough", "My first AoC in Elixir!"]
 |> Enum.each(&DatabaseTool.insert_post/1)
 ```
 
-A traditional agent would need a separate LLM call for each filter decision and each insert. Legion handles filtering, judgment, and action in two steps - with the full power of Elixir's `Enum`, pattern matching, and pipelines available at every step.
+Two evaluations, with `Enum`, pattern matching, and pipelines available at every step. A tool-calling agent would have paid a round trip for every filter decision and every insert. The generated code is disposable, like a shell one-liner: written to do one thing, right now, then thrown away. Legion is a runtime, not a coding assistant.
 
 ## Features
 
-- **Code generation over function calling** - Agents write Elixir pipelines, not individual tool calls. Fewer tokens, fewer round-trips, smarter behavior.
-- **Sandboxed execution** - Generated code runs in a restricted environment. Dangerous constructs (`defmodule`, `spawn`, `send`, `import`) are blocked at the AST level. Module access is limited to stdlib + your tools.
-- **Tools are just modules** - `use Legion.Tool` on any module to expose it. The LLM reads your source code and calls your functions. No schemas to write, no wrappers - reuse existing app logic directly.
-- **Authorization via Vault** - Set auth context before the agent starts, validate inside tools at runtime. LLM-generated code never touches credentials. See [Vault](https://github.com/dimamik/vault).
-- **Long-lived agents** - Start agents with `Legion.start_link/2` and message them with `call/2` and `cast/2`, just like a GenServer. Variables can persist across turns with `binding_scope: :conversation`.
-- **Persistence** - Persist conversations across process and application restarts with `use Legion.Store.Postgres, repo: MyApp.Repo`, or implement `Legion.Store` for any other storage. Legion saves the incoming user message before execution and the final state before replying; stores can also opt into step checkpoints for intermediate results and recoverable errors.
-- **Multi-agent orchestration** - Agents delegate to other agents via the built-in `AgentTool`. Fan out with `parallel/2`, chain with `pipeline/1`. Sub-agents are linked processes - when a parent dies, children stop too.
-- **Human in the loop** - The built-in `HumanTool` pauses agent execution until a human responds. It's just message passing - your handler receives a question and sends back an answer.
-- **Structured output** - Define a JSON Schema via `output_schema/0` to get typed, validated responses. Or skip it and work with plain text.
-- **Telemetry** - Events for agent lifecycle, messages, iterations, LLM calls, and code evaluation. Plug into any monitoring stack.
-- **Process-native** - Agents are BEAM processes. Supervision trees, process groups, hot code reloading, lightweight concurrency - all work out of the box.
+### **1. Tools are plain Elixir modules**
 
-## Installation
+`use Legion.Tool` on any module and the LLM reads its source and calls its public functions. Third-party modules work too, without a wrapper:
 
-Add `legion` to your dependencies:
+   ```elixir
+   # config/config.exs
+   config :legion, extra_source_modules: [Req, Jason]
 
-```elixir
-def deps do
-  [
-    {:legion, "~> 0.4"}
-  ]
-end
-```
+   defmodule MyApp.APIAgent do
+     @moduledoc "Fetches data from JSON APIs and decodes responses."
+     use Legion.Agent
 
-Configure your LLM provider ([all options](https://hexdocs.pm/req_llm/ReqLLM.html#module-configuration)):
+     def tools, do: [Req, Jason]
+   end
+   ```
 
-```elixir
-# config/runtime.exs
-config :req_llm, openai_api_key: System.get_env("OPENAI_API_KEY")
-```
+   Use it to hand agents your existing app logic directly - no schemas to write, nothing to keep in sync. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (see [Credentials never reach the LLM](#7-credentials-never-reach-the-llm)). For large libraries, write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source.
 
-## Web Dashboard
+   See [`Legion.Tool`](https://hexdocs.pm/legion/Legion.Tool.html) for more details.
 
-[`legion_web`](https://github.com/software-mansion-labs/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
+### **2. Agents are BEAM processes** 
 
-![Legion Web Dashboard](https://raw.githubusercontent.com/software-mansion-labs/legion_web/main/img/preview.png)
+Start one, keep it around, and message it like a GenServer.
 
-## Long-lived Agents
+   ```elixir
+   {:ok, pid} = Legion.start_link(MyApp.AssistantAgent)
 
-```elixir
-# Start an agent that maintains context
-{:ok, pid} = Legion.start_link(MyApp.AssistantAgent)
+   {:ok, response} = Legion.call(pid, "Find laptops under $2000")
+   {:ok, response} = Legion.call(pid, "Now filter for 16GB of RAM")
+   Legion.cast(pid, "Also check the reviews")
+   ```
 
-# Send follow-up messages
-{:ok, response} = Legion.call(pid, "Now filter for items over $100")
+   Use it when a conversation spans multiple messages - variables can even persist between turns with `binding_scope: :conversation`. And since agents are just processes, supervision trees and `:pg`-based pools work out of the box:
 
-# Or fire-and-forget
-Legion.cast(pid, "Also check the reviews")
-```
+   ```elixir
+   for _ <- 1..5 do
+     {:ok, pid} = Legion.start_link(SupportAgent)
+     :pg.join(:support_pool, pid)
+   end
 
-## Conversation Persistence
+   agent = :pg.get_members(:support_pool) |> Enum.random()
+   Legion.cast(agent, "Handle this support ticket: #{ticket}")
+   ```
 
-Persist conversations with the built-in Postgres adapter or your own implementation of `Legion.Store`. The Postgres adapter reuses your application's Ecto repo:
+   See [`start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2), [`call/3`](https://hexdocs.pm/legion/Legion.html#call/3), and [`cast/2`](https://hexdocs.pm/legion/Legion.html#cast/2) for more details.
 
-```elixir
-defmodule MyApp.AgentStore do
-  use Legion.Store.Postgres, repo: MyApp.Repo
-end
-```
+### **3. Generated code runs in a sandbox**
 
-Create its table with the migration helper:
+Every evaluation runs in a monitored process with timeout, memory, and CPU budgets. Two sandboxes ship with Legion, differing in language and trust model:
+   - [`Legion.Sandbox.Elixir`](https://hexdocs.pm/legion/Legion.Sandbox.Elixir.html) (default) - agents write Elixir. Dangerous constructs (`defmodule`, `import`, `spawn`, `send`, `apply`, ...) are blocked at the AST level and module access is allowlisted (stdlib + your tools). Powerful, but the allowlist guards an enormous language surface - use it for your own LLM-backed agents with controlled tool access, not arbitrary code from unknown sources.
+   - [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html) - agents write Lua, evaluated by [luerl](https://github.com/rvirding/luerl), a Lua VM in pure Erlang. Lua code cannot reach the host BEAM at all - the only bridges out are the tool functions Legion registers - making it the safer choice for less trusted generation.
 
-```elixir
-defmodule MyApp.Repo.Migrations.AddLegionAgents do
-  use Ecto.Migration
+   Neither is OS-level isolation - evaluation still runs inside your BEAM VM. If your threat model requires that, run agents in a separate BEAM instance. Custom sandboxes (for example, executing in the user's browser via [popcorn](https://github.com/software-mansion/popcorn/)) implement the [`Legion.Sandbox`](https://hexdocs.pm/legion/Legion.Sandbox.html) behaviour.
 
-  def up, do: Legion.Store.Migration.Postgres.up()
-  def down, do: Legion.Store.Migration.Postgres.down()
-end
-```
+### **4. Agents orchestrate agents**
 
-Use a stable `agent_id` to continue the same conversation after a process or application restart:
+Give an agent the built-in `AgentTool` and its generated code can delegate.
 
-```elixir
-{:ok, pid} =
-  Legion.start_link(MyApp.AssistantAgent,
-    store: MyApp.AgentStore,
-    agent_id: "user_42:chat_7"
-  )
+   ```elixir
+   defmodule MyApp.OrchestratorAgent do
+     @moduledoc "Coordinates research and writing sub-agents to produce finished content."
+     use Legion.Agent
 
-{:ok, response} = Legion.call(pid, "Remember that my budget is $100")
+     def tools, do: [Legion.Tools.AgentTool]
+     def tool_config(Legion.Tools.AgentTool), do: [agents: [MyApp.ResearchAgent, MyApp.WriterAgent]]
+   end
+   ```
 
-# Later, after the original process has stopped
-{:ok, pid} = Legion.resume("user_42:chat_7", store: MyApp.AgentStore)
-```
+The orchestrator writes code like:
 
-If you omit `agent_id`, Legion generates one. Save it if you want to resume the conversation later:
+   ```elixir
+   {:ok, research} = AgentTool.call(MyApp.ResearchAgent, "Find info about Elixir 1.18")
+   {:ok, draft} = AgentTool.call(MyApp.WriterAgent, "Write a blog post using: #{research}")
+   ```
 
-```elixir
-{:ok, pid} = Legion.start_link(MyApp.AssistantAgent, store: MyApp.AgentStore)
-agent_id = Legion.get_agent_id(pid)
-```
+   Sub-agents are linked processes - when a parent dies, its children stop too. From the outside, fan out with [`parallel/2`](https://hexdocs.pm/legion/Legion.html#parallel/2) or chain with [`pipeline/1`](https://hexdocs.pm/legion/Legion.html#pipeline/1):
 
-Stores persist at turn boundaries by default. To also checkpoint intermediate eval results, recoverable errors, bindings, and executor progress:
+   ```elixir
+   {:ok, [posts, trends]} = Legion.parallel([
+     {MyApp.ResearchAgent, "Find recent Elixir posts"},
+     {MyApp.AnalysisAgent, "Summarize Elixir trends"}
+   ])
 
-```elixir
-defmodule MyApp.AgentStore do
-  use Legion.Store.Postgres,
-    repo: MyApp.Repo,
-    persistence_frequency: :step
-end
-```
+   {:ok, result} = Legion.pipeline([
+     {MyApp.ResearchAgent, "Find Elixir blog posts from this week"},
+     {MyApp.WriterAgent, &"Summarize these posts: #{&1}"}
+   ])
+   ```
 
-Step persistence records the latest recoverable state, but Legion does not automatically continue an interrupted turn.
+   See [`Legion.Tools.AgentTool`](https://hexdocs.pm/legion/Legion.Tools.AgentTool.html) for more details.
 
-## Multi-Agent Systems
+### **5. Conversations survive restarts**
 
-Agents orchestrate other agents through the built-in `AgentTool`:
+Plug in the Postgres store (it can reuse your Ecto repo) and resume any conversation by id, even after a deploy.
 
-```elixir
-defmodule MyApp.OrchestratorAgent do
-  @moduledoc "Coordinates research and writing sub-agents to produce finished content."
-  use Legion.Agent
+   ```elixir
+   defmodule MyApp.AgentStore do
+     use Legion.Store.Postgres, repo: MyApp.Repo
+   end
 
-  def tools, do: [Legion.Tools.AgentTool, MyApp.Tools.DatabaseTool]
-  def tool_config(Legion.Tools.AgentTool), do: [agents: [MyApp.ResearchAgent, MyApp.WriterAgent]]
-end
-```
+   {:ok, pid} =
+     Legion.start_link(MyApp.AssistantAgent,
+       store: MyApp.AgentStore,
+       agent_id: "user_42:chat_7"
+     )
 
-The orchestrator's generated code can then delegate:
+   {:ok, response} = Legion.call(pid, "Remember that my budget is $100")
 
-```elixir
-{:ok, research} = AgentTool.call(MyApp.ResearchAgent, "Find info about Elixir 1.18")
-{:ok, draft} = AgentTool.call(MyApp.WriterAgent, "Write a blog post using: #{research}")
-```
+   # Later, after the original process has stopped
+   {:ok, pid} = Legion.resume("user_42:chat_7", store: MyApp.AgentStore)
+   ```
 
-Run independent tasks in parallel or chain them sequentially:
+   Create the table with `Legion.Store.Migration.Postgres.up()` in a migration. Stores persist at turn boundaries by default; pass `persistence_frequency: :step` to also checkpoint intermediate results and recoverable errors. Use `Legion.Store` to implement any other storage.
 
-```elixir
-{:ok, [posts, trends]} = Legion.parallel([
-  {MyApp.ResearchAgent, "Find recent Elixir posts"},
-  {MyApp.AnalysisAgent, "Summarize Elixir trends"}
-])
+   See [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) for more details.
 
-{:ok, result} = Legion.pipeline([
-  {MyApp.ResearchAgent, "Find Elixir blog posts from this week"},
-  {MyApp.WriterAgent, &"Summarize these posts: #{&1}"}
-])
-```
+### **6. Humans stay in the loop**
 
-## Authorization
+The built-in `HumanTool` pauses execution and sends the question to your handler process. It's just message passing - the handler receives `{:human_request, ref, from_pid, question, meta}` and replies with `{:human_response, ref, answer}`.
 
-Set auth context before starting the agent. Tools read it at runtime via Vault. LLM-generated code has no access to Vault.
+   ```elixir
+   defmodule MyApp.AssistantAgent do
+     @moduledoc "An assistant that can ask the user questions."
+     use Legion.Agent
 
-```elixir
-Vault.init(current_user: %{id: user.id})
-{:ok, result} = Legion.execute(MyApp.PostsAgent, "Find my posts from today and summarize them")
-```
+     def tools, do: [Legion.Tools.HumanTool]
+     def tool_config(Legion.Tools.HumanTool), do: [handler: MyApp.ChatHandler, timeout: 30_000]
+   end
+   ```
 
-```elixir
-defmodule MyApp.Tools.PostsTool do
-  use Legion.Tool
+   Use it for approvals and clarifying questions mid-task.
 
-  def get_my_posts do
-    %{id: user_id} = Vault.get(:current_user)
-    Repo.all(from p in Post, where: p.user_id == ^user_id)
-  end
-end
-```
+   See [`Legion.Tools.HumanTool`](https://hexdocs.pm/legion/Legion.Tools.HumanTool.html) for more details.
 
-## Human in the Loop
+### **7. Credentials never reach the LLM** 
 
-The `HumanTool` pauses agent execution and sends a question to your handler process:
+Set auth context before the agent starts, read it inside tools at runtime via [Vault](https://github.com/dimamik/vault). Generated code has no access to it.
 
-```elixir
-defmodule MyApp.AssistantAgent do
-  @moduledoc "An assistant that can ask the user questions."
-  use Legion.Agent
+   ```elixir
+   Vault.init(current_user: %{id: user.id})
+   {:ok, result} = Legion.execute(MyApp.PostsAgent, "Find my posts from today and summarize them")
+   ```
 
-  def tools, do: [Legion.Tools.HumanTool]
-  def tool_config(Legion.Tools.HumanTool), do: [handler: MyApp.ChatHandler, timeout: 30_000]
-end
-```
+   ```elixir
+   defmodule MyApp.Tools.PostsTool do
+     use Legion.Tool
 
-Your handler receives `{:human_request, ref, from_pid, question, meta}` and replies with `{:human_response, ref, answer}`.
+     def get_my_posts do
+       %{id: user_id} = Vault.get(:current_user)
+       Repo.all(from p in Post, where: p.user_id == ^user_id)
+     end
+   end
+   ```
+
+   See [Vault](https://github.com/dimamik/vault) for more details.
+
+### **8. Structured output when you need it**
+
+Define `output_schema/0` on the agent to get typed, validated responses instead of prose. Skip it and you get plain text.
+
+   See [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) for this and the other agent callbacks (`system_prompt/0`, `config/0`, `action_types/0`) - all optional with sensible defaults.
+
 
 ## Configuration
 
-Set a global store to persist agents by default:
-
 ```elixir
 config :legion, :store, MyApp.AgentStore
-```
 
-A `store:` passed to `Legion.start_link/2` overrides the global store. With a global store configured, pass only `agent_id:` to select an existing conversation; if you omit it, Legion generates one.
-
-Configure model and runtime options separately:
-
-```elixir
 config :legion, :config, %{
   model: "openai:gpt-5.4",
   max_iterations: 10,
@@ -291,7 +268,7 @@ config :legion, :config, %{
 
 | Option               | Description                                                                                                                |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `model`              | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm), e.g. `"openai:gpt-5.4"`.                              |
+| `model`              | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm), e.g. `"openai:gpt-5.4"`.                                  |
 | `max_iterations`     | Successful execution steps before the agent is stopped.                                                                    |
 | `max_retries`        | Consecutive failures (bad code, tool errors) before giving up. Resets after each success.                                  |
 | `sandbox_timeout`    | Milliseconds a single code evaluation may run before it is killed.                                                         |
@@ -310,75 +287,7 @@ defmodule MyApp.DataAgent do
 end
 ```
 
-## Agent Callbacks
-
-All optional with sensible defaults:
-
-| Callback          | Default                 | Description                                    |
-| ----------------- | ----------------------- | ---------------------------------------------- |
-| `tools/0`         | `[]`                    | Tool modules available to the agent            |
-| `output_schema/0` | `%{"type" => "string"}` | JSON Schema for structured output              |
-| `tool_config/1`   | `[]`                    | Per-tool keyword config (accessible via Vault) |
-| `system_prompt/0` | auto-generated          | Override the entire system prompt              |
-| `config/0`        | `%{}`                   | Model, timeouts, limits                        |
-| `action_types/0`  | all four actions        | Restrict which actions the LLM can take        |
-
-## Third-Party Modules as Tools
-
-Expose any module - even third-party ones like `Req` or `Jason` - without writing a wrapper:
-
-```elixir
-# config/config.exs
-config :legion, extra_source_modules: [Req, Jason]
-```
-
-```elixir
-defmodule MyApp.APIAgent do
-  @moduledoc "Fetches data from JSON APIs and decodes responses."
-  use Legion.Agent
-
-  def tools, do: [Req, Jason]
-end
-```
-
-The LLM receives the module's full source and can call any public function in the sandbox.
-
-For large libraries or when you want a curated interface, write a thin facade instead:
-
-```elixir
-defmodule MyApp.Tools.JSONTool do
-  use Legion.Tool
-
-  def description do
-    """
-    JSONTool - encode and decode JSON.
-
-    ## Functions
-    - `encode!(term)` - returns a JSON string
-    - `decode!(binary)` - returns a decoded term
-    """
-  end
-
-  defdelegate encode!(term), to: Jason
-  defdelegate decode!(binary), to: Jason
-end
-```
-
-## Agent Pools
-
-Agents are BEAM processes - use `:pg` for pooling with zero external infrastructure:
-
-```elixir
-for _ <- 1..5 do
-  {:ok, pid} = Legion.start_link(SupportAgent)
-  :pg.join(:support_pool, pid)
-end
-
-defp handle_ticket(ticket) do
-  agent = :pg.get_members(:support_pool) |> Enum.random()
-  Legion.cast(agent, "Handle this support ticket: #{ticket}")
-end
-```
+Writing code is the one thing models keep getting better at - update the `model` string and every agent in your app gets smarter, for free.
 
 ## Telemetry
 
@@ -413,6 +322,13 @@ Legion's sandbox restricts what LLM-generated code can do, but it is not full pr
 - Restrict access to BEAM node name, process pid, or refs
 
 Legion is built for trusted code generators (your own LLM-backed agents with controlled tool access), not for running arbitrary code from unknown sources. If your threat model requires full isolation, run agents in a separate BEAM instance.
+
+
+## Web Dashboard
+
+[`legion_web`](https://github.com/software-mansion-labs/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
+
+![Legion Web Dashboard](https://raw.githubusercontent.com/software-mansion-labs/legion_web/main/img/preview.png)
 
 <!-- MDOC -->
 
