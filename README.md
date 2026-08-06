@@ -1,13 +1,20 @@
 # Legion
 
+<div align="center">
+
 [![CI](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml/badge.svg)](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml)
 [![License](https://img.shields.io/hexpm/l/legion.svg)](https://github.com/software-mansion-labs/legion/blob/main/LICENSE)
 [![Version](https://img.shields.io/hexpm/v/legion.svg)](https://hex.pm/packages/legion)
 [![Hex Docs](https://img.shields.io/badge/documentation-gray.svg)](https://hexdocs.pm/legion)
 
+</div>
 <!-- MDOC -->
 
-Legion is an Elixir framework for AI agents that live inside your application and get things done by writing code. Define an agent's responsibilities, give it tools to interact with your app safely, and hand it a task from one of your users. It will read the source of the modules you expose, write an Elixir (or Lua) snippet, run it in a sandbox, look at the result, and write the next one - until the task is done. One evaluation can filter, branch, and loop - work that would cost a tool-calling agent an LLM round trip per step ([Anthropic on why code execution beats tool calling](https://www.anthropic.com/engineering/code-execution-with-mcp)).
+**Legion is an Elixir framework for AI agents that live inside your application and get things done by writing code.** 
+
+Define an agent's responsibilities, give it tools to interact with your app safely, and hand it a task from one of your users. It will read the source of the modules you expose, write an Elixir (or Lua) snippet, run it in a sandbox, look at the result, and write the next one - until the task is done.
+
+One evaluation can filter, branch, and loop - work that would cost a tool-calling agent an LLM round trip per step ([Anthropic on why code execution beats tool calling](https://www.anthropic.com/engineering/code-execution-with-mcp)).
 
 ## Usage
 
@@ -28,8 +35,7 @@ end
 config :req_llm, openai_api_key: System.get_env("OPENAI_API_KEY")
 ```
 
-3. Expose existing or new modules as tools, point an agent at them, and hand it a task:
-
+3. Expose existing or new modules as tools and hand them to an agent:
 ```elixir
 defmodule MyApp.Tools.ScraperTool do
   use Legion.Tool
@@ -53,9 +59,12 @@ defmodule MyApp.ResearchAgent do
 
   def tools, do: [MyApp.Tools.ScraperTool, MyApp.Tools.DatabaseTool]
 end
+```
 
+4. Run it!
+```elixir
 Legion.execute(MyApp.ResearchAgent, "Find cool Elixir posts about Advent of Code and save them")
-{:ok, "Found 3 relevant posts and saved 2 that met quality criteria."}
+#=> {:ok, "Found 3 relevant posts and saved 2 that met quality criteria."}
 ```
 
 To solve this task, the agent wrote and ran:
@@ -77,19 +86,11 @@ end)
 
 Two evaluations, with `Enum`, pattern matching, and pipelines available at every step. A tool-calling agent would have paid a round trip for every filter decision and every insert. The generated code is disposable, like a shell one-liner: written to do one thing, right now, then thrown away. Legion is a runtime, not a coding assistant.
 
-## 8 building blocks:
+## Features
 
-- **Code generation over function calling** - Agents write Elixir pipelines, not individual tool calls. Fewer tokens, fewer round-trips, smarter behavior.
-- **Sandboxed execution** - Generated code runs in a restricted environment. Dangerous constructs (`defmodule`, `spawn`, `send`, `import`) are blocked at the AST level. Module access is limited to stdlib + your tools.
-- **Tools are just modules** - `use Legion.Tool` on any module to expose it. The LLM reads your source code and calls your functions. No schemas to write, no wrappers - reuse existing app logic directly.
-- **Authorization via Vault** - Set auth context before the agent starts, validate inside tools at runtime. LLM-generated code never touches credentials. See [Vault](https://github.com/dimamik/vault).
-- **Long-lived agents** - Start agents with `Legion.start_link/2` and message them with `call/2` and `cast/2`, just like a GenServer. Variables can persist across turns with `binding_scope: :conversation`.
-- **Persistence** - Persist conversations across process and application restarts with `use Legion.Store.Postgres, repo: MyApp.Repo`, or implement `Legion.Store` for any other storage. Legion saves the incoming user message before execution and the final state before replying; stores can also opt into step checkpoints for intermediate results and recoverable errors.
-- **Multi-agent orchestration** - Agents delegate to other agents via the built-in `AgentTool`. Fan out with `parallel/2`, chain with `pipeline/1`. Sub-agents are linked processes - when a parent dies, children stop too.
-- **Human in the loop** - The built-in `HumanTool` pauses agent execution until a human responds. It's just message passing - your handler receives a question and sends back an answer.
-- **Structured output** - Define a JSON Schema via `output_schema/0` to get typed, validated responses. Or skip it and work with plain text.
-- **Telemetry** - Events for agent lifecycle, messages, iterations, LLM calls, and code evaluation. Plug into any monitoring stack.
-- **Process-native** - Agents are BEAM processes. Supervision trees, process groups, hot code reloading, lightweight concurrency - all work out of the box.
+### **1. Tools are plain Elixir modules**
+
+`use Legion.Tool` on any module and the LLM reads its source and calls its public functions. Third-party modules work too, without a wrapper:
 
    ```elixir
    # config/config.exs
@@ -103,11 +104,13 @@ Two evaluations, with `Enum`, pattern matching, and pipelines available at every
    end
    ```
 
-   Use it to hand agents your existing app logic directly - no schemas to write, nothing to keep in sync. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (building block 6). For large libraries, write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source.
+   Use it to hand agents your existing app logic directly - no schemas to write, nothing to keep in sync. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (see [Credentials never reach the LLM](#7-credentials-never-reach-the-llm)). For large libraries, write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source.
 
    See [`Legion.Tool`](https://hexdocs.pm/legion/Legion.Tool.html) for more details.
 
-1. **Agents are BEAM processes**: start one, keep it around, and message it like a GenServer.
+### **2. Agents are BEAM processes** 
+
+Start one, keep it around, and message it like a GenServer.
 
    ```elixir
    {:ok, pid} = Legion.start_link(MyApp.AssistantAgent)
@@ -131,7 +134,54 @@ Two evaluations, with `Enum`, pattern matching, and pipelines available at every
 
    See [`start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2), [`call/3`](https://hexdocs.pm/legion/Legion.html#call/3), and [`cast/2`](https://hexdocs.pm/legion/Legion.html#cast/2) for more details.
 
-1. **Conversations survive restarts**: plug in the Postgres store (it can reuse your Ecto repo) and resume any conversation by id, even after a deploy.
+### **3. Generated code runs in a sandbox**
+
+Every evaluation runs in a monitored process with timeout, memory, and CPU budgets. Two sandboxes ship with Legion, differing in language and trust model:
+   - [`Legion.Sandbox.Elixir`](https://hexdocs.pm/legion/Legion.Sandbox.Elixir.html) (default) - agents write Elixir. Dangerous constructs (`defmodule`, `import`, `spawn`, `send`, `apply`, ...) are blocked at the AST level and module access is allowlisted (stdlib + your tools). Powerful, but the allowlist guards an enormous language surface - use it for your own LLM-backed agents with controlled tool access, not arbitrary code from unknown sources.
+   - [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html) - agents write Lua, evaluated by [luerl](https://github.com/rvirding/luerl), a Lua VM in pure Erlang. Lua code cannot reach the host BEAM at all - the only bridges out are the tool functions Legion registers - making it the safer choice for less trusted generation.
+
+   Neither is OS-level isolation - evaluation still runs inside your BEAM VM. If your threat model requires that, run agents in a separate BEAM instance. Custom sandboxes (for example, executing in the user's browser via [popcorn](https://github.com/software-mansion/popcorn/)) implement the [`Legion.Sandbox`](https://hexdocs.pm/legion/Legion.Sandbox.html) behaviour.
+
+### **4. Agents orchestrate agents**
+
+Give an agent the built-in `AgentTool` and its generated code can delegate.
+
+   ```elixir
+   defmodule MyApp.OrchestratorAgent do
+     @moduledoc "Coordinates research and writing sub-agents to produce finished content."
+     use Legion.Agent
+
+     def tools, do: [Legion.Tools.AgentTool]
+     def tool_config(Legion.Tools.AgentTool), do: [agents: [MyApp.ResearchAgent, MyApp.WriterAgent]]
+   end
+   ```
+
+The orchestrator writes code like:
+
+   ```elixir
+   {:ok, research} = AgentTool.call(MyApp.ResearchAgent, "Find info about Elixir 1.18")
+   {:ok, draft} = AgentTool.call(MyApp.WriterAgent, "Write a blog post using: #{research}")
+   ```
+
+   Sub-agents are linked processes - when a parent dies, its children stop too. From the outside, fan out with [`parallel/2`](https://hexdocs.pm/legion/Legion.html#parallel/2) or chain with [`pipeline/1`](https://hexdocs.pm/legion/Legion.html#pipeline/1):
+
+   ```elixir
+   {:ok, [posts, trends]} = Legion.parallel([
+     {MyApp.ResearchAgent, "Find recent Elixir posts"},
+     {MyApp.AnalysisAgent, "Summarize Elixir trends"}
+   ])
+
+   {:ok, result} = Legion.pipeline([
+     {MyApp.ResearchAgent, "Find Elixir blog posts from this week"},
+     {MyApp.WriterAgent, &"Summarize these posts: #{&1}"}
+   ])
+   ```
+
+   See [`Legion.Tools.AgentTool`](https://hexdocs.pm/legion/Legion.Tools.AgentTool.html) for more details.
+
+### **5. Conversations survive restarts**
+
+Plug in the Postgres store (it can reuse your Ecto repo) and resume any conversation by id, even after a deploy.
 
    ```elixir
    defmodule MyApp.AgentStore do
@@ -154,41 +204,9 @@ Two evaluations, with `Enum`, pattern matching, and pipelines available at every
 
    See [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) for more details.
 
-1. **Agents orchestrate agents**: give an agent the built-in `AgentTool` and its generated code can delegate.
+### **6. Humans stay in the loop**
 
-   ```elixir
-   defmodule MyApp.OrchestratorAgent do
-     @moduledoc "Coordinates research and writing sub-agents to produce finished content."
-     use Legion.Agent
-
-     def tools, do: [Legion.Tools.AgentTool]
-     def tool_config(Legion.Tools.AgentTool), do: [agents: [MyApp.ResearchAgent, MyApp.WriterAgent]]
-   end
-   ```
-
-   ```elixir
-   # The orchestrator writes code like:
-   {:ok, research} = AgentTool.call(MyApp.ResearchAgent, "Find info about Elixir 1.18")
-   {:ok, draft} = AgentTool.call(MyApp.WriterAgent, "Write a blog post using: #{research}")
-   ```
-
-   Sub-agents are linked processes - when a parent dies, its children stop too. From the outside, fan out with [`parallel/2`](https://hexdocs.pm/legion/Legion.html#parallel/2) or chain with [`pipeline/1`](https://hexdocs.pm/legion/Legion.html#pipeline/1):
-
-   ```elixir
-   {:ok, [posts, trends]} = Legion.parallel([
-     {MyApp.ResearchAgent, "Find recent Elixir posts"},
-     {MyApp.AnalysisAgent, "Summarize Elixir trends"}
-   ])
-
-   {:ok, result} = Legion.pipeline([
-     {MyApp.ResearchAgent, "Find Elixir blog posts from this week"},
-     {MyApp.WriterAgent, &"Summarize these posts: #{&1}"}
-   ])
-   ```
-
-   See [`Legion.Tools.AgentTool`](https://hexdocs.pm/legion/Legion.Tools.AgentTool.html) for more details.
-
-1. **Humans stay in the loop**: the built-in `HumanTool` pauses execution and sends the question to your handler process. It's just message passing - the handler receives `{:human_request, ref, from_pid, question, meta}` and replies with `{:human_response, ref, answer}`.
+The built-in `HumanTool` pauses execution and sends the question to your handler process. It's just message passing - the handler receives `{:human_request, ref, from_pid, question, meta}` and replies with `{:human_response, ref, answer}`.
 
    ```elixir
    defmodule MyApp.AssistantAgent do
@@ -204,7 +222,9 @@ Two evaluations, with `Enum`, pattern matching, and pipelines available at every
 
    See [`Legion.Tools.HumanTool`](https://hexdocs.pm/legion/Legion.Tools.HumanTool.html) for more details.
 
-1. **Credentials never reach the LLM**: set auth context before the agent starts, read it inside tools at runtime via [Vault](https://github.com/dimamik/vault). Generated code has no access to it.
+### **7. Credentials never reach the LLM** 
+
+Set auth context before the agent starts, read it inside tools at runtime via [Vault](https://github.com/dimamik/vault). Generated code has no access to it.
 
    ```elixir
    Vault.init(current_user: %{id: user.id})
@@ -224,15 +244,12 @@ Two evaluations, with `Enum`, pattern matching, and pipelines available at every
 
    See [Vault](https://github.com/dimamik/vault) for more details.
 
-1. **Structured output when you need it**: define `output_schema/0` on the agent to get typed, validated responses instead of prose. Skip it and you get plain text.
+### **8. Structured output when you need it**
+
+Define `output_schema/0` on the agent to get typed, validated responses instead of prose. Skip it and you get plain text.
 
    See [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) for this and the other agent callbacks (`system_prompt/0`, `config/0`, `action_types/0`) - all optional with sensible defaults.
 
-1. **Generated code runs in a sandbox**: every evaluation runs in a monitored process with timeout, memory, and CPU budgets. Two sandboxes ship with Legion, differing in language and trust model:
-   - [`Legion.Sandbox.Elixir`](https://hexdocs.pm/legion/Legion.Sandbox.Elixir.html) (default) - agents write Elixir. Dangerous constructs (`defmodule`, `import`, `spawn`, `send`, `apply`, ...) are blocked at the AST level and module access is allowlisted (stdlib + your tools). Powerful, but the allowlist guards an enormous language surface - use it for your own LLM-backed agents with controlled tool access, not arbitrary code from unknown sources.
-   - [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html) - agents write Lua, evaluated by [luerl](https://github.com/rvirding/luerl), a Lua VM in pure Erlang. Lua code cannot reach the host BEAM at all - the only bridges out are the tool functions Legion registers - making it the safer choice for less trusted generation.
-
-   Neither is OS-level isolation - evaluation still runs inside your BEAM VM. If your threat model requires that, run agents in a separate BEAM instance. Custom sandboxes (for example, executing in the user's browser via [popcorn](https://github.com/software-mansion/popcorn/)) implement the [`Legion.Sandbox`](https://hexdocs.pm/legion/Legion.Sandbox.html) behaviour.
 
 ## Configuration
 
@@ -272,12 +289,6 @@ end
 
 Writing code is the one thing models keep getting better at - update the `model` string and every agent in your app gets smarter, for free.
 
-## Web Dashboard
-
-[`legion_web`](https://github.com/software-mansion-labs/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
-
-![Legion Web Dashboard](https://raw.githubusercontent.com/software-mansion-labs/legion_web/main/img/preview.png)
-
 ## Telemetry
 
 ```elixir
@@ -311,6 +322,13 @@ Legion's sandbox restricts what LLM-generated code can do, but it is not full pr
 - Restrict access to BEAM node name, process pid, or refs
 
 Legion is built for trusted code generators (your own LLM-backed agents with controlled tool access), not for running arbitrary code from unknown sources. If your threat model requires full isolation, run agents in a separate BEAM instance.
+
+
+## Web Dashboard
+
+[`legion_web`](https://github.com/software-mansion-labs/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
+
+![Legion Web Dashboard](https://raw.githubusercontent.com/software-mansion-labs/legion_web/main/img/preview.png)
 
 <!-- MDOC -->
 
