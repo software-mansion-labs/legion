@@ -126,12 +126,26 @@ defmodule Legion.Executor do
   Runs the LLM loop against the given message history.
 
   `messages` must already include the system prompt and the current user message.
+  `bindings` seeds the code-evaluation binding. `executor_state` resumes a step
+  checkpoint when present: `:awaiting_llm` continues from its saved iteration
+  and retry counters, while `:completing` finishes without another LLM request.
+  Pass `:nonexistent` to start a new loop.
 
   Returns `{:ok, result, messages, bindings}` or `{:cancel, reason, messages, bindings}`.
   """
-  def run(agent_module, messages, config, bindings \\ []) do
+  def run(agent_module, messages, config, bindings \\ [], executor_state \\ :nonexistent) do
     config = Map.merge(@default_config, config)
-    loop(agent_module, messages, config, 0, 0, bindings)
+
+    case executor_state do
+      :nonexistent ->
+        loop(agent_module, messages, config, 0, 0, bindings)
+
+      %{phase: :awaiting_llm, iteration: i, retries: r} ->
+        loop(agent_module, messages, config, i, r, bindings)
+
+      %{phase: :completing, iteration: _i, retries: _r} ->
+        {:ok, nil, messages, bindings}
+    end
   end
 
   defp loop(agent_module, messages, config, iteration, retries, bindings) do
@@ -202,7 +216,7 @@ defmodule Legion.Executor do
     )
   end
 
-  defp checkpoint!(config, messages, bindings, execution) do
+  defp checkpoint!(config, messages, bindings, executor_state) do
     case config[:checkpoint] do
       nil ->
         :ok
@@ -213,7 +227,7 @@ defmodule Legion.Executor do
             callback.(%{
               messages: messages,
               bindings: bindings,
-              execution: execution
+              executor_state: executor_state
             })
         rescue
           error -> exit({:checkpoint_persistence_failed, error})
@@ -256,14 +270,14 @@ defmodule Legion.Executor do
         messages =
           messages ++ [message(:eval_result, format_result(result, new_bindings, config))]
 
-        execution =
+        executor_state =
           if eval == "eval_and_continue" do
             %{phase: :awaiting_llm, iteration: i + 1, retries: 0}
           else
             %{phase: :completing, iteration: i, retries: 0}
           end
 
-        checkpoint!(config, messages, new_bindings, execution)
+        checkpoint!(config, messages, new_bindings, executor_state)
 
         if eval == "eval_and_continue",
           do: loop(agent, messages, config, i + 1, 0, new_bindings),

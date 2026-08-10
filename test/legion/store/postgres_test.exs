@@ -70,7 +70,11 @@ defmodule Legion.Store.PostgresTest do
       parent_agent_id: "parent-1",
       status: :idle,
       started_at: 123,
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [x: 42],
+        executor_state: :nonexistent
+      }
     }
 
     assert :ok = Store.save(payload)
@@ -80,7 +84,11 @@ defmodule Legion.Store.PostgresTest do
   test "save/1 partially inserts only the supplied payload fields" do
     payload = %Payload{
       agent_id: "state-only",
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: []}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [],
+        executor_state: :nonexistent
+      }
     }
 
     expected_payload = %{payload | status: :idle}
@@ -88,8 +96,8 @@ defmodule Legion.Store.PostgresTest do
     assert {:ok, ^expected_payload} = Store.get("state-only")
   end
 
-  test "save/1 round trips step execution state" do
-    execution = %{phase: :awaiting_llm, iteration: 2, retries: 1}
+  test "save/1 round trips executor_state for a step checkpoint" do
+    executor_state = %{phase: :awaiting_llm, iteration: 2, retries: 1}
 
     payload = %Payload{
       agent_id: "step-state",
@@ -97,7 +105,7 @@ defmodule Legion.Store.PostgresTest do
       conversation_state: %{
         messages: [%{role: "user", content: "result"}],
         bindings: [x: 42],
-        execution: execution
+        executor_state: executor_state
       }
     }
 
@@ -112,7 +120,11 @@ defmodule Legion.Store.PostgresTest do
       parent_agent_id: "parent-1",
       status: :running,
       started_at: 123,
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [x: 42],
+        executor_state: :nonexistent
+      }
     }
 
     assert :ok = Store.save(initial)
@@ -126,7 +138,11 @@ defmodule Legion.Store.PostgresTest do
               parent_agent_id: "parent-1",
               status: :idle,
               started_at: 123,
-              conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+              conversation_state: %{
+                messages: [%{role: "user", content: "hi"}],
+                bindings: [x: 42],
+                executor_state: :nonexistent
+              }
             }} = Store.get("user_42")
 
     assert NaiveDateTime.compare(FakeRepo.run("user_42").updated_at, previous_updated_at) == :gt

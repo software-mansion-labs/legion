@@ -21,7 +21,11 @@ defmodule Legion.Store.PostgresDbTest do
       parent_agent_id: "parent-1",
       status: :idle,
       started_at: ~N[2026-01-01 00:00:00.000000],
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [x: 42],
+        executor_state: :nonexistent
+      }
     }
 
     assert :ok = Store.save(payload)
@@ -31,7 +35,11 @@ defmodule Legion.Store.PostgresDbTest do
   test "save/1 partially inserts only the supplied payload fields" do
     payload = %Payload{
       agent_id: "state-only",
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: []}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [],
+        executor_state: :nonexistent
+      }
     }
 
     assert :ok = Store.save(payload)
@@ -46,7 +54,11 @@ defmodule Legion.Store.PostgresDbTest do
       parent_agent_id: "parent-1",
       status: :running,
       started_at: ~N[2026-01-01 00:00:00.000000],
-      conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+      conversation_state: %{
+        messages: [%{role: "user", content: "hi"}],
+        bindings: [x: 42],
+        executor_state: :nonexistent
+      }
     }
 
     assert :ok = Store.save(initial)
@@ -63,7 +75,11 @@ defmodule Legion.Store.PostgresDbTest do
               parent_agent_id: "parent-1",
               status: :idle,
               started_at: ~N[2026-01-01 00:00:00.000000],
-              conversation_state: %{messages: [%{role: "user", content: "hi"}], bindings: [x: 42]}
+              conversation_state: %{
+                messages: [%{role: "user", content: "hi"}],
+                bindings: [x: 42],
+                executor_state: :nonexistent
+              }
             }} = Store.get("user_42")
 
     %{rows: [[updated_at]]} =

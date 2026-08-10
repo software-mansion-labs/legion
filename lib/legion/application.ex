@@ -7,10 +7,13 @@ defmodule Legion.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      {Registry, keys: :unique, name: Legion.AgentRegistry}
-    ]
+    Supervisor.start_link(children(), strategy: :one_for_one, name: Legion.Supervisor)
+  end
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: Legion.Supervisor)
+  @doc false
+  def children do
+    [
+      {Legion.Recovery, Application.fetch_env(:legion, :recovery)}
+    ]
   end
 end

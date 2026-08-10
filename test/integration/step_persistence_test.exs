@@ -20,7 +20,7 @@ defmodule Legion.Integration.StepPersistenceTest do
     :ok
   end
 
-  test "persists the recoverable turn state before execution advances" do
+  test "persists the recoverable turn state before executor_state advances" do
     agent_id = "step-persistence-integration"
     test_pid = self()
     request_count = :counters.new(1, [:atomics])
@@ -57,7 +57,7 @@ defmodule Legion.Integration.StepPersistenceTest do
 
     assert Enum.map(initial_state.messages, & &1.type) == [:user]
     assert initial_state.bindings == []
-    refute Map.has_key?(initial_state, :execution)
+    assert initial_state.executor_state == :nonexistent
 
     assert_received {:before_second_request,
                      {:ok,
@@ -69,7 +69,7 @@ defmodule Legion.Integration.StepPersistenceTest do
     assert Enum.map(checkpoint.messages, & &1.type) == [:user, :assistant, :eval_result]
     assert checkpoint.bindings == [x: 42]
 
-    assert checkpoint.execution == %{
+    assert checkpoint.executor_state == %{
              phase: :awaiting_llm,
              iteration: 1,
              retries: 0
@@ -79,7 +79,7 @@ defmodule Legion.Integration.StepPersistenceTest do
              StepStore.get(agent_id)
 
     assert completed.bindings == []
-    refute Map.has_key?(completed, :execution)
+    assert completed.executor_state == :nonexistent
   end
 
   defp response(action, code, result) do

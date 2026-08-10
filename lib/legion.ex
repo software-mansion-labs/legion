@@ -5,7 +5,8 @@ defmodule Legion do
              |> String.split("<!-- MDOC -->")
              |> Enum.fetch!(1)
 
-  alias Legion.AgentServer
+  alias Legion.{AgentIndex, AgentServer}
+  alias Legion.Store.Payload
 
   @doc """
   Runs an agent on a single task and returns the result.
@@ -32,17 +33,16 @@ defmodule Legion do
   Starts a long-lived agent process.
 
   ## Options
-    - `:name` - register the process under a name
     - `:store`, `:agent_id` - persist the conversation across restarts; see `Legion.Store`.
       A store set globally with `config :legion, :store, MyApp.AgentStore` applies to
       every agent, so you need only pass `:agent_id`. If a store is in effect but no
       `:agent_id` is given, Legion generates one - read it back with `get_agent_id/1`.
+      An agent ID can belong to at most one live process across connected nodes.
     - Any config overrides (`:model`, `:max_iterations`, etc.)
 
   ## Examples
 
       {:ok, pid} = Legion.start_link(AssistantAgent)
-      {:ok, pid} = Legion.start_link(AssistantAgent, name: MyAssistant, model: "openai:gpt-4o")
       {:ok, pid} = Legion.start_link(ChatAgent, store: MyApp.AgentStore, agent_id: "user_42:chat_7")
       {:ok, pid} = Legion.start_link(ChatAgent, agent_id: "user_42:chat_7")   # store from app config
   """
@@ -105,10 +105,14 @@ defmodule Legion do
   end
 
   @doc """
-  Returns whether `pid` is alive on this node. Non-pid values return `false`.
+  Whether `pid` - typically one returned by `lookup/1` or recorded in persisted
+  run metadata - is alive. Accepts `nil` and returns `false`.
 
-  Use `lookup/1` to resolve an `agent_id` to its currently registered process
-  before checking it.
+  Checks local processes directly and processes on connected nodes through RPC.
+  An unreachable remote node returns `false`.
+
+  A stored pid can outlive the VM that wrote it, so after a restart this remains
+  best-effort: a recycled pid value can collide with an unrelated live process.
 
   ## Examples
 
@@ -118,10 +122,12 @@ defmodule Legion do
       end
   """
   def running?(pid) when is_pid(pid) do
-    node(pid) == node() and Process.alive?(pid)
+    if node(pid) == node() do
+      Process.alive?(pid)
+    else
+      :rpc.call(node(pid), :erlang, :is_process_alive, [pid]) == true
+    end
   rescue
-    # A pid deserialized from a previous VM incarnation is not a local pid,
-    # for which Process.alive?/1 raises.
     ArgumentError -> false
   end
 
@@ -130,9 +136,10 @@ defmodule Legion do
   @doc """
   Looks up the live process for an agent id.
 
-  Uses `Legion.AgentRegistry` as the runtime source of truth for the
+  Uses Legion's cluster-wide runtime index as the source of truth for the
   `agent_id -> pid` mapping. Returns `{:ok, pid}` when the agent is currently
-  registered, or `:error` when no live process is registered for `agent_id`.
+  registered on any connected node, or `:error` when no live process owns
+  `agent_id`.
 
   ## Examples
 
@@ -140,9 +147,9 @@ defmodule Legion do
       :error = Legion.lookup("missing_agent_id")
   """
   def lookup(agent_id) do
-    case Registry.lookup(Legion.AgentRegistry, agent_id) do
-      [{pid, _}] -> {:ok, pid}
-      [] -> :error
+    case AgentIndex.lookup(agent_id) do
+      {:ok, pid} -> {:ok, pid}
+      _ -> :error
     end
   end
 
@@ -150,46 +157,113 @@ defmodule Legion do
   Resumes a persisted conversation.
 
   Loads the persisted conversation with `get/1` to determine its agent module,
-  then returns the process registered for `agent_id` if it is still running.
-  If no live process is registered, starts the persisted agent module under the
-  same `agent_id`, so it reloads its conversation state. `opts` are passed
-  through to `start_link/2`.
+  then atomically starts it under the same `agent_id`. If a live process already
+  owns that ID, returns the existing pid instead. A new process restores the
+  conversation and continues execution in the background. It resumes from a
+  saved checkpoint when one exists; otherwise it starts a new executor loop
+  with the restored history.
 
-  Pass `:store` or configure one globally. Raises if `get/1` does not return a
-  `Legion.Store.Payload` containing an agent module for `agent_id`.
+  `opts` are passed through to `start_link/2`.
+
+  Pass `:store` or configure one globally. Returns:
+
+    - `{:ok, pid}` when a new process starts or one already owns `agent_id`
+    - `{:error, :not_resumable}` when the store has no payload containing an
+      agent module for `agent_id`
+    - `{:error, reason}` when the process cannot start
+
+  Raises when no store is available.
 
   ## Examples
 
       {:ok, pid} = Legion.resume("user_42:chat_7")
       {:ok, pid} = Legion.resume("user_42:chat_7", store: MyApp.AgentStore)
+
+      {:error, :not_resumable} =
+        Legion.resume("missing_chat", store: MyApp.AgentStore)
   """
   def resume(agent_id, opts \\ []) do
-    store =
-      Keyword.get(opts, :store) || Vault.get(:store) || Application.get_env(:legion, :store) ||
-        raise ArgumentError,
-              "resume/2 requires a :store - pass one or set `config :legion, :store, MyStore`"
+    store = store!(opts, :resume)
 
-    agent_module =
-      case store.get(agent_id) do
-        {:ok, %Legion.Store.Payload{agent_module: agent_module}} when not is_nil(agent_module) ->
-          agent_module
-
-        _ ->
-          raise ArgumentError,
-                "no run recorded for agent_id #{inspect(agent_id)} in #{inspect(store)}"
-      end
-
-    case lookup(agent_id) do
-      {:ok, pid} ->
-        if running?(pid) do
-          {:ok, pid}
-        else
-          start_link(agent_module, Keyword.put(opts, :agent_id, agent_id))
+    case store.get(agent_id) do
+      {:ok, %Payload{agent_module: agent_module}} when not is_nil(agent_module) ->
+        case AgentServer.start_link(
+               agent_module,
+               Keyword.merge(opts, agent_id: agent_id, store: store, start_mode: :resume)
+             ) do
+          {:ok, pid} -> {:ok, pid}
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          {:error, reason} -> {:error, reason}
         end
 
-      :error ->
-        start_link(agent_module, Keyword.put(opts, :agent_id, agent_id))
+      _ ->
+        {:error, :not_resumable}
     end
+  end
+
+  @doc """
+  Recovers an interrupted persisted run and waits for it to finish.
+
+  An interrupted run is signaled by a stored payload with `status: :running`. In addition
+  only runs without `parent_agent_id` are recoverable, since sub-agents are not restarted. Unlike
+  `resume/2`, a live agent is not returned.
+
+  The agent is only driven to completion, the executor result is not returned. `:ok` means
+  only that the temporary agent process stopped normally.
+
+  Pass `:store` or configure one globally. Other options are passed through to
+  `start_link/2`. Returns:
+
+    - `:ok` when the temporary process stops normally
+    - `{:error, reason}` when the temporary process stops abnormally
+    - `{:error, :already_running}` when a recoverable run already has a live process
+    - `{:error, :not_recoverable}` when there is no stored payload with an agent
+      module, or when the stored payload is not an interrupted run
+
+  Raises when no store is available.
+
+  ## Examples
+
+      :ok = Legion.recover("user_42:chat_7", store: MyApp.AgentStore)
+
+      {:error, :already_running} =
+        Legion.recover("active_chat", store: MyApp.AgentStore)
+
+      {:error, :not_recoverable} =
+        Legion.recover("completed_chat", store: MyApp.AgentStore)
+  """
+  def recover(agent_id, opts \\ []) do
+    store = store!(opts, :recover)
+
+    case store.get(agent_id) do
+      {:ok, %Payload{agent_module: agent_module, status: :running, parent_agent_id: nil}}
+      when not is_nil(agent_module) ->
+        case AgentServer.start_monitor(
+               agent_module,
+               Keyword.merge(opts, agent_id: agent_id, store: store, start_mode: :recover)
+             ) do
+          {:ok, {pid, ref}} ->
+            receive do
+              {:DOWN, ^ref, :process, ^pid, :normal} -> :ok
+              {:DOWN, ^ref, :process, ^pid, reason} -> {:error, reason}
+            end
+
+          {:error, {:already_started, _pid}} ->
+            {:error, :already_running}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      _ ->
+        {:error, :not_recoverable}
+    end
+  end
+
+  defp store!(opts, operation) do
+    Keyword.get(opts, :store) || Vault.get(:store) || Application.get_env(:legion, :store) ||
+      raise ArgumentError,
+            "#{operation}/2 requires a :store - pass one or set `config :legion, :store, MyStore`"
   end
 
   @doc """

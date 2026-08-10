@@ -60,22 +60,21 @@ defmodule Legion.Store do
 
       Legion.start_link(ChatAgent, agent_id: "user_42:chat_7")
 
-  Omitting `:agent_id` makes Legion generate one. That
-  suits a brand-new conversation: read it back with `Legion.get_agent_id/1` and
-  persist the mapping if you want to resume the chat later. Pass your own id to
-  resume an existing conversation. Two agents started under the same id race onto
-  the same row, so route each conversation to a single process.
+  Omitting `:agent_id` makes Legion generate one. That suits a brand-new conversation:
+  read it back with `Legion.get_agent_id/1` and persist the mapping if you want to resume
+  the chat later.
 
   ## Required callbacks
 
   Stores must implement `get/1`, `list/1`, and `save/1`.
 
   `save/1` receives a `Legion.Store.Payload`. Its `:conversation_state` is a
-  map containing the conversation's `:messages` (without the system prompt)
-  and `:bindings` from evaluated code. Step snapshots also contain an
-  `:execution` map with `:phase`, `:iteration`, and `:retries`. `:status`
-  records whether the agent is mid-turn. The payload also carries the agent
-  module, parent conversation, and start time when those values are known.
+  map containing the conversation's `:messages` (without the system prompt),
+  `:bindings` from evaluated code, and `:executor_state`. `:executor_state` is
+  `:nonexistent` for ordinary snapshots and is a map with `:phase`, `:iteration`,
+  and `:retries` for step checkpoints. `:status` records whether the agent is
+  mid-turn. The payload also carries the agent  module, parent conversation,
+  and start time when those values are known.
 
   With `binding_scope: :turn`, active bindings are included in step snapshots
   while the turn is running and cleared from the final snapshot. Bindings with
@@ -96,8 +95,10 @@ defmodule Legion.Store do
 
   Step persistence accepts a replay window between an LLM selecting an eval
   action and the following result or error checkpoint. A crash in that window
-  can replay the action and any external side effects. Automatic continuation
-  of an interrupted turn is not currently performed.
+  can replay the action and any external side effects. Configure
+  `:recovery` with stores, a store scan limit, and a concurrent request limit
+  to recover interrupted root turns once when the Legion application starts;
+  see `Legion.Recovery` and `Legion.recover/2`.
 
   ## Reading conversations
 
