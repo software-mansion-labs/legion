@@ -105,6 +105,35 @@ defmodule Legion do
   end
 
   @doc """
+  Whether `pid` - typically one returned by `lookup/1` or recorded in persisted
+  run metadata - is alive. Accepts `nil` and returns `false`.
+
+  Checks local processes directly and processes on connected nodes through RPC.
+  An unreachable remote node returns `false`.
+
+  A stored pid can outlive the VM that wrote it, so after a restart this remains
+  best-effort: a recycled pid value can collide with an unrelated live process.
+
+  ## Examples
+
+      case Legion.lookup("user_42:chat_7") do
+        {:ok, pid} -> Legion.running?(pid)
+        :error -> false
+      end
+  """
+  def running?(pid) when is_pid(pid) do
+    if node(pid) == node() do
+      Process.alive?(pid)
+    else
+      :rpc.call(node(pid), :erlang, :is_process_alive, [pid]) == true
+    end
+  rescue
+    ArgumentError -> false
+  end
+
+  def running?(_other), do: false
+
+  @doc """
   Looks up the live process for an agent id.
 
   Uses Legion's cluster-wide runtime index as the source of truth for the

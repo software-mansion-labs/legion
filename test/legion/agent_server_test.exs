@@ -986,7 +986,7 @@ defmodule Legion.AgentServerTest do
     test "resume/2 returns the recorded process while it is alive" do
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "resume-live")
 
-      assert Process.alive?(pid)
+      assert Legion.running?(pid)
       assert {:ok, ^pid} = Legion.resume("resume-live", store: MemoryStore)
     end
 
@@ -1006,11 +1006,11 @@ defmodule Legion.AgentServerTest do
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "resume-dead")
       {:ok, _} = Legion.call(pid, "What is the capital of France?")
       GenServer.stop(pid)
-      refute Process.alive?(pid)
+      refute Legion.running?(pid)
 
       {:ok, revived} = Legion.resume("resume-dead", store: MemoryStore)
 
-      assert Process.alive?(revived)
+      assert Legion.running?(revived)
 
       assert [
                %{role: "system"},

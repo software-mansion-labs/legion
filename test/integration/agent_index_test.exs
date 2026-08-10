@@ -29,6 +29,7 @@ defmodule Legion.Integration.AgentIndexTest do
                :rpc.call(peer_node, Legion.AgentIndex, :register_name, [agent_id, remote_pid])
 
       assert {:ok, ^remote_pid} = Legion.lookup(agent_id)
+      assert Legion.running?(remote_pid)
 
       assert {:error, {:already_started, ^remote_pid}} =
                Agent.start_link(fn -> %{} end, name: Legion.AgentIndex.name(agent_id))

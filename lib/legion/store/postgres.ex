@@ -183,7 +183,7 @@ defmodule Legion.Store.Postgres do
     %{
       messages: Map.get(state, :messages, []),
       bindings: Map.get(state, :bindings, []),
-      executor_state: Map.get(state, :executor_state, nil)
+      executor_state: Map.get(state, :executor_state)
     }
   end
 

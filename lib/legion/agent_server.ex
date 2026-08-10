@@ -145,7 +145,7 @@ defmodule Legion.AgentServer do
   @impl true
   def handle_continue(%{start_mode: :resume, executor_state: executor_state}, state) do
     if match?(%{role: "user"}, List.last(state.messages)) do
-      {_reply, state} = perform_run(state, executor_state)
+      {_reply, state} = do_run(state, executor_state)
       {:noreply, state}
     else
       {:noreply, state}
@@ -154,7 +154,7 @@ defmodule Legion.AgentServer do
 
   @impl true
   def handle_continue(%{start_mode: :recover, executor_state: executor_state}, state) do
-    {_reply, state} = perform_run(state, executor_state)
+    {_reply, state} = do_run(state, executor_state)
     {:stop, :normal, state}
   end
 
@@ -213,10 +213,10 @@ defmodule Legion.AgentServer do
       |> Map.update!(:messages, &(&1 ++ [Executor.message(:user, content)]))
       |> persist([:conversation_state, status: :running])
 
-    perform_run(state)
+    do_run(state)
   end
 
-  defp perform_run(state, executor_state \\ nil) do
+  defp do_run(state, executor_state \\ nil) do
     conversation_scope? = Map.get(state.config, :binding_scope, :turn) == :conversation
 
     checkpoint =
