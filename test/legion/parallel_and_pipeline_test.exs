@@ -3,6 +3,7 @@ defmodule Legion.ParallelAndPipelineTest do
   use Mimic
 
   alias Legion.Test.Support.MathAgent
+  alias Legion.Tools.AgentTool
 
   defmodule TextAgent do
     @moduledoc "An agent that processes text."
@@ -69,6 +70,13 @@ defmodule Legion.ParallelAndPipelineTest do
       stub(ReqLLM, :generate_object, fn _m, _msgs, _s -> llm_response("only one") end)
 
       assert {:ok, ["only one"]} = Legion.parallel([{MathAgent, "single task"}])
+    end
+
+    test "AgentTool.parallel accepts [agent, task] pairs from the Lua sandbox bridge" do
+      stub(ReqLLM, :generate_object, fn _m, _msgs, _s -> llm_response("42") end)
+      Vault.unsafe_put(AgentTool, agents: [MathAgent])
+
+      assert {:ok, ["42"]} = AgentTool.parallel([[MathAgent, "What is 6 * 7?"]])
     end
 
     test "respects timeout" do

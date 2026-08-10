@@ -9,15 +9,16 @@ defmodule Legion.Executor do
   context across turns.
   """
 
-  alias Legion.{EvalGuard, Sandbox, Telemetry}
-  alias Legion.Sandbox.ASTChecker
+  alias Legion.{EvalGuard, Telemetry}
+  alias Legion.Sandbox.Runner
 
   @default_config %{
     model: "openai:gpt-5.4",
     max_iterations: 10,
     max_retries: 3,
+    sandbox: Legion.Sandbox.Elixir,
     sandbox_timeout: 60_000,
-    sandbox_max_heap: Sandbox.default_max_heap(),
+    sandbox_max_heap: Runner.default_max_heap(),
     sandbox_max_reductions: :infinity,
     sandbox_priority: :low,
     eval_guard: nil,
@@ -62,8 +63,9 @@ defmodule Legion.Executor do
       "Finish the turn with no result to return. This ends your run - nothing executes after it, so only use it when everything you were asked to do is fully done. Never announce upcoming work and then pick this action; do the work first (eval_and_continue)."
   }
 
-  defp action_schema(agent_module) do
+  defp action_schema(agent_module, config) do
     types = agent_module.action_types()
+    language = config.sandbox.prompt_info().language
 
     description =
       types
@@ -82,7 +84,7 @@ defmodule Legion.Executor do
         "code" => %{
           "type" => "string",
           "description" =>
-            "Elixir code to execute. Required for eval_* actions. Empty string otherwise."
+            "#{language} code to execute. Required for eval_* actions. Empty string otherwise."
         },
         "result" => enforce_no_additional_properties(agent_module.output_schema())
       }
@@ -187,7 +189,7 @@ defmodule Legion.Executor do
         iteration: iteration
       },
       fn ->
-        case ReqLLM.generate_object(config.model, messages, action_schema(agent_module)) do
+        case ReqLLM.generate_object(config.model, messages, action_schema(agent_module, config)) do
           {:ok, response} ->
             action = extract_object(response)
             messages = messages ++ [message(:assistant, Jason.encode!(action))]
@@ -298,10 +300,16 @@ defmodule Legion.Executor do
 
       guard_context = %{agent: agent_module, agent_id: Vault.get(:agent_id), tools: tools}
 
-      with :ok <- ASTChecker.check(code, allowed),
+      with :ok <- config.sandbox.check(code, allowed),
            :allow <- EvalGuard.check(config.eval_guard, code, guard_context),
            {:ok, {value, new_bindings}} <-
-             Sandbox.execute(code, config.sandbox_timeout, allowed, bindings, sandbox_limits) do
+             config.sandbox.execute(
+               code,
+               config.sandbox_timeout,
+               allowed,
+               bindings,
+               sandbox_limits
+             ) do
         {{:ok, {value, new_bindings}}, %{success: true, result: value}}
       else
         {:deny, reason} ->
@@ -375,7 +383,7 @@ defmodule Legion.Executor do
   defp extract_object(_response), do: raise("LLM response contained no structured object")
 
   defp format_result(result, bindings, config) do
-    variable_names = bindings |> Keyword.keys() |> Enum.map(&"`#{&1}`")
+    variable_names = bindings |> config.sandbox.binding_names() |> Enum.map(&"`#{&1}`")
 
     inspected =
       result

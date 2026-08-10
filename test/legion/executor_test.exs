@@ -581,4 +581,59 @@ defmodule Legion.ExecutorTest do
       assert item_schema["properties"]["meta"]["additionalProperties"] == false
     end
   end
+
+  describe "sandbox config key" do
+    test "selects the sandbox that validates, evaluates, and describes itself to the LLM" do
+      call_count = :counters.new(1, [:atomics])
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, messages, schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 ->
+            send(test_pid, {:first_call, messages, schema})
+            # Lua, evaluated as Lua: a bare `total` would be an Elixir result
+            # but is a syntax error here, and the tool is reached over the bridge.
+            response(%{
+              "action" => "eval_and_continue",
+              "code" => "total = MathTool.random_add(1, 2)",
+              "result" => ""
+            })
+
+          2 ->
+            send(test_pid, {:second_call, messages})
+
+            response(%{
+              "action" => "eval_and_complete",
+              "code" => "return total + 1",
+              "result" => ""
+            })
+        end
+      end)
+
+      assert {:ok, 984} = Legion.execute(MathAgent, "add", sandbox: Legion.Sandbox.Lua)
+
+      assert_received {:first_call, messages, schema}
+      assert schema["properties"]["code"]["description"] =~ "Lua code to execute"
+
+      system_prompt = Enum.find(messages, &(&1.role == "system")).content
+      assert system_prompt =~ "executing Lua code"
+      assert system_prompt =~ "return <expression>"
+      refute system_prompt =~ "defmodule"
+
+      # Lua globals survive into the next iteration and are advertised as such.
+      assert_received {:second_call, messages}
+      assert Enum.any?(messages, &(is_binary(&1.content) and &1.content =~ "`total`"))
+    end
+
+    test "rejects code the selected sandbox cannot parse" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        response(%{"action" => "eval_and_complete", "code" => "1 + 1", "result" => ""})
+      end)
+
+      assert {:cancel, :reached_max_retries} =
+               Legion.execute(MathAgent, "add", sandbox: Legion.Sandbox.Lua)
+    end
+  end
 end

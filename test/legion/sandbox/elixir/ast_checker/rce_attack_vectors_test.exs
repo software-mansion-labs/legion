@@ -1,4 +1,4 @@
-defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
+defmodule Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest do
   @moduledoc """
   RCE attack vectors against the AST checker.
 
@@ -16,8 +16,8 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
   """
   use ExUnit.Case, async: false
 
-  alias Legion.Sandbox
-  alias Legion.Sandbox.ASTChecker
+  alias Legion.Sandbox.Elixir, as: Sandbox
+  alias Legion.Sandbox.Elixir.ASTChecker
 
   defmodule SystemTool do
     def hello, do: :hello
@@ -92,7 +92,7 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
                Sandbox.execute(
                  ~s|:"Elixir.System".cmd("printf", ["pwned"])|,
                  5_000,
-                 [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.System]
+                 [Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.Tools.System]
                )
 
       assert msg =~ "Module System is not allowed"
@@ -103,7 +103,7 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
                Sandbox.execute(
                  ~s|:"Elixir.Code".eval_string("1 + 1")|,
                  5_000,
-                 [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.Code]
+                 [Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.Tools.Code]
                )
 
       assert msg =~ "Module Code is not allowed"
@@ -114,14 +114,14 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
                Sandbox.execute(
                  ~s|:"Elixir.File".read!("/etc/hostname")|,
                  5_000,
-                 [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.File]
+                 [Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.Tools.File]
                )
 
       assert msg =~ "Module File is not allowed"
     end
 
     test "tail-alias matching still works for the legitimate alias form" do
-      tool = Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.System
+      tool = Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.Tools.System
 
       assert {:ok, {:ok, _}} =
                Sandbox.execute(~s|System.hello()|, 5_000, [tool])
@@ -989,27 +989,27 @@ defmodule Legion.Sandbox.ASTChecker.RCEAttackVectorsTest do
     test "all blocked" do
       assert_outcomes([
         {"tool collision: literal atom System call", ~s|:"Elixir.System".cmd("echo", ["pwned"])|,
-         [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.SystemTool], :blocked},
+         [Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.SystemTool], :blocked},
         {"tool collision: literal atom Code call",
          ~s|:"Elixir.Code".eval_string("System.cmd(\\"echo\\", [\\"pwned\\"]) ; 42")|,
-         [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.CodeTool], :blocked},
+         [Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.CodeTool], :blocked},
         {"tool sub-module dot",
-         ~s|Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.SystemTool.System.cmd("id", [])|,
-         [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.SystemTool], :blocked},
+         ~s|Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.SystemTool.System.cmd("id", [])|,
+         [Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.SystemTool], :blocked},
         {"tool named SystemTool tail-collision via __struct__",
          ~s|%{__struct__: SystemTool, x: 1}|,
-         [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.SystemTool], :blocked},
+         [Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.SystemTool], :blocked},
         {"alias-tail RCE: literal :Elixir.System.cmd",
          ~s|:"Elixir.System".cmd("echo", ["pwned-by-rce"])|,
-         [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.System], :blocked},
+         [Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.Tools.System], :blocked},
         {"alias-tail RCE: literal :Elixir.Code.eval_string",
          ~s|:"Elixir.Code".eval_string("System.cmd(\\"echo\\", [\\"pwned\\"]) ; 7")|,
-         [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.Code], :blocked},
+         [Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.Tools.Code], :blocked},
         {"alias-tail RCE: literal :Elixir.File.read", ~s|:"Elixir.File".read!("/etc/hostname")|,
-         [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.File], :blocked},
+         [Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.Tools.File], :blocked},
         {"alias-tail RCE via unaliased-form System.cmd (after alias prepend)",
          ~s|System.cmd("echo", ["fail"])|,
-         [Legion.Sandbox.ASTChecker.RCEAttackVectorsTest.Tools.System], :blocked}
+         [Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest.Tools.System], :blocked}
       ])
     end
   end

@@ -4,6 +4,8 @@
 
 ### Changes
 
+- Make sandboxes pluggable: `Legion.Sandbox` is now a behaviour selected per agent (or globally) with the `sandbox` config key, opening the door to sandboxes such as [popcorn](https://github.com/software-mansion/popcorn/) in the user's browser. The Elixir implementation moved to `Legion.Sandbox.Elixir` (still the default), and the process isolation with timeout / memory / CPU budgets was extracted to `Legion.Sandbox.Runner`, shared by all sandboxes
+- Add `Legion.Sandbox.Lua` - agents write Lua evaluated by [lua](https://hexdocs.pm/lua), a Lua 5.3 VM in pure Elixir. Generated code cannot reach the host BEAM at all (no AST allowlist to escape); tools are bridged in as global Lua tables with values converted at the boundary
 - Add `Legion.Store` for persisting conversations across process and application restarts; stores exchange partial `Legion.Store.Payload` values containing conversation state and metadata through `get/1` and `save/1`
 - Persist the user message with `status: :running` before execution and the final conversation with `status: :idle` before replying, so a reply is a commit receipt for the completed turn
 - Add optional `persistence_frequency/0`; stores default to `:turn`, while `:step` also checkpoints intermediate eval results, recoverable errors, bindings, and executor progress. Interrupted turns are recorded but are not resumed automatically

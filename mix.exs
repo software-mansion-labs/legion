@@ -27,7 +27,11 @@ defmodule Legion.MixProject do
         source_url: @source_url,
         extra_section: "GUIDES",
         formatters: ["html"],
-        extras: ["LICENSE", "CHANGELOG.md": [title: "Changelog"]],
+        extras: [
+          "LICENSE",
+          "guides/sandboxes.md": [title: "Sandboxes"],
+          "CHANGELOG.md": [title: "Changelog"]
+        ],
         groups_for_modules: groups_for_modules()
       ]
     ]
@@ -68,6 +72,7 @@ defmodule Legion.MixProject do
     [
       {:ecto_sql, "~> 3.13", optional: true},
       {:req_llm, "~> 1.2"},
+      {:lua, "~> 1.0"},
       {:vault, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
