@@ -102,7 +102,8 @@ host privileges, scheduler time is shared, and memory is consumed until
 limits kill the eval. The Lua sandbox removes the *language-level* escape
 routes, not the blast radius of a badly designed tool - `AgentTool`, HTTP
 tools, and DB tools are exactly as dangerous as what you expose through them.
-Full isolation still means a separate BEAM instance, but this undermines the concept of Legion's shared resources and easily accessible (and thus powerful) tools.
+Full isolation still means a separate BEAM instance, but this undermines the concept 
+of Legion's shared resources and easily accessible (and thus powerful) tools.
 
 **Rule of thumb:** use `Legion.Sandbox.Elixir` for trusted generators that
 need rich data manipulation; use `Legion.Sandbox.Lua` when the code is less

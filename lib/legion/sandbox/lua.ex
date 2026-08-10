@@ -137,6 +137,9 @@ defmodule Legion.Sandbox.Lua do
     {:ok, {value, lua}}
   rescue
     e in [Lua.RuntimeException, Lua.CompilerException] -> {:error, Exception.message(e)}
+  catch
+    :throw, value -> {:error, {:throw, value}}
+    :exit, reason -> {:error, {:exit, reason}}
   end
 
   defp init(tools, max_heap_bytes) do

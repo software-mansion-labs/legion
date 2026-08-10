@@ -10,6 +10,7 @@ defmodule Legion.Sandbox.LuaTest.EchoTool do
   def pair, do: {:ok, 42}
   def boom, do: raise(ArgumentError, "tool exploded")
   def throw_it, do: throw(:tool_escaped)
+  def exit_it, do: exit(:tool_exited)
 end
 
 # NOT a Legion.Tool - stands in for a sub-agent module that only reaches the
@@ -142,13 +143,12 @@ defmodule Legion.Sandbox.LuaTest do
     assert message =~ "tool exploded"
   end
 
-  test "a non-exception tool escape (throw) slips past the sandbox rescue as a process crash" do
-    # The bridge and `eval` only rescue exceptions; a `throw`/`exit` is neither,
-    # so it propagates to Runner, which reports it as a crash rather than an error string.
-    assert {:error, {:process_crashed, reason}} =
+  test "tool throws and exits are caught, matching the Elixir sandbox" do
+    assert {:error, {:throw, :tool_escaped}} =
              Lua.execute("EchoTool.throw_it()", 15_000, [EchoTool])
 
-    assert {{:nocatch, :tool_escaped}, _stacktrace} = reason
+    assert {:error, {:exit, :tool_exited}} =
+             Lua.execute("EchoTool.exit_it()", 15_000, [EchoTool])
   end
 
   test "non-tool modules are reference-only: no functions bridged into Lua" do
