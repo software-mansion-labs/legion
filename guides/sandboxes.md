@@ -65,19 +65,47 @@ directions:
   `[agent, task]` pairs, but any other tuple-shaped tool API needs the same
   treatment or a Lua-friendly facade.
 - **Atoms become strings, structs become plain field tables** (module
-  identity dropped), and anything the VM cannot encode - pids, refs, or a
-  function value that is not `fun(args)` / `fun(args, state)` - is a runtime
-  error fed back to the model. (That arity limit is on the Elixir closure
-  itself; `args` is one list, so Lua-side argument count is unbounded.)
+  identity dropped - and the flattening is `Map.from_struct/1`, so internal
+  fields like a `Date`'s `calendar` cross too; project the fields the model
+  needs in the tool if that matters), and anything the VM cannot encode -
+  pids, refs, or a function value that is not `fun(args)` /
+  `fun(args, state)` - is a runtime error fed back to the model. (That arity
+  limit is on the Elixir closure itself; `args` is one list, so Lua-side
+  argument count is unbounded.)
 - **The empty table is ambiguous**: it decodes as `[]`, so a tool cannot
   tell "empty list" from "empty map".
 - **Module references** work only for bridged tools: passing a tool's global
   table where an Elixir module is expected
   (`AgentTool.call(PlannerAgent, task)`) resolves to the module atom. There
   is no general way to name an arbitrary Elixir module - which is a feature.
+- **Only `use Legion.Tool` modules expose functions.** Anything else in the
+  list (sub-agent modules, extra allowed modules) is bridged reference-only:
+  a table carrying just the module marker, with no callable functions.
 - **Tool docs are Elixir source** while the model writes Lua, so it must
   translate signatures. Models handle this well, but hand-written
   `description/0` overrides with Lua examples help for complex tools.
+
+## Chaining tools
+
+A struct one tool returns crosses into Lua as a string-keyed field table and
+can only come back as a plain map - `def associate(%Post{} = post, _)` never
+matches again, and no model retry can fix it, because Lua cannot construct a
+struct. Chains that pass rich values between tools need one of these shapes:
+
+- **Plain maps chain as-is.** Tools that accept the string-keyed maps they
+  emit compose freely; the model can filter and reshape between calls.
+- **Pass ids** (the default): tools exchange identifiers and refetch
+  internally, so Lua only ever holds scalars.
+- **Rehydrate at the boundary**: the tool accepts the map and rebuilds its
+  struct inside - a few lines that double as input validation - for when the
+  model must inspect or transform payload fields in Lua.
+- **Opaque handles**: park the value host-side (an ETS table scoped per
+  conversation, or the store) and return a token plus the fields the model
+  may read; later tools resolve the token back to the exact original term.
+  The only option for values the bridge cannot encode at all - pids, refs,
+  connections. Handles outlive a single eval, so give them a lifecycle:
+  scope by conversation, clean up when it ends, and answer a stale token
+  with an error message the model can react to.
 
 ## Performance and limits
 
@@ -88,6 +116,11 @@ the same computation costs roughly one to two orders of magnitude more time
 and reductions than native Elixir. Budgets tuned for the Elixir sandbox
 (especially `sandbox_max_reductions`) may need raising, and heavy in-sandbox
 data crunching is better pushed into tools.
+
+The Lua sandbox adds one deterministic guard of its own: the VM refuses to
+build any single string larger than half the `max_heap` budget, so a string
+bomb comes back as a catchable "resulting string too large" error instead of
+racing the heap kill mid-allocation.
 
 Bindings are also heavier: persisting them means serialising the whole Lua
 VM state, not a small keyword list - worth remembering with
