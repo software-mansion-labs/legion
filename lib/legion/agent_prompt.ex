@@ -19,14 +19,19 @@ defmodule Legion.AgentPrompt do
     tool_contents = Enum.map(agent.tools(), &tool_description/1)
     description = agent.moduledoc()
     binding_scope = Map.get(config, :binding_scope, :turn)
+    sandbox = Map.get(config, :sandbox, Legion.Sandbox.Elixir)
+    prompt_info = sandbox.prompt_info()
 
     {result, _} =
       Code.eval_quoted(@template,
         description: description,
         tool_contents: tool_contents,
         action_types: agent.action_types(),
-        elixir_version: System.version(),
-        binding_scope: binding_scope
+        plain_text_result?: match?(%{"type" => "string"}, agent.output_schema()),
+        binding_scope: binding_scope,
+        language: prompt_info.language,
+        constraints: String.trim_trailing(prompt_info.constraints),
+        tool_usage: prompt_info.tool_usage
       )
 
     String.trim(result)

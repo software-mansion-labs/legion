@@ -9,13 +9,19 @@ defmodule Legion.Executor do
   context across turns.
   """
 
-  alias Legion.{Sandbox, Telemetry}
+  alias Legion.{EvalGuard, Telemetry}
+  alias Legion.Sandbox.Runner
 
   @default_config %{
     model: "openai:gpt-5.4",
     max_iterations: 10,
     max_retries: 3,
+    sandbox: Legion.Sandbox.Elixir,
     sandbox_timeout: 60_000,
+    sandbox_max_heap: Runner.default_max_heap(),
+    sandbox_max_reductions: :infinity,
+    sandbox_priority: :low,
+    eval_guard: nil,
     binding_scope: :turn,
     max_message_length: 20_000
   }
@@ -52,17 +58,18 @@ defmodule Legion.Executor do
     "eval_and_complete" =>
       "Finish the turn with the code's result. Use when the final answer comes from executing code.",
     "return" =>
-      "Finish the turn with a structured result and no code execution. Only use when the task is fully done - not to report in-progress work, ask the user something, or bail out of execution errors (fix the code and re-run instead). The result is a final answer, not a chat message: never return a status like \"starting\" or \"working on it\" - do the work first.",
+      "Finish the turn with a result and no code execution. Only use when the task is fully done - not to report in-progress work, ask the user something, or bail out of execution errors (fix the code and re-run instead). The result is a final answer, not a chat message: never return a status like \"starting\" or \"working on it\" - do the work first.",
     "done" =>
       "Finish the turn with no result to return. This ends your run - nothing executes after it, so only use it when everything you were asked to do is fully done. Never announce upcoming work and then pick this action; do the work first (eval_and_continue)."
   }
 
-  defp action_schema(agent_module) do
+  defp action_schema(agent_module, config) do
     types = agent_module.action_types()
+    language = config.sandbox.prompt_info().language
 
     description =
       types
-      |> Enum.map_join("\n", fn t -> "- \"#{t}\": #{Map.fetch!(@action_descriptions, t)}" end)
+      |> Enum.map_join("\n", fn t -> "- \"#{t}\": #{action_description(t, agent_module)}" end)
 
     %{
       "type" => "object",
@@ -77,12 +84,27 @@ defmodule Legion.Executor do
         "code" => %{
           "type" => "string",
           "description" =>
-            "Elixir code to execute. Required for eval_* actions. Empty string otherwise."
+            "#{language} code to execute. Required for eval_* actions. Empty string otherwise."
         },
         "result" => enforce_no_additional_properties(agent_module.output_schema())
       }
     }
   end
+
+  defp action_description("return", agent_module) do
+    if plain_text_output?(agent_module) do
+      "Finish the turn with your final answer and no code execution. The result is plain text shown to the user - never wrap it in JSON. " <>
+        "Only use when the task is fully done - not to report in-progress work, ask the user something, or bail out of execution errors (fix the code and re-run instead). " <>
+        "The result is a final answer, not a chat message: never return a status like \"starting\" or \"working on it\" - do the work first."
+    else
+      Map.fetch!(@action_descriptions, "return")
+    end
+  end
+
+  defp action_description(type, _agent_module), do: Map.fetch!(@action_descriptions, type)
+
+  defp plain_text_output?(agent_module),
+    do: match?(%{"type" => "string"}, agent_module.output_schema())
 
   # OpenAI strict mode requires `additionalProperties: false` on every object
   # in the schema tree. Inject it recursively so users don't have to.
@@ -181,7 +203,7 @@ defmodule Legion.Executor do
         iteration: iteration
       },
       fn ->
-        case ReqLLM.generate_object(config.model, messages, action_schema(agent_module)) do
+        case ReqLLM.generate_object(config.model, messages, action_schema(agent_module, config)) do
           {:ok, response} ->
             action = extract_object(response)
             messages = messages ++ [message(:assistant, Jason.encode!(action))]
@@ -284,9 +306,29 @@ defmodule Legion.Executor do
 
       allowed = tools ++ Enum.flat_map(tools, &extra_allowed_modules/1)
 
-      case Sandbox.execute(code, config.sandbox_timeout, allowed, bindings) do
-        {:ok, {value, new_bindings}} ->
-          {{:ok, {value, new_bindings}}, %{success: true, result: value}}
+      sandbox_limits = [
+        max_heap: config.sandbox_max_heap,
+        max_reductions: config.sandbox_max_reductions,
+        priority: config.sandbox_priority
+      ]
+
+      guard_context = %{agent: agent_module, agent_id: Vault.get(:agent_id), tools: tools}
+
+      with :ok <- config.sandbox.check(code, allowed),
+           :allow <- EvalGuard.check(config.eval_guard, code, guard_context),
+           {:ok, {value, new_bindings}} <-
+             config.sandbox.execute(
+               code,
+               config.sandbox_timeout,
+               allowed,
+               bindings,
+               sandbox_limits
+             ) do
+        {{:ok, {value, new_bindings}}, %{success: true, result: value}}
+      else
+        {:deny, reason} ->
+          error = "refused by #{inspect(config.eval_guard)}: #{reason}"
+          {{:error, error}, %{success: false, error: error}}
 
         {:error, error} ->
           {{:error, error}, %{success: false, error: error}}
@@ -355,7 +397,7 @@ defmodule Legion.Executor do
   defp extract_object(_response), do: raise("LLM response contained no structured object")
 
   defp format_result(result, bindings, config) do
-    variable_names = bindings |> Keyword.keys() |> Enum.map(&"`#{&1}`")
+    variable_names = bindings |> config.sandbox.binding_names() |> Enum.map(&"`#{&1}`")
 
     inspected =
       result

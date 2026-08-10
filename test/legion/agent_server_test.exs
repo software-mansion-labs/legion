@@ -1267,6 +1267,22 @@ defmodule Legion.AgentServerTest do
       assert {:ok, 43} = Legion.call(pid, "use x")
     end
 
+    test "Lua bindings persist across turns with :conversation" do
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
+
+        if assistant_count == 0 do
+          llm_eval_response("x = 42")
+        else
+          llm_eval_response("return x + 1")
+        end
+      end)
+
+      {:ok, pid} = Legion.start_link(ConversationBindingsAgent, sandbox: Legion.Sandbox.Lua)
+      {:ok, nil} = Legion.call(pid, "set x")
+      assert {:ok, 43} = Legion.call(pid, "use x")
+    end
+
     test "system prompt reflects binding_scope resolved from start_link opts, not agent.config()" do
       {:ok, pid} = Legion.start_link(MathAgent, binding_scope: :conversation)
       [%{role: "system", content: system_prompt} | _] = Legion.get_messages(pid)

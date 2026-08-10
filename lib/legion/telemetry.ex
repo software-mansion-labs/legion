@@ -45,7 +45,12 @@ defmodule Legion.Telemetry do
 
   - `[:legion, :sandbox, :eval, :start | :stop | :exception]`
     - Metadata includes: `agent`, `agent_id`, `code`
-    - Stop adds: `success`, `result` or `error`
+    - Stop adds: `success` and `result` or `error`.
+
+  ## Eval Guard Events
+
+  - `[:legion, :eval_guard, :denied]` — a guard refused generated code
+    - Metadata: `%{agent: module, agent_id: term, guard: module, code: String.t(), reason: String.t()}`
 
   ## Default Logger
 
