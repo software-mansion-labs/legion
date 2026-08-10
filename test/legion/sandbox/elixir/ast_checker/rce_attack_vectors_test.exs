@@ -16,8 +16,8 @@ defmodule Legion.Sandbox.Elixir.ASTChecker.RCEAttackVectorsTest do
   """
   use ExUnit.Case, async: false
 
-  alias Legion.Sandbox.Elixir.ASTChecker
   alias Legion.Sandbox.Elixir, as: Sandbox
+  alias Legion.Sandbox.Elixir.ASTChecker
 
   defmodule SystemTool do
     def hello, do: :hello
