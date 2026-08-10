@@ -5,8 +5,8 @@ defmodule Legion.Store.Payload do
   Payloads are partial updates: `agent_id` is required, while a `nil` value for
   every other field means the store must preserve its existing value. A
   `conversation_state` holds the persisted messages, bindings, and executor
-  checkpoint. Its `:executor_state` value is `nil` for an ordinary snapshot or a
-  map when step persistence captures an interrupted turn.
+  checkpoint. Its `:executor_state` value is `:nonexistent` for an ordinary snapshot
+  or a map when step persistence captures an interrupted turn.
 
   See `Legion.Store` for the full store contract.
   """
@@ -32,7 +32,7 @@ defmodule Legion.Store.Payload do
   @type state :: %{
           messages: [map()],
           bindings: keyword(),
-          executor_state: executor_state() | nil
+          executor_state: :nonexistent | executor_state()
         }
 
   @type t :: %__MODULE__{

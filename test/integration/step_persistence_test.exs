@@ -52,7 +52,7 @@ defmodule Legion.Integration.StepPersistenceTest do
 
     assert Enum.map(initial_state.messages, & &1.type) == [:user]
     assert initial_state.bindings == []
-    assert initial_state.executor_state == nil
+    assert initial_state.executor_state == :nonexistent
 
     assert_received {:before_second_request,
                      {:ok,
@@ -74,7 +74,7 @@ defmodule Legion.Integration.StepPersistenceTest do
              StepStore.get(agent_id)
 
     assert completed.bindings == []
-    assert completed.executor_state == nil
+    assert completed.executor_state == :nonexistent
   end
 
   defp response(action, code, result) do

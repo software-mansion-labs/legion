@@ -25,7 +25,7 @@ defmodule Legion.AgentServer do
     :store,
     :agent_id,
     :persistence_frequency,
-    :executor_state,
+    executor_state: :nonexistent,
     bindings: []
   ]
 
@@ -117,7 +117,7 @@ defmodule Legion.AgentServer do
           {messages, bindings, executor_state}
 
         _no_state ->
-          {[], [], nil}
+          {[], [], :nonexistent}
       end
 
     state = %__MODULE__{
@@ -216,7 +216,7 @@ defmodule Legion.AgentServer do
     do_run(state)
   end
 
-  defp do_run(state, executor_state \\ nil) do
+  defp do_run(state, executor_state \\ :nonexistent) do
     conversation_scope? = Map.get(state.config, :binding_scope, :turn) == :conversation
 
     checkpoint =
@@ -290,7 +290,7 @@ defmodule Legion.AgentServer do
   defp persisted_conversation_state(%__MODULE__{} = state) do
     [%{role: "system"} | messages] = state.messages
 
-    %{messages: messages, bindings: state.bindings, executor_state: nil}
+    %{messages: messages, bindings: state.bindings, executor_state: :nonexistent}
   end
 
   defp persisted_conversation_state(%{

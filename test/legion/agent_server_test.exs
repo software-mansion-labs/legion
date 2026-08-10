@@ -723,7 +723,7 @@ defmodule Legion.AgentServerTest do
                conversation_state: %{
                  messages: [%{type: :user}],
                  bindings: [],
-                 executor_state: nil
+                 executor_state: :nonexistent
                }
              } = running
 
@@ -738,7 +738,7 @@ defmodule Legion.AgentServerTest do
 
       assert %Payload{status: :idle, conversation_state: final_state} = completed
       assert final_state.bindings == []
-      assert final_state.executor_state == nil
+      assert final_state.executor_state == :nonexistent
     end
 
     test "a :step store persists eval_and_complete before the final snapshot" do
@@ -761,7 +761,7 @@ defmodule Legion.AgentServerTest do
              } = checkpoint
 
       assert %Payload{status: :idle, conversation_state: final_state} = completed
-      assert final_state.executor_state == nil
+      assert final_state.executor_state == :nonexistent
     end
 
     test "a :step store persists retry state after an error message" do
@@ -1044,7 +1044,7 @@ defmodule Legion.AgentServerTest do
       assert_receive :llm_requested
 
       assert_receive {:store_saved,
-                      %Payload{status: :idle, conversation_state: %{executor_state: nil}}}
+                      %Payload{status: :idle, conversation_state: %{executor_state: :nonexistent}}}
 
       refute_receive :llm_requested, 50
     end
@@ -1073,7 +1073,7 @@ defmodule Legion.AgentServerTest do
       assert {:ok, _pid} = Legion.resume("resume-completing", store: MemoryStore)
 
       assert_receive {:store_saved,
-                      %Payload{status: :idle, conversation_state: %{executor_state: nil}}}
+                      %Payload{status: :idle, conversation_state: %{executor_state: :nonexistent}}}
 
       refute_receive :llm_requested, 100
     end
@@ -1121,7 +1121,7 @@ defmodule Legion.AgentServerTest do
 
       assert :ok = Legion.recover("recover-awaiting-llm", store: MemoryStore)
 
-      assert {:ok, %Payload{status: :idle, conversation_state: %{executor_state: nil}}} =
+      assert {:ok, %Payload{status: :idle, conversation_state: %{executor_state: :nonexistent}}} =
                MemoryStore.get("recover-awaiting-llm")
 
       assert(
@@ -1142,7 +1142,7 @@ defmodule Legion.AgentServerTest do
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "recover me"}],
                    bindings: [],
-                   executor_state: nil
+                   executor_state: :nonexistent
                  }
                })
 

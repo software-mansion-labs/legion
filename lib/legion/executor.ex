@@ -129,15 +129,15 @@ defmodule Legion.Executor do
   `bindings` seeds the code-evaluation binding. `executor_state` resumes a step
   checkpoint when present: `:awaiting_llm` continues from its saved iteration
   and retry counters, while `:completing` finishes without another LLM request.
-  Pass `nil` to start a new loop.
+  Pass `:nonexistent` to start a new loop.
 
   Returns `{:ok, result, messages, bindings}` or `{:cancel, reason, messages, bindings}`.
   """
-  def run(agent_module, messages, config, bindings \\ [], executor_state \\ nil) do
+  def run(agent_module, messages, config, bindings \\ [], executor_state \\ :nonexistent) do
     config = Map.merge(@default_config, config)
 
     case executor_state do
-      nil ->
+      :nonexistent ->
         loop(agent_module, messages, config, 0, 0, bindings)
 
       %{phase: :awaiting_llm, iteration: i, retries: r} ->
