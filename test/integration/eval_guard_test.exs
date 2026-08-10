@@ -28,7 +28,7 @@ defmodule Legion.Integration.EvalGuardTest do
         """
     end
 
-    def tools, do: [Legion.Test.Support.MathTool]
+    def tools, do: [MathTool]
     def config, do: %{eval_guard: NoRandomAdd, max_iterations: 3, max_retries: 1}
   end
 
@@ -42,7 +42,11 @@ defmodule Legion.Integration.EvalGuardTest do
       handler_id,
       [:legion, :eval_guard, :denied],
       fn _event, _measurements, metadata, _config ->
-        send(test_pid, {:denied, metadata.reason})
+        # Other tests in the suite emit the same global event concurrently;
+        # only this agent's guard is relevant here.
+        if metadata.guard == GuardedMathAgent.NoRandomAdd do
+          send(test_pid, {:denied, metadata.reason})
+        end
       end,
       nil
     )
@@ -51,7 +55,7 @@ defmodule Legion.Integration.EvalGuardTest do
   end
 
   test "the model denies code the policy forbids" do
-    Legion.execute(GuardedMathAgent, "Call #{inspect(MathTool)}.random_add(2, 3) and return it.")
+    Legion.execute(GuardedMathAgent, "Call MathTool.random_add(2, 3) and return it.")
 
     assert_received {:denied, reason}
     assert reason =~ "random_add"

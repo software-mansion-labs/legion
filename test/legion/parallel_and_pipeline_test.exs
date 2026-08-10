@@ -54,7 +54,7 @@ defmodule Legion.ParallelAndPipelineTest do
              id: "cancel",
              model: "test",
              context: nil,
-             object: %{"action" => "eval_and_continue", "code" => "1 + 1", "result" => ""}
+             object: %{"action" => "eval_and_continue", "code" => "return 1 + 1", "result" => ""}
            }}
         end
       end)
@@ -134,7 +134,7 @@ defmodule Legion.ParallelAndPipelineTest do
            id: "cancel",
            model: "test",
            context: nil,
-           object: %{"action" => "eval_and_continue", "code" => "1 + 1", "result" => ""}
+           object: %{"action" => "eval_and_continue", "code" => "return 1 + 1", "result" => ""}
          }}
       end)
 

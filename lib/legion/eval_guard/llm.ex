@@ -110,7 +110,7 @@ defmodule Legion.EvalGuard.LLM do
 
   defp system_prompt(policy, context) do
     """
-    You are reviewing Elixir code an AI agent wrote, before it runs in a sandbox.
+    You are reviewing code an AI agent wrote, before it runs in a sandbox.
     Allow anything the policy does not forbid - you are the last check, not the
     only one, and a wrongly denied eval costs the agent a turn.
 

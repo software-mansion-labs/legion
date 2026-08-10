@@ -19,7 +19,7 @@ defmodule Legion.AgentPrompt do
     tool_contents = Enum.map(agent.tools(), &tool_description/1)
     description = agent.moduledoc()
     binding_scope = Map.get(config, :binding_scope, :turn)
-    sandbox = Map.get(config, :sandbox, Legion.Sandbox.Elixir)
+    sandbox = Map.get(config, :sandbox, Legion.Sandbox.Lua)
     prompt_info = sandbox.prompt_info()
 
     {result, _} =
