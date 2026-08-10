@@ -12,7 +12,8 @@
 - Add configurable, generated agent ids, `Legion.get_agent_id/1`, `Legion.lookup/1`, and `Legion.resume/2` for identifying, finding, and restarting persisted conversations
 - Register live agents cluster-wide by agent id through `:global`, preventing duplicate ownership across connected nodes
 - Remove the `:name` option from `Legion.start_link/2`; use `:agent_id` for identity and `Legion.lookup/1` to resolve a live process
-- Add `Legion.recover/2` and opt-in `:recovery` startup configuration for recovering interrupted runs
+- Add `Legion.recover/2` and opt-in `:recovery` startup configuration to automatically drive interrupted root-agent runs (`status: :running`) to completion after an application restart. Recovery skips sub-agents to avoid replaying delegated work.
+- Add `Legion.resume/2` to restore a persisted conversation under its original agent ID. When the saved conversation ends in a user message, it continues the interrupted executor loop in the background, resuming from a step checkpoint when available; it returns the existing process if that ID is already live.
 - Propagate stores to sub-agents and persist `parent_agent_id`, `agent_module`, and `started_at` metadata for reconstructing conversation trees
 - Add `Legion.Store.Postgres`, backed by an existing PostgreSQL Ecto repo, with partial upserts, `get/1`, `list/1`, configurable table names, configurable persistence frequency, and an optional `ecto_sql` dependency
 - Add versioned, idempotent `Legion.Store.Migration.Postgres` migrations with configurable table names and `pg_notify` notifications for inserts and updates; migration versions are tracked in the agents table comment; generated stores expose `__repo__/0` and `__table__/0` for database-backed consumers such as LegionWeb
