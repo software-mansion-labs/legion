@@ -8,18 +8,19 @@ defmodule Legion.Sandbox do
 
   Built-in implementations:
 
-    - `Legion.Sandbox.Elixir` (default) — evaluates Elixir with AST-level
-      allowlist checking. Powerful (tools are plain Elixir calls) but the
-      allowlist is a blocklist-shaped problem: new RCE vectors in the huge
-      Elixir surface are found regularly.
-    - `Legion.Sandbox.Lua` — evaluates Lua via [lua](https://hexdocs.pm/lua),
-      a Lua 5.3 VM written in pure Elixir. Nothing in the Lua world can touch the
-      host BEAM except the tool functions you explicitly bridge in, which makes
-      it the safer choice for less trusted code.
+    - `Legion.Sandbox.Lua` (default) — evaluates Lua via
+      [lua](https://hexdocs.pm/lua), a Lua 5.3 VM written in pure Elixir.
+      Nothing in the Lua world can touch the host BEAM except the tool
+      functions you explicitly bridge in, which makes it the safer choice for
+      less trusted code.
+    - `Legion.Sandbox.Elixir` — evaluates Elixir with AST-level allowlist
+      checking. Powerful (tools are plain Elixir calls) but the allowlist is a
+      blocklist-shaped problem: new RCE vectors in the huge Elixir surface are
+      found regularly.
 
   Select per agent (or globally) with the `:sandbox` config key:
 
-      def config, do: %{sandbox: Legion.Sandbox.Lua}
+      def config, do: %{sandbox: Legion.Sandbox.Elixir}
 
   Both built-ins evaluate inside `Legion.Sandbox.Runner`, which enforces the
   timeout, memory, and CPU limits regardless of language. Nothing above

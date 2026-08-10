@@ -39,10 +39,10 @@ defmodule Legion.Agent do
       call-time opts. Defaults to `%{}`. Available keys:
       - `model` — LLM model identifier (default: `"openai:gpt-5.4"`)
       - `sandbox` — a `Legion.Sandbox` module that validates and evaluates the
-        code the agent writes. `Legion.Sandbox.Elixir` (the default) evaluates
-        Elixir behind an AST allowlist; `Legion.Sandbox.Lua` evaluates Lua in a
-        pure-Erlang VM where only bridged tool functions can reach the host
-        (default: `Legion.Sandbox.Elixir`)
+        code the agent writes. `Legion.Sandbox.Lua` (the default) evaluates Lua
+        in a pure-Erlang VM where only bridged tool functions can reach the
+        host; `Legion.Sandbox.Elixir` evaluates Elixir behind an AST allowlist
+        (default: `Legion.Sandbox.Lua`)
       - `max_iterations` — max successful execution steps per turn (default: `10`)
       - `max_retries` — max consecutive failures before giving up (default: `3`)
       - `sandbox_timeout` — timeout in ms for code execution (default: `60_000`)

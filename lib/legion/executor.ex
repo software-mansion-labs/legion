@@ -16,7 +16,7 @@ defmodule Legion.Executor do
     model: "openai:gpt-5.4",
     max_iterations: 10,
     max_retries: 3,
-    sandbox: Legion.Sandbox.Elixir,
+    sandbox: Legion.Sandbox.Lua,
     sandbox_timeout: 60_000,
     sandbox_max_heap: Runner.default_max_heap(),
     sandbox_max_reductions: :infinity,

@@ -39,7 +39,12 @@ defmodule Legion.Integration.StepPersistenceTest do
       end
     end)
 
-    {:ok, pid} = Legion.start_link(MathAgent, store: StepStore, agent_id: agent_id)
+    {:ok, pid} =
+      Legion.start_link(MathAgent,
+        store: StepStore,
+        agent_id: agent_id,
+        sandbox: Legion.Sandbox.Elixir
+      )
 
     assert {:ok, "done"} = Legion.call(pid, "compute")
 

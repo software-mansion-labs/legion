@@ -1,7 +1,7 @@
 defmodule Legion.Sandbox.Lua do
   @moduledoc """
   Sandboxed Lua evaluation via [lua](https://hexdocs.pm/lua) - a Lua 5.3 VM
-  written in pure Elixir.
+  written in pure Elixir. The default `Legion.Sandbox`.
 
   Unlike `Legion.Sandbox.Elixir`, which must deny-list its way around the
   entire Elixir surface, Lua code simply has no way to reach the host BEAM:

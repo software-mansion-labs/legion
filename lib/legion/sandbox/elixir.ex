@@ -1,7 +1,6 @@
 defmodule Legion.Sandbox.Elixir do
   @moduledoc """
-  Sandboxed Elixir evaluation with AST-level safety checks. The default
-  `Legion.Sandbox`.
+  Sandboxed Elixir evaluation with AST-level safety checks.
 
   Evaluates Elixir code strings in a spawned process with:
 

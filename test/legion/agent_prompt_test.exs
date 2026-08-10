@@ -17,9 +17,9 @@ defmodule Legion.AgentPromptTest do
       assert prompt =~ "An agent that does math."
     end
 
-    test "includes elixir version" do
+    test "includes the sandbox language" do
       prompt = AgentPrompt.system_prompt(MathAgent)
-      assert prompt =~ System.version()
+      assert prompt =~ "Lua"
     end
 
     test "includes custom description when description/0 is overridden" do
