@@ -12,8 +12,8 @@ defmodule Legion.Sandbox do
       allowlist checking. Powerful (tools are plain Elixir calls) but the
       allowlist is a blocklist-shaped problem: new RCE vectors in the huge
       Elixir surface are found regularly.
-    - `Legion.Sandbox.Lua` — evaluates Lua via [luerl](https://github.com/rvirding/luerl),
-      a Lua VM written in pure Erlang. Nothing in the Lua world can touch the
+    - `Legion.Sandbox.Lua` — evaluates Lua via [lua](https://hexdocs.pm/lua),
+      a Lua 5.3 VM written in pure Elixir. Nothing in the Lua world can touch the
       host BEAM except the tool functions you explicitly bridge in, which makes
       it the safer choice for less trusted code.
 
@@ -30,7 +30,7 @@ defmodule Legion.Sandbox do
   ## Bindings
 
   `bindings` is an opaque, serialisable term owned by the sandbox: a keyword
-  list for `Legion.Sandbox.Elixir`, a luerl state for `Legion.Sandbox.Lua`.
+  list for `Legion.Sandbox.Elixir`, a `Lua` state for `Legion.Sandbox.Lua`.
   `[]` always means "fresh state". The executor threads it between
   executions and persists it in checkpoints without inspecting it beyond
   `c:binding_names/1`.

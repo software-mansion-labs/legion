@@ -102,6 +102,12 @@ defmodule Legion.Sandbox.ElixirTest do
     assert message =~ "memory limit"
   end
 
+  test "a heap budget of 0 raises instead of guessing what it means" do
+    assert_raise ArgumentError, ~r/pass :infinity/, fn ->
+      Sandbox.execute("1 + 1", 15_000, [], [], max_heap: 0)
+    end
+  end
+
   test "priority defaults to low and is configurable" do
     # Process is off limits to generated code; the test allows it to read the flag back.
     code = "Process.info(self(), :priority)"

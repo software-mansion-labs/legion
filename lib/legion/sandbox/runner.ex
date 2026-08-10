@@ -33,7 +33,16 @@ defmodule Legion.Sandbox.Runner do
   def run(eval_fun, timeout_ms, limits \\ [])
       when is_function(eval_fun, 0) and (is_integer(timeout_ms) or timeout_ms == :infinity) do
     parent = self()
-    max_heap_bytes = Keyword.get(limits, :max_heap, @default_max_heap)
+
+    # 0 is ambiguous: "no limit" to the BEAM's max_heap_size flag, but a
+    # budget here would floor at the VM minimum heap and kill nearly every
+    # eval - refuse it rather than guess.
+    max_heap_bytes =
+      case Keyword.get(limits, :max_heap, @default_max_heap) do
+        0 -> raise ArgumentError, "max_heap: 0 is ambiguous - pass :infinity to disable the limit"
+        bytes -> bytes
+      end
+
     max_reductions = Keyword.get(limits, :max_reductions, :infinity)
     priority = Keyword.get(limits, :priority, :low)
 
@@ -46,9 +55,9 @@ defmodule Legion.Sandbox.Runner do
         Process.flag(:priority, priority)
 
         if is_integer(max_heap_bytes) do
-          # A size of 0 means "no limit" and the VM rejects anything under its
-          # own minimum heap, so a small budget floors at that minimum - left
-          # alone, it would silently disable the flag or fail to set it at all.
+          # The VM rejects a max_heap_size under its own minimum heap, so a
+          # small budget floors at that minimum - left alone, it would fail
+          # to set the flag at all.
           {:min_heap_size, min_words} = :erlang.system_info(:min_heap_size)
           heap_words = max(div(max_heap_bytes, :erlang.system_info(:wordsize)), min_words)
           Process.flag(:max_heap_size, %{size: heap_words, kill: true, error_logger: false})

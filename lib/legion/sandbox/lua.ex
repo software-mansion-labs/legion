@@ -1,8 +1,7 @@
 defmodule Legion.Sandbox.Lua do
   @moduledoc """
-  Sandboxed Lua evaluation via [luerl](https://github.com/rvirding/luerl)
-  (through the [lua](https://hexdocs.pm/lua) wrapper) - a Lua VM written in
-  pure Erlang.
+  Sandboxed Lua evaluation via [lua](https://hexdocs.pm/lua) - a Lua 5.3 VM
+  written in pure Elixir.
 
   Unlike `Legion.Sandbox.Elixir`, which must deny-list its way around the
   entire Elixir surface, Lua code simply has no way to reach the host BEAM:
@@ -65,10 +64,9 @@ defmodule Legion.Sandbox.Lua do
       {:ok, _chunk} ->
         :ok
 
-      {:error, errors} ->
+      {:error, exception} ->
         {:error,
-         "Lua parse error:\n" <>
-           Enum.join(errors, "\n") <>
+         Exception.message(exception) <>
            "\nNote: a bare expression is not a valid Lua statement - " <>
            "to produce a value, write `return <expression>`."}
     end
@@ -117,10 +115,11 @@ defmodule Legion.Sandbox.Lua do
 
     {results, lua} = Lua.eval!(lua, code)
 
-    # luerl never garbage-collects on its own, so without this sweep dead
-    # tables from every evaluation accumulate in the state - and in every
-    # persisted snapshot of it - for the life of the conversation.
-    lua = %{lua | state: :luerl.gc(lua.state)}
+    # The VM has no state garbage collector, so dead tables from every
+    # evaluation accumulate in the state - and in every persisted snapshot of
+    # it - for the life of the conversation. luerl's :luerl.gc/1 sweep covered
+    # this before the lua 1.0 backend switch; restore one when upstream ships
+    # a GC.
 
     value =
       case results do
@@ -240,7 +239,7 @@ defmodule Legion.Sandbox.Lua do
     end
   end
 
-  # Elixir values -> something luerl can encode. Tuples and structs have no
+  # Elixir values -> something the VM can encode. Tuples and structs have no
   # Lua counterpart: tuples become arrays, structs lose their module.
   defp elixir_to_lua(%_{} = struct), do: struct |> Map.from_struct() |> elixir_to_lua()
 

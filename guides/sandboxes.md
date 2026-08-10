@@ -28,21 +28,20 @@ escape hatch that has to be reasoned about. The checker is hardened against
 the known RCE classes, but it is structurally a cat-and-mouse game.
 
 **`Legion.Sandbox.Lua`** - generated code runs inside
-[luerl](https://github.com/rvirding/luerl), a Lua VM implemented in pure
-Erlang, driven through the [lua](https://hexdocs.pm/lua) wrapper. Lua code has no representation for anything on the host: it cannot
+[lua](https://hexdocs.pm/lua), a Lua 5.3 VM implemented in pure Elixir. Lua code has no representation for anything on the host: it cannot
 name a module, build an atom, touch a process, or force-load anything. The
 only doors out of the VM are the tool functions Legion explicitly bridges in.
-The residual attack surface is your tools plus bugs in luerl and its wrapper. This makes it the safer choice for less trusted code.
+The residual attack surface is your tools plus bugs in the VM. This makes it the safer choice for less trusted code.
 
 A useful side effect: Lua code cannot create atoms at all (identifiers and
-strings stay binaries inside luerl), so the atom-table-growth DoS vector the
+strings stay binaries inside the VM), so the atom-table-growth DoS vector the
 Elixir sandbox documents as unsolved does not exist there.
 
 ## What the model can do inside
 
 | | `Legion.Sandbox.Elixir` | `Legion.Sandbox.Lua` |
 |---|---|---|
-| Language | Elixir minus denied forms | Lua 5.3 semantics (luerl) |
+| Language | Elixir minus denied forms | Lua 5.3 semantics |
 | Stdlib | Allowlisted `Enum`, `String`, `Map`, `Date`/`DateTime`, `Regex`, `JSON`, `URI`, `:math`, ... | Lua's `string`, `table`, `math`; `os.time`/`os.date` (`io`, `file`, `os.getenv`/`os.execute`, `require`, `load`, `print` are blocked) |
 | Regex | Full `Regex` / PCRE | Lua patterns only (`string.match`) - weaker |
 | JSON | Built-in `JSON` module | None - expose a tool if agents need it |
@@ -66,7 +65,7 @@ directions:
   `[agent, task]` pairs, but any other tuple-shaped tool API needs the same
   treatment or a Lua-friendly facade.
 - **Atoms become strings, structs become plain field tables** (module
-  identity dropped), and anything luerl cannot encode - pids, refs, or a
+  identity dropped), and anything the VM cannot encode - pids, refs, or a
   function value that is not `fun(args)` / `fun(args, state)` - is a runtime
   error fed back to the model. (That arity limit is on the Elixir closure
   itself; `args` is one list, so Lua-side argument count is unbounded.)
@@ -84,15 +83,17 @@ directions:
 
 Both sandboxes run under the same `Legion.Sandbox.Runner` (timeout,
 `max_heap` plus off-heap binary polling, `max_reductions`, priority), so
-operational limits are identical. But luerl is an interpreter on the BEAM -
+operational limits are identical. But the Lua VM interprets on the BEAM -
 the same computation costs roughly one to two orders of magnitude more time
 and reductions than native Elixir. Budgets tuned for the Elixir sandbox
 (especially `sandbox_max_reductions`) may need raising, and heavy in-sandbox
 data crunching is better pushed into tools.
 
-Bindings are also heavier: persisting them means serialising the whole luerl
+Bindings are also heavier: persisting them means serialising the whole Lua
 VM state, not a small keyword list - worth remembering with
-`binding_scope: :conversation` and a database-backed store.
+`binding_scope: :conversation` and a database-backed store. The VM has no
+state garbage collector yet, so dead tables from each evaluation stay in
+that state for the life of the conversation.
 
 ## What neither sandbox gives you
 

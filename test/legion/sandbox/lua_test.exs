@@ -59,7 +59,7 @@ defmodule Legion.Sandbox.LuaTest do
 
   test "parse errors are caught by check" do
     assert {:error, message} = Lua.execute("local x =;", 15_000)
-    assert message =~ "Lua parse error"
+    assert message =~ "Failed to compile Lua!"
   end
 
   test "bare-expression mistake gets a return hint" do
@@ -89,27 +89,10 @@ defmodule Legion.Sandbox.LuaTest do
 
   test "debug library is sandboxed" do
     assert {:error, message} = Lua.execute("return debug.setmetatable", 15_000)
-    assert message =~ "invalid index"
+    assert message =~ "attempt to index a function value (global 'debug')"
 
     assert {:error, message} = Lua.execute("return debug(1)", 15_000)
     assert message =~ "sandboxed"
-  end
-
-  test "dead tables are collected instead of accumulating in the state" do
-    {:ok, {nil, baseline}} = Lua.execute("x = 1", 15_000)
-
-    churned =
-      Enum.reduce(1..20, baseline, fn _i, bindings ->
-        {:ok, {nil, next}} =
-          Lua.execute("local t = {}\nfor i = 1, 100 do t[i] = i end", 15_000, [], bindings)
-
-        next
-      end)
-
-    baseline_size = byte_size(:erlang.term_to_binary(baseline))
-    churned_size = byte_size(:erlang.term_to_binary(churned))
-
-    assert churned_size < baseline_size * 1.5
   end
 
   test "tool functions are callable with arity dispatch" do
