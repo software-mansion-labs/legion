@@ -1,4 +1,4 @@
-defmodule Legion.Sandbox.ASTChecker do
+defmodule Legion.Sandbox.Elixir.ASTChecker do
   @moduledoc """
   Static safety check for sandboxed code.
 

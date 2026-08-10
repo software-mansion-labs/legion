@@ -315,7 +315,7 @@ Sandboxes are pluggable via the `sandbox` config key. Both built-in sandboxes ru
 
 Neither sandbox is full OS-level isolation - evaluation still runs inside your BEAM VM. If your threat model requires that, run agents in a separate BEAM instance.
 
-Custom sandboxes (for example, executing in the user's browser via [popcorn](https://github.com/software-mansion/popcorn/)) implement the `Legion.Sandbox` behaviour.
+Custom sandboxes implement the `Legion.Sandbox` behaviour.
 
 
 ## Web Dashboard

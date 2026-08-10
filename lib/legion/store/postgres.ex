@@ -43,8 +43,9 @@ defmodule Legion.Store.Postgres do
       end
 
   Agent ids must be strings. Snapshots are stored as compressed
-  `:erlang.term_to_binary/2` blobs - readable only from Elixir, one row per
-  conversation, upserted on every save. Step snapshots therefore require no additional migration.
+  `:erlang.term_to_binary/2` blobs - readable only from Elixir, one row
+  per conversation, upserted on every save. Step snapshots therefore require
+  no additional migration.
 
   `save/1` performs partial upserts, so the same row carries the
   conversation state and identity: `agent_module` (in `inspect/1` form, e.g.

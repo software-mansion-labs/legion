@@ -1,7 +1,7 @@
-defmodule Legion.Sandbox.ASTCheckerTest do
+defmodule Legion.Sandbox.Elixir.ASTCheckerTest do
   use ExUnit.Case
 
-  alias Legion.Sandbox.ASTChecker
+  alias Legion.Sandbox.Elixir.ASTChecker
 
   # --- Safe operations ---
 

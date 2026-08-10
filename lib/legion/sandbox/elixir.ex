@@ -32,7 +32,7 @@ defmodule Legion.Sandbox.Elixir do
 
   @behaviour Legion.Sandbox
 
-  alias Legion.Sandbox.ASTChecker
+  alias Legion.Sandbox.Elixir.ASTChecker
   alias Legion.Sandbox.Runner
 
   require EEx
@@ -77,7 +77,7 @@ defmodule Legion.Sandbox.Elixir do
   def execute(code_string, timeout_ms, allowed_modules \\ [], bindings \\ [], limits \\ [])
       when is_binary(code_string) and is_list(allowed_modules) and is_list(limits) and
              (is_integer(timeout_ms) or timeout_ms == :infinity) do
-    with :ok <- ASTChecker.check(code_string, allowed_modules) do
+    with :ok <- check(code_string, allowed_modules) do
       code_string = append_aliases(code_string, allowed_modules)
       Runner.run(fn -> eval(code_string, bindings) end, timeout_ms, limits)
     end
