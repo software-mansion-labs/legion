@@ -47,19 +47,19 @@ defmodule Legion.Store.Postgres do
   per conversation, upserted on every save. Step snapshots therefore require
   no additional migration.
 
-  `save/1` performs partial upserts, so the same row carries the
-  conversation state and identity: `agent_module` (in `inspect/1` form, e.g.
-  `"MyApp.ResearchAgent"`), `parent_agent_id` linking a sub-agent to the
-  conversation that spawned it, and `started_at` as a UTC `NaiveDateTime`
-  stored with microsecond precision. Omitted payload fields preserve their
-  existing values.
+  `save/1` performs partial upserts, so a row carries the conversation state
+  and identity. Omitted payload fields preserve their existing values. The
+  `updated_at` timestamp is automatically set to the current UTC time on every save.
+  Only `agent_id` and `inserted_at` are never updated.
 
   The row's `status` flips to `'running'` when a turn starts and back to
   `'idle'` when it completes. Step writes update only the conversation state,
   leaving the running status unchanged.
 
-  `list/1` and `get/1` read persisted
-  conversations back from the same table.
+  Usage is stored as a `jsonb[]`: each element contains one complete,
+  string-keyed LLM usage map.
+
+  `list/1` and `get/1` read persisted conversations back from the same table.
 
   The migration also installs a trigger that `pg_notify`s the table's channel
   (the table name) with the `agent_id` on every insert or update, so
@@ -92,6 +92,7 @@ defmodule Legion.Store.Postgres do
           field :status, :string
           field :started_at, :naive_datetime_usec
           field :conversation_state, :binary
+          field :usage, {:array, :map}
           field :inserted_at, :naive_datetime_usec
           field :updated_at, :naive_datetime_usec
         end
@@ -173,7 +174,8 @@ defmodule Legion.Store.Postgres do
       parent_agent_id: record.parent_agent_id,
       status: decode_status(record.status),
       started_at: record.started_at,
-      conversation_state: decode_conversation_state(record.conversation_state)
+      conversation_state: decode_conversation_state(record.conversation_state),
+      usage: record.usage
     }
   end
 

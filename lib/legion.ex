@@ -5,8 +5,52 @@ defmodule Legion do
              |> String.split("<!-- MDOC -->")
              |> Enum.fetch!(1)
 
+  use Supervisor
+
   alias Legion.{AgentIndex, AgentServer}
   alias Legion.Store.Payload
+
+  @doc """
+  Starts Legion's supervisor.
+
+  Add it to your application's supervision tree after dependencies required by
+  its configured recovery stores. For a Repo-backed store, place it after your
+  Repo.
+
+  ## Examples
+
+      defmodule MyApp.Application do
+        use Application
+
+        def start(_type, _args) do
+          children = [
+            MyApp.Repo,
+            {Legion, []}
+          ]
+
+          Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
+        end
+      end
+  """
+  def start_link(opts) when is_list(opts) do
+    Supervisor.start_link(__MODULE__, nil, name: __MODULE__)
+  end
+
+  @doc false
+  def child_spec(opts) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [opts]},
+      type: :supervisor
+    }
+  end
+
+  @impl Supervisor
+  def init(_opts) do
+    children = [{Legion.Recovery, Application.fetch_env(:legion, :recovery)}]
+
+    Supervisor.init(children, strategy: :one_for_one, name: Legion.Supervisor)
+  end
 
   @doc """
   Runs an agent on a single task and returns the result.
@@ -46,7 +90,7 @@ defmodule Legion do
       {:ok, pid} = Legion.start_link(ChatAgent, store: MyApp.AgentStore, agent_id: "user_42:chat_7")
       {:ok, pid} = Legion.start_link(ChatAgent, agent_id: "user_42:chat_7")   # store from app config
   """
-  def start_link(agent_module, opts \\ []) do
+  def start_link(agent_module, opts \\ []) when is_atom(agent_module) do
     AgentServer.start_link(agent_module, opts)
   end
 

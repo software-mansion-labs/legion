@@ -129,71 +129,102 @@ defmodule Legion.Executor do
   `bindings` seeds the code-evaluation binding. `executor_state` resumes a step
   checkpoint when present: `:awaiting_llm` continues from its saved iteration
   and retry counters, while `:completing` finishes without another LLM request.
-  Pass `:nonexistent` to start a new loop.
+  Pass `nil` to start a new loop. `:turn_usage` is the complete, ordered list
+  of usage maps returned by LLM requests in the current turn.
 
-  Returns `{:ok, result, messages, bindings}` or `{:cancel, reason, messages, bindings}`.
+  Returns `{:ok, result, messages, bindings, turn_usage}` or
+  `{:cancel, reason, messages, bindings, turn_usage}`.
   """
   def run(agent_module, messages, config, bindings \\ [], executor_state \\ :nonexistent) do
     config = Map.merge(@default_config, config)
 
     case executor_state do
       :nonexistent ->
-        loop(agent_module, messages, config, 0, 0, bindings)
+        loop(agent_module, messages, config, 0, 0, bindings, [])
 
       %{phase: :awaiting_llm, iteration: i, retries: r} ->
-        loop(agent_module, messages, config, i, r, bindings)
+        loop(agent_module, messages, config, i, r, bindings, [])
 
       %{phase: :completing, iteration: _i, retries: _r} ->
-        {:ok, nil, messages, bindings}
+        {:ok, nil, messages, bindings, []}
     end
   end
 
-  defp loop(agent_module, messages, config, iteration, retries, bindings) do
+  defp loop(agent_module, messages, config, iteration, retries, bindings, turn_usage) do
     if iteration >= config.max_iterations do
-      {:cancel, :reached_max_iterations, messages, bindings}
+      {:cancel, :reached_max_iterations, messages, bindings, turn_usage}
     else
       Telemetry.span(
         [:legion, :iteration],
         %{agent: agent_module, iteration: iteration},
-        fn -> iterate(agent_module, messages, config, iteration, retries, bindings) end
+        fn ->
+          iterate(agent_module, messages, config, iteration, retries, bindings, turn_usage)
+        end
       )
     end
   end
 
-  defp iterate(agent_module, messages, config, iteration, retries, bindings) do
+  defp iterate(agent_module, messages, config, iteration, retries, bindings, turn_usage) do
     # credo:disable-for-next-line
-    try do
-      with {:ok, action, messages} <- call_llm(agent_module, messages, config, iteration),
-           :ok <- validate_action_type(agent_module, action) do
-        result =
-          handle_action(agent_module, messages, config, action, iteration, retries, bindings)
-
-        {result, %{action: action["action"]}}
-      else
-        {:error, reason} ->
-          result =
-            handle_execution_error(
-              agent_module,
-              messages,
-              config,
-              reason,
-              iteration,
-              retries,
-              bindings
-            )
-
-          {result, %{action: nil}}
+    llm_result =
+      try do
+        call_llm(agent_module, messages, config, iteration, turn_usage)
+      rescue
+        error -> {:error, error, turn_usage}
       end
-    rescue
-      e ->
+
+    case llm_result do
+      {:ok, action, messages, turn_usage} ->
+        case validate_action_type(agent_module, action) do
+          :ok ->
+            result =
+              handle_action(
+                agent_module,
+                messages,
+                config,
+                action,
+                iteration,
+                retries,
+                bindings,
+                turn_usage
+              )
+
+            {result, %{action: action["action"]}}
+
+          {:error, reason} ->
+            result =
+              handle_execution_error(
+                agent_module,
+                messages,
+                config,
+                reason,
+                iteration,
+                retries,
+                bindings,
+                turn_usage
+              )
+
+            {result, %{action: nil}}
+        end
+
+      {:error, reason, turn_usage} ->
         result =
-          handle_execution_error(agent_module, messages, config, e, iteration, retries, bindings)
+          handle_execution_error(
+            agent_module,
+            messages,
+            config,
+            reason,
+            iteration,
+            retries,
+            bindings,
+            turn_usage
+          )
 
         {result, %{action: nil}}
     end
   end
 
-  defp call_llm(agent_module, messages, config, iteration) do
+  defp call_llm(agent_module, messages, config, iteration, turn_usage) do
     Telemetry.span(
       [:legion, :llm, :request],
       %{
@@ -205,16 +236,40 @@ defmodule Legion.Executor do
       fn ->
         case ReqLLM.generate_object(config.model, messages, action_schema(agent_module, config)) do
           {:ok, response} ->
-            action = extract_object(response)
-            messages = messages ++ [message(:assistant, Jason.encode!(action))]
-            {{:ok, action, messages}, %{object: action}}
+            handle_llm_response(response, messages, turn_usage)
 
           {:error, reason} ->
-            {{:error, "LLM request failed: #{inspect(reason)}"}, %{error: reason}}
+            {{:error, "LLM request failed: #{inspect(reason)}", turn_usage}, %{error: reason}}
         end
       end
     )
   end
+
+  defp handle_llm_response(response, messages, turn_usage) do
+    turn_usage = turn_usage ++ [normalize_usage(response.usage)]
+
+    case extract_object(response) do
+      {:ok, action} when is_map(action) ->
+        messages = messages ++ [message(:assistant, Jason.encode!(action))]
+        {{:ok, action, messages, turn_usage}, %{object: action}}
+
+      {:error, reason} ->
+        {{:error, "LLM response object invalid: #{inspect(reason)}", turn_usage},
+         %{error: reason}}
+    end
+  end
+
+  defp normalize_usage(usage) when is_map(usage) do
+    Map.new(usage, fn {key, value} ->
+      {normalize_usage_key(key), normalize_usage(value)}
+    end)
+  end
+
+  defp normalize_usage(usage) when is_list(usage), do: Enum.map(usage, &normalize_usage/1)
+  defp normalize_usage(usage), do: usage
+
+  defp normalize_usage_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp normalize_usage_key(key), do: key
 
   defp checkpoint!(config, messages, bindings, executor_state) do
     case config[:checkpoint] do
@@ -242,12 +297,22 @@ defmodule Legion.Executor do
          %{"action" => "return", "result" => result},
          _i,
          _r,
-         bindings
+         bindings,
+         turn_usage
        ),
-       do: {:ok, result, messages, bindings}
+       do: {:ok, result, messages, bindings, turn_usage}
 
-  defp handle_action(_agent, messages, _config, %{"action" => "done"}, _i, _r, bindings),
-    do: {:ok, nil, messages, bindings}
+  defp handle_action(
+         _agent,
+         messages,
+         _config,
+         %{"action" => "done"},
+         _i,
+         _r,
+         bindings,
+         turn_usage
+       ),
+       do: {:ok, nil, messages, bindings, turn_usage}
 
   defp handle_action(
          agent,
@@ -256,7 +321,8 @@ defmodule Legion.Executor do
          %{"action" => eval, "code" => code},
          i,
          retries,
-         bindings
+         bindings,
+         turn_usage
        )
        when eval in ["eval_and_continue", "eval_and_complete"] and code != "" do
     # Tools that must see the answer come back to the model (e.g. HumanTool)
@@ -280,15 +346,15 @@ defmodule Legion.Executor do
         checkpoint!(config, messages, new_bindings, executor_state)
 
         if eval == "eval_and_continue",
-          do: loop(agent, messages, config, i + 1, 0, new_bindings),
-          else: {:ok, result, messages, new_bindings}
+          do: loop(agent, messages, config, i + 1, 0, new_bindings, turn_usage),
+          else: {:ok, result, messages, new_bindings, turn_usage}
 
       {:error, error} ->
-        handle_execution_error(agent, messages, config, error, i, retries, bindings)
+        handle_execution_error(agent, messages, config, error, i, retries, bindings, turn_usage)
     end
   end
 
-  defp handle_action(agent, messages, config, action, i, retries, bindings),
+  defp handle_action(agent, messages, config, action, i, retries, bindings, turn_usage),
     do:
       handle_execution_error(
         agent,
@@ -297,7 +363,8 @@ defmodule Legion.Executor do
         "Unexpected action: #{inspect(action)}",
         i,
         retries,
-        bindings
+        bindings,
+        turn_usage
       )
 
   defp eval_in_span(agent_module, code, config, bindings) do
@@ -344,9 +411,18 @@ defmodule Legion.Executor do
     end
   end
 
-  defp handle_execution_error(agent_module, messages, config, error, iteration, retries, bindings) do
+  defp handle_execution_error(
+         agent_module,
+         messages,
+         config,
+         error,
+         iteration,
+         retries,
+         bindings,
+         turn_usage
+       ) do
     if retries >= config.max_retries do
-      {:cancel, :reached_max_retries, messages, bindings}
+      {:cancel, :reached_max_retries, messages, bindings, turn_usage}
     else
       error_text = error |> format_error() |> truncate_content(config[:max_message_length])
 
@@ -367,7 +443,7 @@ defmodule Legion.Executor do
         retries: next_retries
       })
 
-      loop(agent_module, messages, config, iteration, next_retries, bindings)
+      loop(agent_module, messages, config, iteration, next_retries, bindings, turn_usage)
     end
   end
 
@@ -387,14 +463,16 @@ defmodule Legion.Executor do
     {:error, "Response missing required 'action' field, got: #{inspect(action)}"}
   end
 
-  defp extract_object(%{object: object}) when is_map(object), do: object
+  defp extract_object(%{object: object}) when is_map(object), do: {:ok, object}
 
   defp extract_object(%{message: %{tool_calls: tool_calls}}) when is_list(tool_calls) do
-    ReqLLM.ToolCall.find_args(tool_calls, "structured_output") ||
-      raise "LLM response contained no structured object"
+    case ReqLLM.ToolCall.find_args(tool_calls, "structured_output") do
+      args when is_map(args) -> {:ok, args}
+      _ -> {:error, "LLM response contained no structured object"}
+    end
   end
 
-  defp extract_object(_response), do: raise("LLM response contained no structured object")
+  defp extract_object(_response), do: {:error, "LLM response contained no structured object"}
 
   defp format_result(result, bindings, config) do
     variable_names = bindings |> config.sandbox.binding_names() |> Enum.map(&"`#{&1}`")

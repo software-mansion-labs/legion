@@ -25,6 +25,8 @@ defmodule Legion.AgentServer do
     :store,
     :agent_id,
     :persistence_frequency,
+    :track_usage,
+    usage: nil,
     executor_state: :nonexistent,
     bindings: []
   ]
@@ -58,11 +60,12 @@ defmodule Legion.AgentServer do
 
     agent_id = agent_id || generate_id()
     persistence_frequency = Store.persistence_frequency(store)
+    track_usage = Application.get_env(:legion, :track_usage, true)
 
     gen_opts = [name: Legion.AgentIndex.name(agent_id)]
     config = resolve_config(agent_module, opts)
 
-    {{agent_module, config, store, agent_id, persistence_frequency}, gen_opts}
+    {{agent_module, config, store, agent_id, persistence_frequency, track_usage}, gen_opts}
   end
 
   def call(agent, message, timeout \\ :infinity) do
@@ -84,7 +87,7 @@ defmodule Legion.AgentServer do
   # Server callbacks
 
   @impl true
-  def init({agent_module, config, store, agent_id, persistence_frequency}) do
+  def init({agent_module, config, store, agent_id, persistence_frequency, track_usage}) do
     parent_agent_id = Vault.get(:agent_id)
     mode = Map.get(config, :start_mode, :normal)
 
@@ -104,7 +107,7 @@ defmodule Legion.AgentServer do
       %{agent: agent_module}
     )
 
-    {saved_messages, saved_bindings, saved_executor_state} =
+    {saved_messages, saved_bindings, saved_executor_state, saved_usage} =
       case store && store.get(agent_id) do
         {:ok,
          %Payload{
@@ -112,12 +115,13 @@ defmodule Legion.AgentServer do
              messages: messages,
              bindings: bindings,
              executor_state: executor_state
-           }
+           },
+           usage: usage
          }} ->
-          {messages, bindings, executor_state}
+          {messages, bindings, executor_state, if(track_usage, do: usage || [], else: nil)}
 
         _no_state ->
-          {[], [], :nonexistent}
+          {[], [], :nonexistent, if(track_usage, do: [], else: nil)}
       end
 
     state = %__MODULE__{
@@ -128,14 +132,17 @@ defmodule Legion.AgentServer do
       agent_id: agent_id,
       persistence_frequency: persistence_frequency,
       bindings: saved_bindings,
-      executor_state: saved_executor_state
+      executor_state: saved_executor_state,
+      track_usage: track_usage,
+      usage: saved_usage
     }
 
     {:ok,
      persist(state,
        agent_module: state.agent_module,
        parent_agent_id: parent_agent_id,
-       started_at: NaiveDateTime.utc_now()
+       started_at: NaiveDateTime.utc_now(),
+       usage: state.usage
      ), {:continue, %{start_mode: mode, executor_state: saved_executor_state}}}
   end
 
@@ -229,7 +236,7 @@ defmodule Legion.AgentServer do
 
     executor_config = Map.put(state.config, :checkpoint, checkpoint)
 
-    {status, value, final_messages, final_bindings} =
+    {status, value, final_messages, final_bindings, turn_usage} =
       Telemetry.span(
         [:legion, :agent, :message],
         %{agent: state.agent_module, message: state.messages |> List.last() |> Map.get(:content)},
@@ -239,7 +246,7 @@ defmodule Legion.AgentServer do
 
           initial_bindings = if conversation_scope?, do: state.bindings, else: []
 
-          {status, value, messages, bindings} =
+          {status, value, messages, bindings, _turn_usage} =
             result =
             Executor.run(
               state.agent_module,
@@ -250,15 +257,31 @@ defmodule Legion.AgentServer do
             )
 
           iterations = Enum.count(messages, &(&1[:role] == "assistant")) - prev_count
-          {result, %{iterations: iterations, status: status, result: value, bindings: bindings}}
+
+          {result,
+           %{
+             iterations: iterations,
+             status: status,
+             result: value,
+             bindings: bindings
+           }}
         end
       )
 
     kept_bindings = if conversation_scope?, do: final_bindings, else: []
 
+    usage = if state.track_usage, do: state.usage ++ turn_usage
+
     state =
-      %{state | messages: final_messages, bindings: kept_bindings}
-      |> persist([:conversation_state, status: :idle])
+      %{
+        state
+        | messages: final_messages,
+          bindings: kept_bindings,
+          usage: usage
+      }
+
+    fields = [:conversation_state, status: :idle, usage: usage]
+    state = persist(state, fields)
 
     {{status, value}, state}
   end
@@ -279,7 +302,7 @@ defmodule Legion.AgentServer do
         %{payload | conversation_state: persisted_conversation_state(checkpoint)}
 
       {field, value}, payload
-      when field in [:agent_module, :parent_agent_id, :status, :started_at] ->
+      when field in [:agent_module, :parent_agent_id, :status, :started_at, :usage] ->
         Map.put(payload, field, value)
 
       unknown, _payload ->

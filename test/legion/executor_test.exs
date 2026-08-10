@@ -72,8 +72,15 @@ defmodule Legion.ExecutorTest do
 
   @moduletag capture_log: true
 
-  defp response(object) do
-    {:ok, %ReqLLM.Response{id: "test", model: "test", context: nil, object: object}}
+  defp response(object, turn_usage \\ 0) do
+    {:ok,
+     %ReqLLM.Response{
+       id: "test",
+       model: "test",
+       context: nil,
+       object: object,
+       usage: %{turn_usage: turn_usage}
+     }}
   end
 
   defp executor_messages(message) do
@@ -83,7 +90,98 @@ defmodule Legion.ExecutorTest do
     ]
   end
 
-  describe "run/4" do
+  describe "run/3-5" do
+    test "returns recursively string-keyed usage from a single LLM request" do
+      usage = %{
+        input_tokens: 12,
+        output_tokens: 5,
+        turn_usage: 17,
+        tool_usage: %{web_search: 1}
+      }
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        {:ok,
+         %ReqLLM.Response{
+           id: "test",
+           model: "test",
+           context: nil,
+           object: %{"action" => "return", "code" => "", "result" => "42"},
+           usage: usage
+         }}
+      end)
+
+      assert {:ok, "42", _messages, [],
+              [
+                %{
+                  "input_tokens" => 12,
+                  "output_tokens" => 5,
+                  "turn_usage" => 17,
+                  "tool_usage" => %{"web_search" => 1}
+                }
+              ]} = Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
+    end
+
+    test "returns usage list from a single LLM request" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        response(%{"action" => "return", "code" => "", "result" => "42"}, 17)
+      end)
+
+      assert {:ok, "42", _messages, [], [%{"turn_usage" => 17}]} =
+               Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
+    end
+
+    test "preserves provider usage values while stringifying keys" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        {:ok,
+         %ReqLLM.Response{
+           id: "test",
+           model: "test",
+           context: nil,
+           object: %{"action" => "return", "code" => "", "result" => "42"},
+           usage: %{input_tokens: 12, output_tokens: 5}
+         }}
+      end)
+
+      assert {:ok, "42", _messages, [], [%{"input_tokens" => 12, "output_tokens" => 5}]} =
+               Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
+    end
+
+    test "preserves usage order across a multi-response turn" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> response(%{"action" => "eval_and_continue", "code" => "x = 10", "result" => ""}, 7)
+          2 -> response(%{"action" => "return", "code" => "", "result" => "done"}, 11)
+        end
+      end)
+
+      assert {:ok, "done", _messages, _bindings, [%{"turn_usage" => 7}, %{"turn_usage" => 11}]} =
+               Legion.Executor.run(
+                 MathAgent,
+                 executor_messages("compute"),
+                 %{}
+               )
+    end
+
+    test "retains usage from an invalid response while retrying" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> response(nil, 7)
+          2 -> response(%{"action" => "return", "code" => "", "result" => "recovered"}, 11)
+        end
+      end)
+
+      assert {:ok, "recovered", _messages, [], [%{"turn_usage" => 7}, %{"turn_usage" => 11}]} =
+               Legion.Executor.run(MathAgent, executor_messages("recover"), %{})
+    end
+
     test "returns result for return action" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         response(%{"action" => "return", "code" => "", "result" => "42"})
@@ -216,6 +314,22 @@ defmodule Legion.ExecutorTest do
       assert {:ok, "recovered"} = Legion.execute(MathAgent, "retry me")
     end
 
+    test "raised LLM exception triggers retry without adding usage" do
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> raise "provider exploded"
+          2 -> response(%{"action" => "return", "code" => "", "result" => "recovered"}, 11)
+        end
+      end)
+
+      assert {:ok, "recovered", _messages, [], [%{"turn_usage" => 11}]} =
+               Legion.Executor.run(MathAgent, executor_messages("retry raised error"), %{})
+    end
+
     test "third-party tool module without extra_allowed_modules/0 does not crash eval" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         response(%{
@@ -275,7 +389,7 @@ defmodule Legion.ExecutorTest do
         :ok
       end
 
-      assert {:ok, 20, _messages, _bindings} =
+      assert {:ok, 20, _messages, _bindings, _turn_usage} =
                Legion.Executor.run(
                  MathAgent,
                  executor_messages("compute"),
@@ -326,7 +440,7 @@ defmodule Legion.ExecutorTest do
         :ok
       end
 
-      assert {:ok, "recovered", _messages, []} =
+      assert {:ok, "recovered", _messages, [], _turn_usage} =
                Legion.Executor.run(
                  MathAgent,
                  executor_messages("recover"),
@@ -351,7 +465,7 @@ defmodule Legion.ExecutorTest do
         response(%{"action" => "return", "code" => "", "result" => "done"})
       end)
 
-      assert {:ok, "done", _messages, []} =
+      assert {:ok, "done", _messages, [], _turn_usage} =
                Legion.Executor.run(
                  MathAgent,
                  executor_messages("finish"),

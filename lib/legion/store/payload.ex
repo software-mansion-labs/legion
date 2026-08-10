@@ -18,7 +18,8 @@ defmodule Legion.Store.Payload do
     :parent_agent_id,
     :status,
     :started_at,
-    :conversation_state
+    :conversation_state,
+    :usage
   ]
 
   @type status :: :idle | :running
@@ -32,7 +33,7 @@ defmodule Legion.Store.Payload do
   @type state :: %{
           messages: [map()],
           bindings: keyword(),
-          executor_state: :nonexistent | executor_state()
+          executor_state: executor_state() | :nonexistent
         }
 
   @type t :: %__MODULE__{
@@ -41,6 +42,7 @@ defmodule Legion.Store.Payload do
           parent_agent_id: Legion.Store.agent_id() | nil,
           status: status() | nil,
           started_at: NaiveDateTime.t() | nil,
-          conversation_state: state() | nil
+          conversation_state: state() | nil,
+          usage: [map()] | nil
         }
 end

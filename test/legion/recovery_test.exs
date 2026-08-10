@@ -243,6 +243,7 @@ defmodule Legion.RecoveryTest do
       parent_agent_id: nil,
       agent_module: RecoveryAgent,
       status: :running,
+      usage: [],
       conversation_state: %{
         messages: [%{role: "user", type: :user, content: "recover me"}],
         bindings: [],
@@ -257,7 +258,8 @@ defmodule Legion.RecoveryTest do
        id: "test",
        model: "test",
        context: nil,
-       object: %{"action" => "return", "code" => "", "result" => result}
+       object: %{"action" => "return", "code" => "", "result" => result},
+       usage: %{turn_usage: 0}
      }}
   end
 end

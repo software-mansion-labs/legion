@@ -13,6 +13,7 @@ defmodule Legion.Store.Migration.Postgres.V01 do
       add :status, :text, null: false, default: "idle"
       add :started_at, :naive_datetime_usec
       add :conversation_state, :binary
+      add :usage, {:array, :map}, null: false, default: []
 
       add :inserted_at, :naive_datetime_usec,
         null: false,

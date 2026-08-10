@@ -14,6 +14,36 @@ defmodule Legion.Store.PostgresDbTest do
     :ok
   end
 
+  test "stores usage as a jsonb array" do
+    payload = %Payload{
+      agent_id: "usage-jsonb",
+      usage: [
+        %{input_tokens: 12, output_tokens: 5, turn_usage: 17, tool_usage: %{web_search: 1}},
+        %{input_tokens: 7, output_tokens: 3, turn_usage: 10}
+      ]
+    }
+
+    assert :ok = Store.save(payload)
+
+    assert {:ok,
+            %Payload{
+              usage: [
+                %{
+                  "input_tokens" => 12,
+                  "output_tokens" => 5,
+                  "turn_usage" => 17,
+                  "tool_usage" => %{"web_search" => 1}
+                },
+                %{"input_tokens" => 7, "output_tokens" => 3, "turn_usage" => 10}
+              ]
+            }} = Store.get("usage-jsonb")
+
+    assert %{rows: [["jsonb[]"]]} =
+             Repo.query!("SELECT pg_typeof(usage)::text FROM legion_agents WHERE agent_id = $1", [
+               "usage-jsonb"
+             ])
+  end
+
   test "save/1 fully inserts every payload field" do
     payload = %Payload{
       agent_id: "user_42",
@@ -25,11 +55,14 @@ defmodule Legion.Store.PostgresDbTest do
         messages: [%{role: "user", content: "hi"}],
         bindings: [x: 42],
         executor_state: :nonexistent
-      }
+      },
+      usage: [%{turn_usage: 100}]
     }
 
+    expected_payload = %{payload | usage: [%{"turn_usage" => 100}]}
+
     assert :ok = Store.save(payload)
-    assert {:ok, ^payload} = Store.get("user_42")
+    assert {:ok, ^expected_payload} = Store.get("user_42")
   end
 
   test "save/1 partially inserts only the supplied payload fields" do
@@ -44,7 +77,7 @@ defmodule Legion.Store.PostgresDbTest do
 
     assert :ok = Store.save(payload)
     assert {:ok, stored} = Store.get("state-only")
-    assert stored == %{payload | status: :idle}
+    assert stored == %{payload | status: :idle, usage: []}
   end
 
   test "save/1 partial upsert preserves omitted fields and advances updated_at" do
@@ -58,7 +91,8 @@ defmodule Legion.Store.PostgresDbTest do
         messages: [%{role: "user", content: "hi"}],
         bindings: [x: 42],
         executor_state: :nonexistent
-      }
+      },
+      usage: [%{turn_usage: 100}]
     }
 
     assert :ok = Store.save(initial)
@@ -79,7 +113,8 @@ defmodule Legion.Store.PostgresDbTest do
                 messages: [%{role: "user", content: "hi"}],
                 bindings: [x: 42],
                 executor_state: :nonexistent
-              }
+              },
+              usage: [%{"turn_usage" => 100}]
             }} = Store.get("user_42")
 
     %{rows: [[updated_at]]} =

@@ -52,6 +52,17 @@ defmodule Legion.Store do
   started from within an agent's process tree picks up that store unless
   given an explicit `:store` of its own.
 
+  ## Usage tracking
+
+  Legion persists a string-keyed copy of `ReqLLM.Response.usage` for every LLM
+  request in a conversation, ordered by request. Tracking is enabled by
+  default. Disable it globally before starting an agent:
+
+      config :legion, :track_usage, false
+
+  The setting is read when an agent starts. Disabled agents neither restore nor
+  update usage; existing usage in a store is preserved.
+
   ## Identifying a conversation
 
   `:agent_id` is the key a conversation is saved under - it names one
@@ -74,7 +85,8 @@ defmodule Legion.Store do
   `:nonexistent` for ordinary snapshots and is a map with `:phase`, `:iteration`,
   and `:retries` for step checkpoints. `:status` records whether the agent is
   mid-turn. The payload also carries the agent  module, parent conversation,
-  and start time when those values are known.
+  and start time when those values are known. Its `:usage` field is the ordered
+  list of string-keyed LLM usage maps when tracking is enabled.
 
   With `binding_scope: :turn`, active bindings are included in step snapshots
   while the turn is running and cleared from the final snapshot. Bindings with

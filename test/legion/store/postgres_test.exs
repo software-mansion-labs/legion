@@ -37,6 +37,7 @@ defmodule Legion.Store.PostgresTest do
         status: "idle",
         started_at: nil,
         conversation_state: nil,
+        usage: [],
         inserted_at: nil,
         updated_at: nil
       }
@@ -74,7 +75,8 @@ defmodule Legion.Store.PostgresTest do
         messages: [%{role: "user", content: "hi"}],
         bindings: [x: 42],
         executor_state: :nonexistent
-      }
+      },
+      usage: [%{turn_usage: 100}]
     }
 
     assert :ok = Store.save(payload)
@@ -91,7 +93,7 @@ defmodule Legion.Store.PostgresTest do
       }
     }
 
-    expected_payload = %{payload | status: :idle}
+    expected_payload = %{payload | status: :idle, usage: []}
     assert :ok = Store.save(payload)
     assert {:ok, ^expected_payload} = Store.get("state-only")
   end
@@ -110,7 +112,9 @@ defmodule Legion.Store.PostgresTest do
     }
 
     assert :ok = Store.save(payload)
-    assert {:ok, ^payload} = Store.get("step-state")
+
+    expected_payload = %{payload | usage: []}
+    assert {:ok, ^expected_payload} = Store.get("step-state")
   end
 
   test "save/1 partial upsert preserves omitted fields and advances updated_at" do
@@ -124,7 +128,8 @@ defmodule Legion.Store.PostgresTest do
         messages: [%{role: "user", content: "hi"}],
         bindings: [x: 42],
         executor_state: :nonexistent
-      }
+      },
+      usage: [%{turn_usage: 100}]
     }
 
     assert :ok = Store.save(initial)
@@ -142,7 +147,8 @@ defmodule Legion.Store.PostgresTest do
                 messages: [%{role: "user", content: "hi"}],
                 bindings: [x: 42],
                 executor_state: :nonexistent
-              }
+              },
+              usage: [%{turn_usage: 100}]
             }} = Store.get("user_42")
 
     assert NaiveDateTime.compare(FakeRepo.run("user_42").updated_at, previous_updated_at) == :gt
