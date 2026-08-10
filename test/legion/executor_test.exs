@@ -158,7 +158,7 @@ defmodule Legion.ExecutorTest do
         end
       end)
 
-      assert {:ok, "done", _messages, [x: 10], [%{"turn_usage" => 7}, %{"turn_usage" => 11}]} =
+      assert {:ok, "done", _messages, _bindings, [%{"turn_usage" => 7}, %{"turn_usage" => 11}]} =
                Legion.Executor.run(
                  MathAgent,
                  executor_messages("compute"),
@@ -200,7 +200,7 @@ defmodule Legion.ExecutorTest do
 
     test "eval_and_complete executes code and returns result" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        response(%{"action" => "eval_and_complete", "code" => "1 + 1", "result" => ""})
+        response(%{"action" => "eval_and_complete", "code" => "return 1 + 1", "result" => ""})
       end)
 
       assert {:ok, 2} = Legion.execute(MathAgent, "add")
@@ -213,8 +213,11 @@ defmodule Legion.ExecutorTest do
         :counters.add(call_count, 1, 1)
 
         case :counters.get(call_count, 1) do
-          1 -> response(%{"action" => "eval_and_continue", "code" => "x = 10", "result" => ""})
-          2 -> response(%{"action" => "eval_and_complete", "code" => "x * 2", "result" => ""})
+          1 ->
+            response(%{"action" => "eval_and_continue", "code" => "x = 10", "result" => ""})
+
+          2 ->
+            response(%{"action" => "eval_and_complete", "code" => "return x * 2", "result" => ""})
         end
       end)
 
@@ -223,7 +226,7 @@ defmodule Legion.ExecutorTest do
 
     test "cancels after max_iterations" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        response(%{"action" => "eval_and_continue", "code" => "1", "result" => ""})
+        response(%{"action" => "eval_and_continue", "code" => "return 1", "result" => ""})
       end)
 
       assert {:cancel, :reached_max_iterations} =
@@ -234,12 +237,66 @@ defmodule Legion.ExecutorTest do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         response(%{
           "action" => "eval_and_complete",
-          "code" => "raise \"boom\"",
+          "code" => "error(\"boom\")",
           "result" => ""
         })
       end)
 
       assert {:cancel, :reached_max_retries} = Legion.execute(MathAgent, "fail")
+    end
+
+    test "eval_guard denial stops the code from running and reaches the agent" do
+      defmodule NoArithmetic do
+        @behaviour Legion.EvalGuard
+
+        @impl true
+        def check(code, _context) do
+          if String.contains?(code, "+"),
+            do: {:deny, "addition is off limits here"},
+            else: :allow
+        end
+      end
+
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 ->
+            response(%{"action" => "eval_and_complete", "code" => "return 1 + 1", "result" => ""})
+
+          2 ->
+            # The agent is told why, in the conversation, and can adapt.
+            assert Enum.any?(
+                     messages,
+                     &(is_binary(&1.content) and &1.content =~ "addition is off limits")
+                   )
+
+            response(%{
+              "action" => "eval_and_complete",
+              "code" => "return 21 * 2",
+              "result" => ""
+            })
+        end
+      end)
+
+      assert {:ok, 42} = Legion.execute(MathAgent, "add things", eval_guard: NoArithmetic)
+    end
+
+    test "eval_guard allowing code leaves execution untouched" do
+      defmodule AllowAll do
+        @behaviour Legion.EvalGuard
+
+        @impl true
+        def check(_code, _context), do: :allow
+      end
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        response(%{"action" => "eval_and_complete", "code" => "return 2 + 2", "result" => ""})
+      end)
+
+      assert {:ok, 4} = Legion.execute(MathAgent, "add", eval_guard: AllowAll)
     end
 
     test "LLM error triggers retry" do
@@ -282,7 +339,8 @@ defmodule Legion.ExecutorTest do
         })
       end)
 
-      assert {:ok, ~s({"a":1})} = Legion.execute(ThirdPartyToolAgent, "encode")
+      assert {:ok, ~s({"a":1})} =
+               Legion.execute(ThirdPartyToolAgent, "encode", sandbox: Legion.Sandbox.Elixir)
     end
 
     test "missing action field in LLM response triggers retry" do
@@ -335,7 +393,7 @@ defmodule Legion.ExecutorTest do
                Legion.Executor.run(
                  MathAgent,
                  executor_messages("compute"),
-                 %{checkpoint: checkpoint}
+                 %{checkpoint: checkpoint, sandbox: Legion.Sandbox.Elixir}
                )
 
       assert_received {:checkpoint,
@@ -368,7 +426,7 @@ defmodule Legion.ExecutorTest do
           1 ->
             response(%{
               "action" => "eval_and_complete",
-              "code" => "raise \"boom\"",
+              "code" => "error(\"boom\")",
               "result" => ""
             })
 
@@ -422,7 +480,7 @@ defmodule Legion.ExecutorTest do
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         :counters.add(call_count, 1, 1)
-        response(%{"action" => "eval_and_continue", "code" => "1 + 1", "result" => ""})
+        response(%{"action" => "eval_and_continue", "code" => "return 1 + 1", "result" => ""})
       end)
 
       reason =
@@ -456,7 +514,7 @@ defmodule Legion.ExecutorTest do
           0 ->
             response(%{
               "action" => "eval_and_continue",
-              "code" => "posts = [1, 2]",
+              "code" => "posts = {1, 2}",
               "result" => ""
             })
 
@@ -490,7 +548,7 @@ defmodule Legion.ExecutorTest do
           0 ->
             response(%{
               "action" => "eval_and_continue",
-              "code" => "String.duplicate(\"a\", 5000)",
+              "code" => "return string.rep(\"a\", 5000)",
               "result" => ""
             })
 
@@ -524,7 +582,7 @@ defmodule Legion.ExecutorTest do
           0 ->
             response(%{
               "action" => "eval_and_complete",
-              "code" => "raise \"#{long_message}\"",
+              "code" => "error(\"#{long_message}\")",
               "result" => ""
             })
 
@@ -581,12 +639,12 @@ defmodule Legion.ExecutorTest do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         response(%{
           "action" => "eval_and_complete",
-          "code" => "%{summary: \"computed\", score: 42}",
+          "code" => "return {summary = \"computed\", score = 42}",
           "result" => ""
         })
       end)
 
-      assert {:ok, %{summary: "computed", score: 42}} =
+      assert {:ok, %{"summary" => "computed", "score" => 42}} =
                Legion.execute(StructuredOutputAgent, "compute")
     end
   end
@@ -643,6 +701,61 @@ defmodule Legion.ExecutorTest do
       item_schema = result["properties"]["items"]["items"]
       assert item_schema["additionalProperties"] == false
       assert item_schema["properties"]["meta"]["additionalProperties"] == false
+    end
+  end
+
+  describe "sandbox config key" do
+    test "selects the sandbox that validates, evaluates, and describes itself to the LLM" do
+      call_count = :counters.new(1, [:atomics])
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, messages, schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 ->
+            send(test_pid, {:first_call, messages, schema})
+            # Lua, evaluated as Lua: a bare `total` would be an Elixir result
+            # but is a syntax error here, and the tool is reached over the bridge.
+            response(%{
+              "action" => "eval_and_continue",
+              "code" => "total = MathTool.random_add(1, 2)",
+              "result" => ""
+            })
+
+          2 ->
+            send(test_pid, {:second_call, messages})
+
+            response(%{
+              "action" => "eval_and_complete",
+              "code" => "return total + 1",
+              "result" => ""
+            })
+        end
+      end)
+
+      assert {:ok, 984} = Legion.execute(MathAgent, "add", sandbox: Legion.Sandbox.Lua)
+
+      assert_received {:first_call, messages, schema}
+      assert schema["properties"]["code"]["description"] =~ "Lua code to execute"
+
+      system_prompt = Enum.find(messages, &(&1.role == "system")).content
+      assert system_prompt =~ "executing Lua code"
+      assert system_prompt =~ "return <expression>"
+      refute system_prompt =~ "defmodule"
+
+      # Lua globals survive into the next iteration and are advertised as such.
+      assert_received {:second_call, messages}
+      assert Enum.any?(messages, &(is_binary(&1.content) and &1.content =~ "`total`"))
+    end
+
+    test "rejects code the selected sandbox cannot parse" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        response(%{"action" => "eval_and_complete", "code" => "1 + 1", "result" => ""})
+      end)
+
+      assert {:cancel, :reached_max_retries} =
+               Legion.execute(MathAgent, "add", sandbox: Legion.Sandbox.Lua)
     end
   end
 end

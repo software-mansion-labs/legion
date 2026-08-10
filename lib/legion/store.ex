@@ -81,13 +81,12 @@ defmodule Legion.Store do
 
   `save/1` receives a `Legion.Store.Payload`. Its `:conversation_state` is a
   map containing the conversation's `:messages` (without the system prompt),
-  `:bindings` from evaluated code, and `:executor_state`. `:executor_state` is `nil`
-  for ordinary snapshots and is a map with `:phase`, `:iteration`, and
-  `:retries` for step checkpoints. `:status` records whether the agent is
-  mid-turn. The payload also carries the agent
-  module, parent conversation, and start time when those values are known.
-  Its `:usage` field is the ordered list of string-keyed LLM usage maps when
-  tracking is enabled.
+  `:bindings` from evaluated code, and `:executor_state`. `:executor_state` is
+  `:nonexistent` for ordinary snapshots and is a map with `:phase`, `:iteration`,
+  and `:retries` for step checkpoints. `:status` records whether the agent is
+  mid-turn. The payload also carries the agent  module, parent conversation,
+  and start time when those values are known. Its `:usage` field is the ordered
+  list of string-keyed LLM usage maps when tracking is enabled.
 
   With `binding_scope: :turn`, active bindings are included in step snapshots
   while the turn is running and cleared from the final snapshot. Bindings with

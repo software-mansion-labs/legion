@@ -25,9 +25,9 @@ defmodule Legion.AgentServer do
     :store,
     :agent_id,
     :persistence_frequency,
-    :executor_state,
     :track_usage,
     usage: nil,
+    executor_state: :nonexistent,
     bindings: []
   ]
 
@@ -121,7 +121,7 @@ defmodule Legion.AgentServer do
           {messages, bindings, executor_state, if(track_usage, do: usage || [], else: nil)}
 
         _no_state ->
-          {[], [], nil, if(track_usage, do: [], else: nil)}
+          {[], [], :nonexistent, if(track_usage, do: [], else: nil)}
       end
 
     state = %__MODULE__{
@@ -152,7 +152,7 @@ defmodule Legion.AgentServer do
   @impl true
   def handle_continue(%{start_mode: :resume, executor_state: executor_state}, state) do
     if match?(%{role: "user"}, List.last(state.messages)) do
-      {_reply, state} = perform_run(state, executor_state)
+      {_reply, state} = do_run(state, executor_state)
       {:noreply, state}
     else
       {:noreply, state}
@@ -161,7 +161,7 @@ defmodule Legion.AgentServer do
 
   @impl true
   def handle_continue(%{start_mode: :recover, executor_state: executor_state}, state) do
-    {_reply, state} = perform_run(state, executor_state)
+    {_reply, state} = do_run(state, executor_state)
     {:stop, :normal, state}
   end
 
@@ -220,10 +220,10 @@ defmodule Legion.AgentServer do
       |> Map.update!(:messages, &(&1 ++ [Executor.message(:user, content)]))
       |> persist([:conversation_state, status: :running])
 
-    perform_run(state)
+    do_run(state)
   end
 
-  defp perform_run(state, executor_state \\ nil) do
+  defp do_run(state, executor_state \\ :nonexistent) do
     conversation_scope? = Map.get(state.config, :binding_scope, :turn) == :conversation
 
     checkpoint =
@@ -313,7 +313,7 @@ defmodule Legion.AgentServer do
   defp persisted_conversation_state(%__MODULE__{} = state) do
     [%{role: "system"} | messages] = state.messages
 
-    %{messages: messages, bindings: state.bindings, executor_state: nil}
+    %{messages: messages, bindings: state.bindings, executor_state: :nonexistent}
   end
 
   defp persisted_conversation_state(%{
@@ -346,7 +346,7 @@ defmodule Legion.AgentServer do
     |> Executor.truncate_content(max_length)
   end
 
-  @known_config_keys ~w(binding_scope max_iterations max_message_length max_retries model sandbox_timeout start_mode)a
+  @known_config_keys ~w(binding_scope eval_guard max_iterations max_message_length max_retries model sandbox sandbox_max_heap sandbox_max_reductions sandbox_priority sandbox_timeout start_mode)a
 
   defp resolve_config(agent_module, opts) do
     app_config = Application.get_env(:legion, :config, %{})

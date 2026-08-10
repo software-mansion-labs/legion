@@ -1,115 +1,83 @@
 defmodule Legion.Sandbox do
   @moduledoc """
-  Sandboxed code evaluation with AST-level safety checks.
+  Behaviour for sandboxes that evaluate LLM-generated code.
 
-  Evaluates Elixir code strings in a spawned process with:
+  A sandbox owns everything language-specific about code execution: static
+  validation, evaluation, how variable state persists between executions, and
+  the language-specific sections of the agent system prompt.
 
-  - **AST validation** — before evaluation, the code is parsed and walked to reject
-    dangerous forms (`defmodule`, `import`, `spawn`, `send`, `receive`, etc.)
-    and calls to modules not in the allow-list.
-  - **Module allow-list** — only built-in safe modules (Kernel, Enum, Map, String, …)
-    and explicitly passed modules may be called. If only some functions from a module
-    should be exposed, wrap them in a dedicated facade module.
-  - **Timeout** — evaluation runs in a monitored process that is killed if it exceeds
-    the deadline.
+  Built-in implementations:
 
-  ## Examples
+    - `Legion.Sandbox.Lua` (default) — evaluates Lua via
+      [lua](https://hexdocs.pm/lua), a Lua 5.3 VM written in pure Elixir.
+      Nothing in the Lua world can touch the host BEAM except the tool
+      functions you explicitly bridge in, which makes it the safer choice for
+      less trusted code.
+    - `Legion.Sandbox.Elixir` — evaluates Elixir with AST-level allowlist
+      checking. Powerful (tools are plain Elixir calls) but the allowlist is a
+      blocklist-shaped problem: new RCE vectors in the huge Elixir surface are
+      found regularly.
 
-      iex> {:ok, {4, _}} = Legion.Sandbox.execute("2 + 2", 5_000)
+  Select per agent (or globally) with the `:sandbox` config key:
 
-      iex> {:ok, {6, _}} = Legion.Sandbox.execute("Enum.sum([1, 2, 3])", 5_000)
+      def config, do: %{sandbox: Legion.Sandbox.Elixir}
 
-      iex> {:error, msg} = Legion.Sandbox.execute("System.halt()", 5_000)
-      iex> msg =~ "Module System is not allowed"
-      true
+  Both built-ins evaluate inside `Legion.Sandbox.Runner`, which enforces the
+  timeout, memory, and CPU limits regardless of language. Nothing above
+  `c:execute/5` enforces them, so a custom sandbox should wrap its evaluation
+  in `Runner.run/3` too - otherwise the `timeout_ms` and `limits` it is handed
+  have no effect.
 
-      iex> {:error, msg} = Legion.Sandbox.execute("import Enum", 5_000)
-      iex> msg =~ "import is not allowed"
-      true
+  ## Bindings
+
+  `bindings` is an opaque, serialisable term owned by the sandbox: a keyword
+  list for `Legion.Sandbox.Elixir`, a `Lua` state for `Legion.Sandbox.Lua`.
+  `[]` always means "fresh state". The executor threads it between
+  executions and persists it in checkpoints without inspecting it beyond
+  `c:binding_names/1`.
   """
-
-  alias Legion.Sandbox.ASTChecker
 
   @doc """
-  Evaluates `code_string` in a sandboxed process.
+  Static validation of `code` before execution (and before any `EvalGuard`).
 
-  `timeout_ms` controls the maximum execution time (`:infinity` to disable).
-  `allowed_modules` are aliased and made available to the evaluated code
-  (on top of the built-in safe modules).
-
-  Returns `{:ok, {result, new_bindings}}` on success, or `{:error, reason}` on
-  validation failure, runtime exception, crash, or timeout. The returned
-  `new_bindings` can be passed to subsequent calls to preserve variable scope.
+  Return `:ok` when the sandbox has no meaningful static check — errors then
+  surface from `c:execute/5` instead.
   """
-  def execute(code_string, timeout_ms, allowed_modules \\ [], bindings \\ [])
-      when is_binary(code_string) and is_list(allowed_modules) and
-             (is_integer(timeout_ms) or timeout_ms == :infinity) do
-    with :ok <- ASTChecker.check(code_string, allowed_modules) do
-      code_string
-      |> append_aliases(allowed_modules)
-      |> eval(timeout_ms, bindings)
-    end
-  end
+  @callback check(code :: String.t(), tools :: [module()]) :: :ok | {:error, term()}
 
-  defp append_aliases(code_string, allowed_modules) do
-    aliases =
-      for module <- allowed_modules, into: "" do
-        "alias #{module}\n"
-      end
+  @doc """
+  Evaluates `code` with the given tools, bindings, and limits.
 
-    aliases <> code_string
-  end
+  Returns `{:ok, {value, new_bindings}}` or `{:error, reason}`.
 
-  # sobelow_skip ["RCE.CodeModule"]
-  defp eval(code_string, timeout_ms, bindings) do
-    parent = self()
+  Enforcing `timeout_ms` and `limits` is the implementation's job: run the
+  evaluation through `Legion.Sandbox.Runner.run/3`, which is where that
+  contract lives.
+  """
+  @callback execute(
+              code :: String.t(),
+              timeout_ms :: non_neg_integer() | :infinity,
+              tools :: [module()],
+              bindings :: term(),
+              limits :: keyword()
+            ) :: {:ok, {term(), term()}} | {:error, term()}
 
-    {pid, ref} =
-      spawn_monitor(fn ->
-        {result, diagnostics} =
-          Code.with_diagnostics(fn ->
-            try do
-              {value, new_bindings} = Code.eval_string(code_string, bindings)
-              {:ok, {value, new_bindings}}
-            rescue
-              e -> {:error, e}
-            catch
-              :throw, value -> {:error, {:throw, value}}
-              :exit, reason -> {:error, {:exit, reason}}
-            end
-          end)
+  @doc """
+  Names of user-defined variables in `bindings`, shown to the LLM after each
+  execution.
+  """
+  @callback binding_names(bindings :: term()) :: [atom() | String.t()]
 
-        send(parent, {:result, self(), attach_diagnostics(result, diagnostics)})
-      end)
+  @doc """
+  Language-specific system prompt sections:
 
-    receive do
-      {:result, ^pid, result} ->
-        Process.demonitor(ref, [:flush])
-        result
-
-      {:DOWN, ^ref, :process, _pid, reason} ->
-        {:error, {:process_crashed, reason}}
-    after
-      timeout_ms ->
-        Process.demonitor(ref, [:flush])
-        Process.exit(pid, :kill)
-        {:error, :timeout}
-    end
-  end
-
-  defp attach_diagnostics({:error, %CompileError{}}, [_ | _] = diagnostics) do
-    {:error, format_diagnostics(diagnostics)}
-  end
-
-  defp attach_diagnostics(result, _diagnostics), do: result
-
-  defp format_diagnostics(diagnostics) do
-    Enum.map_join(diagnostics, "\n", fn diag ->
-      "#{format_position(diag.position)}: #{diag.message}"
-    end)
-  end
-
-  defp format_position({line, column}), do: "#{line}:#{column}"
-  defp format_position(line) when is_integer(line), do: "#{line}"
-  defp format_position(_), do: "?"
+    - `:language` — name shown to the LLM, e.g. `"Elixir 1.18.4"`.
+    - `:constraints` — markdown bullet list of language / sandbox rules.
+    - `:tool_usage` — one-line explanation of how to call tools from code.
+  """
+  @callback prompt_info() :: %{
+              language: String.t(),
+              constraints: String.t(),
+              tool_usage: String.t()
+            }
 end

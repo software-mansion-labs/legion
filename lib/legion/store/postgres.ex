@@ -42,9 +42,10 @@ defmodule Legion.Store.Postgres do
           persistence_frequency: :step
       end
 
-  Agent ids must be strings. Snapshots are stored as `:erlang.term_to_binary/1`
-  blobs - readable only from Elixir, one row per conversation, upserted on
-  every save. Step snapshots therefore require no additional migration.
+  Agent ids must be strings. Snapshots are stored as compressed
+  `:erlang.term_to_binary/2` blobs - readable only from Elixir, one row
+  per conversation, upserted on every save. Step snapshots therefore require
+  no additional migration.
 
   `save/1` performs partial upserts, so a row carries the conversation state
   and identity. Omitted payload fields preserve their existing values. The
@@ -153,7 +154,9 @@ defmodule Legion.Store.Postgres do
     payload
     |> Map.from_struct()
     |> Map.update(:conversation_state, nil, fn state ->
-      if not is_nil(state), do: :erlang.term_to_binary(state)
+      # Snapshots are large, repetitive terms (message text, sandbox states)
+      # that compress several-fold. Old uncompressed rows still decode fine.
+      if not is_nil(state), do: :erlang.term_to_binary(state, compressed: 6)
     end)
     |> Map.update(:agent_module, nil, fn module ->
       if not is_nil(module), do: inspect(module)
@@ -185,7 +188,7 @@ defmodule Legion.Store.Postgres do
     %{
       messages: Map.get(state, :messages, []),
       bindings: Map.get(state, :bindings, []),
-      executor_state: Map.get(state, :executor_state, nil)
+      executor_state: Map.get(state, :executor_state, :nonexistent)
     }
   end
 

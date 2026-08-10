@@ -735,7 +735,7 @@ defmodule Legion.AgentServerTest do
 
     test "does not persist bindings under the default :turn scope" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_eval_response("x = 42")
+        llm_eval_response("x = 42\nreturn x")
       end)
 
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "turn-bindings")
@@ -752,7 +752,8 @@ defmodule Legion.AgentServerTest do
       {:ok, pid} =
         Legion.start_link(ConversationBindingsAgent,
           store: MemoryStore,
-          agent_id: "conversation-bindings"
+          agent_id: "conversation-bindings",
+          sandbox: Legion.Sandbox.Elixir
         )
 
       assert {:ok, 42} = Legion.call(pid, "set x")
@@ -776,7 +777,11 @@ defmodule Legion.AgentServerTest do
       end)
 
       {:ok, pid} =
-        Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-continue")
+        Legion.start_link(MathAgent,
+          store: StepMemoryStore,
+          agent_id: "step-continue",
+          sandbox: Legion.Sandbox.Elixir
+        )
 
       assert {:ok, "done"} = Legion.call(pid, "compute")
 
@@ -787,7 +792,7 @@ defmodule Legion.AgentServerTest do
                conversation_state: %{
                  messages: [%{type: :user}],
                  bindings: [],
-                 executor_state: nil
+                 executor_state: :nonexistent
                }
              } = running
 
@@ -802,12 +807,12 @@ defmodule Legion.AgentServerTest do
 
       assert %Payload{status: :idle, conversation_state: final_state} = completed
       assert final_state.bindings == []
-      assert final_state.executor_state == nil
+      assert final_state.executor_state == :nonexistent
     end
 
     test "a :step store persists eval_and_complete before the final snapshot" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_eval_response("1 + 1")
+        llm_eval_response("return 1 + 1")
       end)
 
       {:ok, pid} =
@@ -825,7 +830,7 @@ defmodule Legion.AgentServerTest do
              } = checkpoint
 
       assert %Payload{status: :idle, conversation_state: final_state} = completed
-      assert final_state.executor_state == nil
+      assert final_state.executor_state == :nonexistent
     end
 
     test "a :step store persists retry state after an error message" do
@@ -865,7 +870,8 @@ defmodule Legion.AgentServerTest do
       {:ok, pid} =
         Legion.start_link(ConversationBindingsAgent,
           store: StepMemoryStore,
-          agent_id: "step-conversation-bindings"
+          agent_id: "step-conversation-bindings",
+          sandbox: Legion.Sandbox.Elixir
         )
 
       assert {:ok, 42} = Legion.call(pid, "compute")
@@ -879,7 +885,7 @@ defmodule Legion.AgentServerTest do
 
     test "a :step store persists empty iteration-scoped bindings" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
-        llm_eval_response("x = 42")
+        llm_eval_response("x = 42\nreturn x")
       end)
 
       {:ok, pid} =
@@ -932,9 +938,9 @@ defmodule Legion.AgentServerTest do
         assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
         if assistant_count == 0 do
-          llm_eval_response("x = 42")
+          llm_eval_response("x = 42\nreturn x")
         else
-          llm_eval_response("x + 1")
+          llm_eval_response("return x + 1")
         end
       end)
 
@@ -1109,7 +1115,7 @@ defmodule Legion.AgentServerTest do
       assert_receive :llm_requested
 
       assert_receive {:store_saved,
-                      %Payload{status: :idle, conversation_state: %{executor_state: nil}}}
+                      %Payload{status: :idle, conversation_state: %{executor_state: :nonexistent}}}
 
       refute_receive :llm_requested, 50
     end
@@ -1139,7 +1145,7 @@ defmodule Legion.AgentServerTest do
       assert {:ok, _pid} = Legion.resume("resume-completing", store: MemoryStore)
 
       assert_receive {:store_saved,
-                      %Payload{status: :idle, conversation_state: %{executor_state: nil}}}
+                      %Payload{status: :idle, conversation_state: %{executor_state: :nonexistent}}}
 
       refute_receive :llm_requested, 100
     end
@@ -1188,7 +1194,7 @@ defmodule Legion.AgentServerTest do
 
       assert :ok = Legion.recover("recover-awaiting-llm", store: MemoryStore)
 
-      assert {:ok, %Payload{status: :idle, conversation_state: %{executor_state: nil}}} =
+      assert {:ok, %Payload{status: :idle, conversation_state: %{executor_state: :nonexistent}}} =
                MemoryStore.get("recover-awaiting-llm")
 
       assert(
@@ -1209,7 +1215,7 @@ defmodule Legion.AgentServerTest do
                  conversation_state: %{
                    messages: [%{role: "user", type: :user, content: "recover me"}],
                    bindings: [],
-                   executor_state: nil
+                   executor_state: :nonexistent
                  }
                })
 
@@ -1306,9 +1312,9 @@ defmodule Legion.AgentServerTest do
         assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
         if assistant_count == 0 do
-          llm_eval_response("x = 42")
+          llm_eval_response("x = 42\nreturn x")
         else
-          llm_eval_response("x + 1")
+          llm_eval_response("return x + 1")
         end
       end)
 
@@ -1325,13 +1331,29 @@ defmodule Legion.AgentServerTest do
         assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
         if assistant_count == 0 do
+          llm_eval_response("x = 42\nreturn x")
+        else
+          llm_eval_response("return x + 1")
+        end
+      end)
+
+      {:ok, pid} = Legion.start_link(ConversationBindingsAgent)
+      {:ok, 42} = Legion.call(pid, "set x")
+      assert {:ok, 43} = Legion.call(pid, "use x")
+    end
+
+    test "Elixir bindings persist across turns with :conversation" do
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        assistant_count = Enum.count(messages, &(&1[:role] == "assistant"))
+
+        if assistant_count == 0 do
           llm_eval_response("x = 42")
         else
           llm_eval_response("x + 1")
         end
       end)
 
-      {:ok, pid} = Legion.start_link(ConversationBindingsAgent)
+      {:ok, pid} = Legion.start_link(ConversationBindingsAgent, sandbox: Legion.Sandbox.Elixir)
       {:ok, 42} = Legion.call(pid, "set x")
       assert {:ok, 43} = Legion.call(pid, "use x")
     end
