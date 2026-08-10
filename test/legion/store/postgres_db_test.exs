@@ -18,8 +18,8 @@ defmodule Legion.Store.PostgresDbTest do
     payload = %Payload{
       agent_id: "usage-jsonb",
       usage: [
-        %{input_tokens: 12, output_tokens: 5, total_tokens: 17, tool_usage: %{web_search: 1}},
-        %{input_tokens: 7, output_tokens: 3, total_tokens: 10}
+        %{input_tokens: 12, output_tokens: 5, turn_usage: 17, tool_usage: %{web_search: 1}},
+        %{input_tokens: 7, output_tokens: 3, turn_usage: 10}
       ]
     }
 
@@ -31,10 +31,10 @@ defmodule Legion.Store.PostgresDbTest do
                 %{
                   "input_tokens" => 12,
                   "output_tokens" => 5,
-                  "total_tokens" => 17,
+                  "turn_usage" => 17,
                   "tool_usage" => %{"web_search" => 1}
                 },
-                %{"input_tokens" => 7, "output_tokens" => 3, "total_tokens" => 10}
+                %{"input_tokens" => 7, "output_tokens" => 3, "turn_usage" => 10}
               ]
             }} = Store.get("usage-jsonb")
 
@@ -56,10 +56,10 @@ defmodule Legion.Store.PostgresDbTest do
         bindings: [x: 42],
         executor_state: nil
       },
-      usage: [%{total_tokens: 100}]
+      usage: [%{turn_usage: 100}]
     }
 
-    expected_payload = %{payload | usage: [%{"total_tokens" => 100}]}
+    expected_payload = %{payload | usage: [%{"turn_usage" => 100}]}
 
     assert :ok = Store.save(payload)
     assert {:ok, ^expected_payload} = Store.get("user_42")
@@ -92,7 +92,7 @@ defmodule Legion.Store.PostgresDbTest do
         bindings: [x: 42],
         executor_state: nil
       },
-      usage: [%{total_tokens: 100}]
+      usage: [%{turn_usage: 100}]
     }
 
     assert :ok = Store.save(initial)
@@ -114,7 +114,7 @@ defmodule Legion.Store.PostgresDbTest do
                 bindings: [x: 42],
                 executor_state: nil
               },
-              usage: [%{"total_tokens" => 100}]
+              usage: [%{"turn_usage" => 100}]
             }} = Store.get("user_42")
 
     %{rows: [[updated_at]]} =

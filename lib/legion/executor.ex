@@ -224,7 +224,7 @@ defmodule Legion.Executor do
   end
 
   defp handle_llm_response(response, messages, turn_usage) do
-    turn_usage = turn_usage ++ [response.usage]
+    turn_usage = turn_usage ++ [normalize_usage(response.usage)]
 
     case extract_object(response) do
       {:ok, action} when is_map(action) ->
@@ -236,6 +236,18 @@ defmodule Legion.Executor do
          %{error: reason}}
     end
   end
+
+  defp normalize_usage(usage) when is_map(usage) do
+    Map.new(usage, fn {key, value} ->
+      {normalize_usage_key(key), normalize_usage(value)}
+    end)
+  end
+
+  defp normalize_usage(usage) when is_list(usage), do: Enum.map(usage, &normalize_usage/1)
+  defp normalize_usage(usage), do: usage
+
+  defp normalize_usage_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp normalize_usage_key(key), do: key
 
   defp checkpoint!(config, messages, bindings, executor_state) do
     case config[:checkpoint] do

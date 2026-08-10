@@ -259,7 +259,7 @@ defmodule Legion.RecoveryTest do
        model: "test",
        context: nil,
        object: %{"action" => "return", "code" => "", "result" => result},
-       usage: %{total_tokens: 0}
+       usage: %{turn_usage: 0}
      }}
   end
 end

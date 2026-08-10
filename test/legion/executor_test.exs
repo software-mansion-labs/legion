@@ -72,14 +72,14 @@ defmodule Legion.ExecutorTest do
 
   @moduletag capture_log: true
 
-  defp response(object, total_tokens \\ 0) do
+  defp response(object, turn_usage \\ 0) do
     {:ok,
      %ReqLLM.Response{
        id: "test",
        model: "test",
        context: nil,
        object: object,
-       usage: %{total_tokens: total_tokens}
+       usage: %{turn_usage: turn_usage}
      }}
   end
 
@@ -91,11 +91,11 @@ defmodule Legion.ExecutorTest do
   end
 
   describe "run/3-5" do
-    test "returns raw usage from a single LLM request" do
+    test "returns recursively string-keyed usage from a single LLM request" do
       usage = %{
         input_tokens: 12,
         output_tokens: 5,
-        total_tokens: 17,
+        turn_usage: 17,
         tool_usage: %{web_search: 1}
       }
 
@@ -110,8 +110,15 @@ defmodule Legion.ExecutorTest do
          }}
       end)
 
-      assert {:ok, "42", _messages, [], [^usage]} =
-               Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
+      assert {:ok, "42", _messages, [],
+              [
+                %{
+                  "input_tokens" => 12,
+                  "output_tokens" => 5,
+                  "turn_usage" => 17,
+                  "tool_usage" => %{"web_search" => 1}
+                }
+              ]} = Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
     end
 
     test "returns usage list from a single LLM request" do
@@ -119,11 +126,11 @@ defmodule Legion.ExecutorTest do
         response(%{"action" => "return", "code" => "", "result" => "42"}, 17)
       end)
 
-      assert {:ok, "42", _messages, [], [%{total_tokens: 17}]} =
+      assert {:ok, "42", _messages, [], [%{"turn_usage" => 17}]} =
                Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
     end
 
-    test "does not normalize provider usage" do
+    test "preserves provider usage values while stringifying keys" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         {:ok,
          %ReqLLM.Response{
@@ -135,7 +142,7 @@ defmodule Legion.ExecutorTest do
          }}
       end)
 
-      assert {:ok, "42", _messages, [], [%{input_tokens: 12, output_tokens: 5}]} =
+      assert {:ok, "42", _messages, [], [%{"input_tokens" => 12, "output_tokens" => 5}]} =
                Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
     end
 
@@ -151,7 +158,7 @@ defmodule Legion.ExecutorTest do
         end
       end)
 
-      assert {:ok, "done", _messages, [x: 10], [%{total_tokens: 7}, %{total_tokens: 11}]} =
+      assert {:ok, "done", _messages, [x: 10], [%{"turn_usage" => 7}, %{"turn_usage" => 11}]} =
                Legion.Executor.run(
                  MathAgent,
                  executor_messages("compute"),
@@ -171,7 +178,7 @@ defmodule Legion.ExecutorTest do
         end
       end)
 
-      assert {:ok, "recovered", _messages, [], [%{total_tokens: 7}, %{total_tokens: 11}]} =
+      assert {:ok, "recovered", _messages, [], [%{"turn_usage" => 7}, %{"turn_usage" => 11}]} =
                Legion.Executor.run(MathAgent, executor_messages("recover"), %{})
     end
 
@@ -262,7 +269,7 @@ defmodule Legion.ExecutorTest do
         end
       end)
 
-      assert {:ok, "recovered", _messages, [], [%{total_tokens: 11}]} =
+      assert {:ok, "recovered", _messages, [], [%{"turn_usage" => 11}]} =
                Legion.Executor.run(MathAgent, executor_messages("retry raised error"), %{})
     end
 
@@ -324,7 +331,7 @@ defmodule Legion.ExecutorTest do
         :ok
       end
 
-      assert {:ok, 20, _messages, _bindings, _turn_tokens} =
+      assert {:ok, 20, _messages, _bindings, _turn_usage} =
                Legion.Executor.run(
                  MathAgent,
                  executor_messages("compute"),
@@ -375,7 +382,7 @@ defmodule Legion.ExecutorTest do
         :ok
       end
 
-      assert {:ok, "recovered", _messages, [], _turn_tokens} =
+      assert {:ok, "recovered", _messages, [], _turn_usage} =
                Legion.Executor.run(
                  MathAgent,
                  executor_messages("recover"),
@@ -400,7 +407,7 @@ defmodule Legion.ExecutorTest do
         response(%{"action" => "return", "code" => "", "result" => "done"})
       end)
 
-      assert {:ok, "done", _messages, [], _turn_tokens} =
+      assert {:ok, "done", _messages, [], _turn_usage} =
                Legion.Executor.run(
                  MathAgent,
                  executor_messages("finish"),

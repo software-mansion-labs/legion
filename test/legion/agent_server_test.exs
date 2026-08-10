@@ -41,29 +41,29 @@ defmodule Legion.AgentServerTest do
 
   @moduletag capture_log: true
 
-  defp llm_response(result, total_tokens \\ 0) do
-    llm_object(%{"action" => "return", "code" => "", "result" => result}, total_tokens)
+  defp llm_response(result, turn_usage \\ 0) do
+    llm_object(%{"action" => "return", "code" => "", "result" => result}, turn_usage)
   end
 
-  defp llm_eval_response(code, total_tokens \\ 0) do
-    llm_object(%{"action" => "eval_and_complete", "code" => code, "result" => ""}, total_tokens)
+  defp llm_eval_response(code, turn_usage \\ 0) do
+    llm_object(%{"action" => "eval_and_complete", "code" => code, "result" => ""}, turn_usage)
   end
 
-  defp llm_eval_continue_response(code, total_tokens \\ 0) do
+  defp llm_eval_continue_response(code, turn_usage \\ 0) do
     llm_object(
       %{"action" => "eval_and_continue", "code" => code, "result" => ""},
-      total_tokens
+      turn_usage
     )
   end
 
-  defp llm_object(object, total_tokens) do
+  defp llm_object(object, turn_usage) do
     {:ok,
      %ReqLLM.Response{
        id: "test",
        model: "test",
        context: nil,
        object: object,
-       usage: %{total_tokens: total_tokens}
+       usage: %{turn_usage: turn_usage}
      }}
   end
 
@@ -618,7 +618,7 @@ defmodule Legion.AgentServerTest do
       refute Enum.any?(messages, &(&1.role == "system"))
     end
 
-    test "accumulates raw usage across turns" do
+    test "accumulates string-keyed usage across turns" do
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -635,14 +635,14 @@ defmodule Legion.AgentServerTest do
       assert {:ok, "second"} = Legion.call(pid, "second turn")
 
       assert {:ok, payload} = MemoryStore.get("usage-turns")
-      assert Map.get(payload, :usage) == [%{total_tokens: 7}, %{total_tokens: 11}]
+      assert Map.get(payload, :usage) == [%{"turn_usage" => 7}, %{"turn_usage" => 11}]
     end
 
     test "restored conversations add only new invocation usage" do
       assert :ok =
                MemoryStore.save(%Payload{
                  agent_id: "usage-restore",
-                 usage: [%{total_tokens: 100}],
+                 usage: [%{turn_usage: 100}],
                  conversation_state: %{messages: [], bindings: [], executor_state: nil}
                })
 
@@ -653,7 +653,7 @@ defmodule Legion.AgentServerTest do
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-restore")
       assert {:ok, "new work"} = Legion.call(pid, "continue")
 
-      assert {:ok, %Payload{usage: [%{total_tokens: 100}, %{total_tokens: 20}]}} =
+      assert {:ok, %Payload{usage: [%{turn_usage: 100}, %{"turn_usage" => 20}]}} =
                MemoryStore.get("usage-restore")
     end
 
@@ -670,7 +670,7 @@ defmodule Legion.AgentServerTest do
       assert :ok =
                MemoryStore.save(%Payload{
                  agent_id: "usage-disabled",
-                 usage: [%{total_tokens: 100}],
+                 usage: [%{turn_usage: 100}],
                  conversation_state: %{messages: [], bindings: [], executor_state: nil}
                })
 
@@ -681,7 +681,7 @@ defmodule Legion.AgentServerTest do
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-disabled")
       assert {:ok, "new work"} = Legion.call(pid, "continue")
 
-      assert {:ok, %Payload{usage: [%{total_tokens: 100}]}} =
+      assert {:ok, %Payload{usage: [%{turn_usage: 100}]}} =
                MemoryStore.get("usage-disabled")
     end
 

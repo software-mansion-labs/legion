@@ -76,7 +76,7 @@ defmodule Legion.Store.PostgresTest do
         bindings: [x: 42],
         executor_state: nil
       },
-      usage: [%{total_tokens: 100}]
+      usage: [%{turn_usage: 100}]
     }
 
     assert :ok = Store.save(payload)
@@ -129,7 +129,7 @@ defmodule Legion.Store.PostgresTest do
         bindings: [x: 42],
         executor_state: nil
       },
-      usage: [%{total_tokens: 100}]
+      usage: [%{turn_usage: 100}]
     }
 
     assert :ok = Store.save(initial)
@@ -148,7 +148,7 @@ defmodule Legion.Store.PostgresTest do
                 bindings: [x: 42],
                 executor_state: nil
               },
-              usage: [%{total_tokens: 100}]
+              usage: [%{turn_usage: 100}]
             }} = Store.get("user_42")
 
     assert NaiveDateTime.compare(FakeRepo.run("user_42").updated_at, previous_updated_at) == :gt
