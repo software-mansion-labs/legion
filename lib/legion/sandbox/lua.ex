@@ -9,8 +9,10 @@ defmodule Legion.Sandbox.Lua do
   module. That makes it the safer sandbox for less trusted code.
 
   - **Tools** - each tool module becomes a global Lua table named after the
-    module's last segment; every public function is callable as
-    `ShortName.fun(...)`. Arguments are decoded to Elixir values (Lua tables
+    module's last segment; every public function of a `Legion.Tool` module is
+    callable as `ShortName.fun(...)`. Other listed modules (sub-agents, extra
+    allowed modules) get a reference-only table: usable where a tool expects a
+    module, but exposing no functions. Arguments are decoded to Elixir values (Lua tables
     become maps, or lists when array-shaped) and results are encoded back
     (tuples become arrays, structs become tables of fields, atoms become
     strings).
@@ -19,7 +21,9 @@ defmodule Legion.Sandbox.Lua do
   - **Blocked** - `io`, `file`, `os.execute/exit/getenv/...`, `require`,
     `load`, `print`, and `debug` are sandboxed and raise when called.
   - **Timeout and resource limits** - evaluation runs through
-    `Legion.Sandbox.Runner`, same as `Legion.Sandbox.Elixir`.
+    `Legion.Sandbox.Runner`, same as `Legion.Sandbox.Elixir`. The VM
+    additionally refuses to build any single string larger than half the
+    memory budget, before allocating it.
 
   ## Examples
 
@@ -36,6 +40,7 @@ defmodule Legion.Sandbox.Lua do
   @behaviour Legion.Sandbox
 
   alias Legion.Sandbox.Runner
+  alias Lua.VM.Limits
 
   require EEx
 
@@ -105,12 +110,13 @@ defmodule Legion.Sandbox.Lua do
   def execute(code, timeout_ms, tools \\ [], bindings \\ [], limits \\ [])
       when is_binary(code) and is_list(tools) do
     with :ok <- check(code, tools) do
-      Runner.run(fn -> eval(code, tools, bindings) end, timeout_ms, limits)
+      max_heap_bytes = Keyword.get(limits, :max_heap, Runner.default_max_heap())
+      Runner.run(fn -> eval(code, tools, bindings, max_heap_bytes) end, timeout_ms, limits)
     end
   end
 
-  defp eval(code, tools, bindings) do
-    lua = if bindings == [], do: init(tools), else: bindings
+  defp eval(code, tools, bindings, max_heap_bytes) do
+    lua = if bindings == [], do: init(tools, max_heap_bytes), else: bindings
     module_refs = module_refs(tools)
 
     {results, lua} = Lua.eval!(lua, code)
@@ -133,15 +139,26 @@ defmodule Legion.Sandbox.Lua do
     e in [Lua.RuntimeException, Lua.CompilerException] -> {:error, Exception.message(e)}
   end
 
-  defp init(tools) do
+  defp init(tools, max_heap_bytes) do
     lua =
-      Lua.new()
+      new_vm(max_heap_bytes)
       |> Lua.sandbox([:print])
       |> Lua.sandbox([:debug])
       |> register_tools(tools)
 
     Lua.put_private(lua, @baseline_globals_key, global_names(lua))
   end
+
+  # A single string is capped below the heap budget so a string bomb is
+  # refused by the VM before allocating - a catchable "resulting string too
+  # large" error the model can react to - instead of racing the heap kill
+  # mid-allocation. Half the budget leaves room for the eval's other live
+  # data. Baked into the state at init, so a conversation revived under a
+  # changed `max_heap` keeps the ceiling it started with.
+  defp new_vm(:infinity), do: Lua.new()
+
+  defp new_vm(max_heap_bytes),
+    do: Lua.new(max_string_bytes: min(div(max_heap_bytes, 2), Limits.max_string_bytes()))
 
   defp module_refs(tools), do: Map.new(tools, &{Atom.to_string(&1), &1})
 
@@ -171,9 +188,22 @@ defmodule Legion.Sandbox.Lua do
   defp callable_functions(tool) do
     Code.ensure_loaded!(tool)
 
-    tool.__info__(:functions)
-    |> Kernel.--(@tool_meta_functions)
-    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    if legion_tool?(tool) do
+      tool.__info__(:functions)
+      |> Kernel.--(@tool_meta_functions)
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    else
+      %{}
+    end
+  end
+
+  defp legion_tool?(module) do
+    behaviours =
+      module.module_info(:attributes)
+      |> Keyword.get_values(:behaviour)
+      |> List.flatten()
+
+    Legion.Tool in behaviours
   end
 
   defp bridge(tool, short_name, name, arities, module_refs) do

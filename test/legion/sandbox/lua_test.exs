@@ -9,6 +9,14 @@ defmodule Legion.Sandbox.LuaTest.EchoTool do
   def module_check(module), do: %{is_atom: is_atom(module), name: inspect(module)}
   def pair, do: {:ok, 42}
   def boom, do: raise(ArgumentError, "tool exploded")
+  def throw_it, do: throw(:tool_escaped)
+end
+
+# NOT a Legion.Tool - stands in for a sub-agent module that only reaches the
+# sandbox via AgentTool.extra_allowed_modules/0, where it is meant to be a bare
+# module *reference* for `AgentTool.call(FakeSubAgent, task)`, never a callable.
+defmodule Legion.Sandbox.LuaTest.FakeSubAgent do
+  def internal_capability(marker), do: {:reached_host, marker}
 end
 
 defmodule Legion.Sandbox.LuaTest do
@@ -18,6 +26,7 @@ defmodule Legion.Sandbox.LuaTest do
 
   alias Legion.Sandbox.Lua
   alias Legion.Sandbox.LuaTest.EchoTool
+  alias Legion.Sandbox.LuaTest.FakeSubAgent
 
   test "returns result and reusable bindings" do
     assert {:ok, {nil, bindings}} = Lua.execute("x = 40", 15_000)
@@ -87,6 +96,15 @@ defmodule Legion.Sandbox.LuaTest do
     assert message =~ "sandboxed"
   end
 
+  test "an oversized string is refused by the VM instead of racing the heap kill" do
+    # 6 MB exceeds the 5 MB string ceiling derived from max_heap, yet stays
+    # under the 10 MB binary budget - only the VM ceiling can catch it.
+    assert {:error, message} =
+             Lua.execute("return string.rep('x', 6000000)", 15_000, [], [], max_heap: 10_000_000)
+
+    assert message =~ "resulting string too large"
+  end
+
   test "debug library is sandboxed" do
     assert {:error, message} = Lua.execute("return debug.setmetatable", 15_000)
     assert message =~ "attempt to index a function value (global 'debug')"
@@ -122,6 +140,38 @@ defmodule Legion.Sandbox.LuaTest do
     assert {:error, message} = Lua.execute("EchoTool.boom()", 15_000, [EchoTool])
     assert message =~ "EchoTool.boom"
     assert message =~ "tool exploded"
+  end
+
+  test "a non-exception tool escape (throw) slips past the sandbox rescue as a process crash" do
+    # The bridge and `eval` only rescue exceptions; a `throw`/`exit` is neither,
+    # so it propagates to Runner, which reports it as a crash rather than an error string.
+    assert {:error, {:process_crashed, reason}} =
+             Lua.execute("EchoTool.throw_it()", 15_000, [EchoTool])
+
+    assert {{:nocatch, :tool_escaped}, _stacktrace} = reason
+  end
+
+  test "non-tool modules are reference-only: no functions bridged into Lua" do
+    # The executor passes `tools ++ extra_allowed_modules` as one list; a
+    # sub-agent module in that list is meant as a bare module reference for
+    # `AgentTool.call(FakeSubAgent, task)`, never a callable. Only modules
+    # built with `use Legion.Tool` get their functions bridged.
+    assert {:error, message} =
+             Lua.execute(
+               "return FakeSubAgent.internal_capability('from_lua')",
+               15_000,
+               [FakeSubAgent]
+             )
+
+    assert message =~ "attempt to call a nil value"
+
+    assert {:ok, {value, _}} =
+             Lua.execute("return EchoTool.module_check(FakeSubAgent)", 15_000, [
+               EchoTool,
+               FakeSubAgent
+             ])
+
+    assert value == %{"is_atom" => true, "name" => "Legion.Sandbox.LuaTest.FakeSubAgent"}
   end
 
   test "meta functions from Legion.Tool are not bridged" do
