@@ -163,4 +163,16 @@ defmodule Legion.Store.PostgresTest do
     assert :error = Store.save(%{agent_id: "user_42", unexpected: "value"})
     assert FakeRepo.run("user_42") == nil
   end
+
+  test "save/1 rejects a payload with non-string agent_id without inserting a row" do
+    assert :error = Store.save(%Payload{agent_id: 42})
+    assert FakeRepo.run(42) == nil
+    assert :error = Store.save(%Payload{agent_id: <<0xFF>>})
+    assert FakeRepo.run(<<0xFF>>) == nil
+  end
+
+  test "get/1 rejects a non-string agent_id" do
+    assert :error = Store.get(42)
+    assert :error = Store.get(<<0xFF>>)
+  end
 end

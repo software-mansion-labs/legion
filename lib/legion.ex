@@ -78,6 +78,7 @@ defmodule Legion do
 
   ## Options
     - `:store`, `:agent_id` - persist the conversation across restarts; see `Legion.Store`.
+      When supplied, `:agent_id` must be a valid UTF-8 string.
       A store set globally with `config :legion, :store, MyApp.AgentStore` applies to
       every agent, so you need only pass `:agent_id`. If a store is in effect but no
       `:agent_id` is given, Legion generates one - read it back with `get_agent_id/1`.
@@ -133,8 +134,8 @@ defmodule Legion do
   end
 
   @doc """
-  Returns the id of a running agent. Always set - Legion generates one when
-  none is passed.
+  Returns the valid UTF-8 string id of a running agent. Always set - Legion
+  generates one when none is passed.
 
   When a store is configured but you let Legion generate the id, capture it
   with this to resume the same conversation on a later start.
@@ -180,6 +181,8 @@ defmodule Legion do
   @doc """
   Looks up the live process for an agent id.
 
+  `agent_id` must be a valid UTF-8 string. Raises `ArgumentError` otherwise.
+
   Uses Legion's cluster-wide runtime index as the source of truth for the
   `agent_id -> pid` mapping. Returns `{:ok, pid}` when the agent is currently
   registered on any connected node, or `:error` when no live process owns
@@ -191,6 +194,10 @@ defmodule Legion do
       :error = Legion.lookup("missing_agent_id")
   """
   def lookup(agent_id) do
+    if not is_binary(agent_id) or not String.valid?(agent_id) do
+      raise ArgumentError, ":agent_id must be a valid UTF-8 string, got: #{inspect(agent_id)}"
+    end
+
     case AgentIndex.lookup(agent_id) do
       {:ok, pid} -> {:ok, pid}
       _ -> :error
@@ -199,6 +206,8 @@ defmodule Legion do
 
   @doc """
   Resumes a persisted conversation.
+
+  `agent_id` must be a valid UTF-8 string. Raises `ArgumentError` otherwise.
 
   Loads the persisted conversation with `get/1` to determine its agent module,
   then atomically starts it under the same `agent_id`. If a live process already
@@ -227,6 +236,10 @@ defmodule Legion do
         Legion.resume("missing_chat", store: MyApp.AgentStore)
   """
   def resume(agent_id, opts \\ []) do
+    if not is_binary(agent_id) or not String.valid?(agent_id) do
+      raise ArgumentError, ":agent_id must be a valid UTF-8 string, got: #{inspect(agent_id)}"
+    end
+
     store = store!(opts, :resume)
 
     case store.get(agent_id) do
@@ -247,6 +260,8 @@ defmodule Legion do
 
   @doc """
   Recovers an interrupted persisted run and waits for it to finish.
+
+  `agent_id` must be a valid UTF-8 string. Raises `ArgumentError` otherwise.
 
   An interrupted run is signaled by a stored payload with `status: :running`. In addition
   only runs without `parent_agent_id` are recoverable, since sub-agents are not restarted. Unlike
@@ -277,6 +292,10 @@ defmodule Legion do
         Legion.recover("completed_chat", store: MyApp.AgentStore)
   """
   def recover(agent_id, opts \\ []) do
+    if not is_binary(agent_id) or not String.valid?(agent_id) do
+      raise ArgumentError, ":agent_id must be a valid UTF-8 string, got: #{inspect(agent_id)}"
+    end
+
     store = store!(opts, :recover)
 
     case store.get(agent_id) do

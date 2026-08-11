@@ -67,7 +67,8 @@ defmodule Legion.Store do
 
   `:agent_id` is the key a conversation is saved under - it names one
   conversation, not one user. A chat app with many chats per user keys by the
-  chat; compose the id however you like, since Legion treats it as opaque:
+  chat. Agent ids must be valid UTF-8 strings, but Legion otherwise treats their
+  contents as opaque, so compose them however you like:
 
       Legion.start_link(ChatAgent, agent_id: "user_42:chat_7")
 
@@ -114,8 +115,8 @@ defmodule Legion.Store do
 
   ## Reading conversations
 
-  `get/1` returns the persisted conversation for one `agent_id`, or `:error`
-  when the store has no row for that id.
+  `get/1` receives a valid UTF-8 `agent_id` and returns its persisted
+  conversation, or `:error` when the store has no row for that id.
 
   `list/1` returns persisted conversations newest first for consumers that
   rebuild a view of past conversations from the store alone.
@@ -123,7 +124,7 @@ defmodule Legion.Store do
 
   alias Legion.Store.Payload
 
-  @type agent_id :: term()
+  @type agent_id :: String.t()
   @type status :: Payload.status()
   @type payload :: Payload.t()
   @type persistence_frequency :: :turn | :step

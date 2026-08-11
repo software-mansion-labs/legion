@@ -58,7 +58,18 @@ defmodule Legion.AgentServer do
             ":agent_id requires a :store - pass one or set `config :legion, :store, MyStore`"
     end
 
-    agent_id = agent_id || generate_id()
+    agent_id =
+      cond do
+        is_nil(agent_id) ->
+          generate_id()
+
+        is_binary(agent_id) and String.valid?(agent_id) ->
+          agent_id
+
+        true ->
+          raise ArgumentError, ":agent_id must be a valid UTF-8 string, got: #{inspect(agent_id)}"
+      end
+
     persistence_frequency = Store.persistence_frequency(store)
     track_usage = Application.get_env(:legion, :track_usage, true)
 
