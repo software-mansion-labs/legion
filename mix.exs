@@ -74,26 +74,30 @@ defmodule Legion.MixProject do
 
   defp deps do
     [
-      {:ecto_sql, "~> 3.13", optional: true},
-      {:req_llm, "~> 1.2"},
-      {:lua, "~> 1.0"},
+      {:ecto_sql, "~> 3.13"},
+      {:req_llm, "~> 1.20"},
       {:vault, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
+      {:lua, "~> 1.0"},
+
+      # Optional
+      {:postgrex, "~> 0.22", optional: true},
+
+      # Test and Dev
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
-      {:mimic, "~> 1.7", only: :test},
-      {:postgrex, "~> 0.22", only: :test}
+      {:mimic, "~> 1.7", only: :test}
     ]
   end
 
   defp package do
     [
-      maintainers: ["Dima Mikielewicz"],
+      maintainers: ["Software Mansion"],
       licenses: ["MIT"],
       links: %{
-        Website: "https://dimamik.com",
+        Website: "https://swmansion.com/",
         Changelog: "#{@source_url}/blob/main/CHANGELOG.md",
         GitHub: @source_url
       },
