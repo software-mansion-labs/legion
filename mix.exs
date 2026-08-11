@@ -94,10 +94,10 @@ defmodule Legion.MixProject do
 
   defp package do
     [
-      maintainers: ["Dima Mikielewicz"],
+      maintainers: ["Software Mansion"],
       licenses: ["MIT"],
       links: %{
-        Website: "https://dimamik.com",
+        Website: "https://swmansion.com/",
         Changelog: "#{@source_url}/blob/main/CHANGELOG.md",
         GitHub: @source_url
       },
