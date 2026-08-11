@@ -965,6 +965,7 @@ defmodule Legion.AgentServerTest do
       agent_id = Legion.get_agent_id(pid)
 
       assert is_binary(agent_id)
+      assert String.valid?(agent_id)
       {:ok, _} = Legion.call(pid, "What is the capital of France?")
       assert {:ok, _snapshot} = MemoryStore.load(agent_id)
     end
@@ -991,6 +992,30 @@ defmodule Legion.AgentServerTest do
     test "raises when :agent_id is given without a :store" do
       assert_raise ArgumentError, ~r/:agent_id requires a :store/, fn ->
         Legion.start_link(MathAgent, agent_id: "orphan")
+      end
+    end
+
+    test "rejects non-string explicit agent IDs" do
+      for agent_id <- [:agent, make_ref(), <<0xFF>>] do
+        assert_raise ArgumentError, ~r/:agent_id must be a valid UTF-8 string/, fn ->
+          Legion.start_link(MathAgent, store: MemoryStore, agent_id: agent_id)
+        end
+      end
+    end
+
+    test "public identity operations reject invalid non-string agent IDs" do
+      non_binary_agent_id = :agent
+      non_utf8_agent_id = <<0xFF>>
+
+      for operation <- [
+            fn -> Legion.lookup(non_binary_agent_id) end,
+            fn -> Legion.resume(non_binary_agent_id, store: MemoryStore) end,
+            fn -> Legion.recover(non_binary_agent_id, store: MemoryStore) end,
+            fn -> Legion.lookup(non_utf8_agent_id) end,
+            fn -> Legion.resume(non_utf8_agent_id, store: MemoryStore) end,
+            fn -> Legion.recover(non_utf8_agent_id, store: MemoryStore) end
+          ] do
+        assert_raise ArgumentError, ~r/:agent_id must be a valid UTF-8 string/, operation
       end
     end
 

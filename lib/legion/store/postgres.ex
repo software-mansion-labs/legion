@@ -42,7 +42,7 @@ defmodule Legion.Store.Postgres do
           persistence_frequency: :step
       end
 
-  Agent ids must be strings. Snapshots are stored as compressed
+  Agent ids must be valid UTF-8 strings. Snapshots are stored as compressed
   `:erlang.term_to_binary/2` blobs - readable only from Elixir, one row
   per conversation, upserted on every save. Step snapshots therefore require
   no additional migration.
@@ -102,7 +102,18 @@ defmodule Legion.Store.Postgres do
       def persistence_frequency, do: unquote(persistence_frequency)
 
       @impl Legion.Store
-      def get(agent_id) when is_binary(agent_id) do
+      def get(agent_id) when not is_binary(agent_id), do: :error
+
+      @impl Legion.Store
+      def get(agent_id) do
+        if String.valid?(agent_id) do
+          do_get(agent_id)
+        else
+          :error
+        end
+      end
+
+      defp do_get(agent_id) do
         case unquote(repo).get(Record, agent_id) do
           nil -> :error
           record -> {:ok, Postgres.decode_record(record)}
@@ -119,10 +130,18 @@ defmodule Legion.Store.Postgres do
       def save(map) when is_map(map) and not is_struct(map), do: :error
 
       @impl Legion.Store
-      def save(%Payload{agent_id: nil}), do: :error
+      def save(%Payload{agent_id: agent_id}) when not is_binary(agent_id), do: :error
 
       @impl Legion.Store
-      def save(%Payload{} = payload) do
+      def save(%Payload{agent_id: agent_id} = payload) do
+        if String.valid?(agent_id) do
+          do_save(payload)
+        else
+          :error
+        end
+      end
+
+      defp do_save(payload) do
         attrs =
           payload
           |> Postgres.encode_data()

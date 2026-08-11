@@ -57,7 +57,7 @@ defmodule Legion.EvalGuard do
 
   alias Legion.Telemetry
 
-  @type context :: %{agent: module(), agent_id: term(), tools: [module()]}
+  @type context :: %{agent: module(), agent_id: Legion.Store.agent_id(), tools: [module()]}
 
   @callback check(code :: String.t(), context :: context()) :: :allow | {:deny, String.t()}
 
