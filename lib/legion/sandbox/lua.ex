@@ -253,7 +253,7 @@ defmodule Legion.Sandbox.Lua do
       module = bridged_module(table, module_refs) ->
         module
 
-      Enum.map(table, &elem(&1, 0)) == Enum.to_list(1..length(table)//1) ->
+      Enum.map(table, &elem(&1, 0)) |> Enum.sort() == Enum.to_list(1..length(table)//1) ->
         for {_index, value} <- table, do: lua_to_elixir(value, module_refs)
 
       true ->
