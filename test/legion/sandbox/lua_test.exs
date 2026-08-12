@@ -13,6 +13,22 @@ defmodule Legion.Sandbox.LuaTest.EchoTool do
   def exit_it, do: exit(:tool_exited)
 end
 
+defmodule Legion.Sandbox.LuaTest.ListStruct do
+  defstruct [:id, :name]
+end
+
+defmodule Legion.Sandbox.LuaTest.ListTool do
+  use Legion.Tool
+
+  alias Legion.Sandbox.LuaTest.ListStruct
+
+  def description, do: "ListTool - test bridge tool."
+
+  def get_list(num_elements) do
+    for id <- 1..num_elements, do: %ListStruct{id: id, name: "#{id}"}
+  end
+end
+
 # NOT a Legion.Tool - stands in for a sub-agent module that only reaches the
 # sandbox via AgentTool.extra_allowed_modules/0, where it is meant to be a bare
 # module *reference* for `AgentTool.call(FakeSubAgent, task)`, never a callable.
@@ -28,6 +44,7 @@ defmodule Legion.Sandbox.LuaTest do
   alias Legion.Sandbox.Lua
   alias Legion.Sandbox.LuaTest.EchoTool
   alias Legion.Sandbox.LuaTest.FakeSubAgent
+  alias Legion.Sandbox.LuaTest.ListTool
 
   test "returns result and reusable bindings" do
     assert {:ok, {nil, bindings}} = Lua.execute("x = 40", 15_000)
@@ -131,6 +148,22 @@ defmodule Legion.Sandbox.LuaTest do
              ])
 
     assert value == %{"received" => %{"name" => "ada", "tags" => [1, 2]}, "tag" => "ok"}
+  end
+
+  test "lua tables correctly converted to lists" do
+    num_elements = 40
+
+    code = """
+    talks=ListTool.get_list(#{num_elements})
+    list={}
+    for _,t in ipairs(talks) do table.insert(list, t.id) end
+    return list
+    """
+
+    assert {:ok, {list, _}} = Lua.execute(code, 15_000, [ListTool])
+
+    assert is_list(list)
+    assert length(list) == num_elements
   end
 
   test "tuple results become arrays" do
