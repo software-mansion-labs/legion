@@ -163,7 +163,7 @@ defmodule Legion.Sandbox.LuaTest do
     assert {:ok, {list, _}} = Lua.execute(code, 15_000, [ListTool])
 
     assert is_list(list)
-    assert length(list) == num_elements
+    assert list == Enum.to_list(1..num_elements)
   end
 
   test "tuple results become arrays" do

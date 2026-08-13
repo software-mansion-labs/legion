@@ -249,15 +249,18 @@ defmodule Legion.Sandbox.Lua do
   # resolve to their module atom; array-shaped tables (keys exactly 1..n)
   # become lists; the rest become maps.
   defp lua_to_elixir(table, module_refs) when is_list(table) do
+    map = Map.new(table)
+    size = map_size(map)
+
     cond do
       module = bridged_module(table, module_refs) ->
         module
 
-      Enum.map(table, &elem(&1, 0)) |> Enum.sort() == Enum.to_list(1..length(table)//1) ->
-        for {_index, value} <- table, do: lua_to_elixir(value, module_refs)
+      Enum.all?(1..size//1, &Map.has_key?(map, &1)) ->
+        for index <- 1..size//1, do: lua_to_elixir(map[index], module_refs)
 
       true ->
-        Map.new(table, fn {key, value} ->
+        Map.new(map, fn {key, value} ->
           {lua_to_elixir(key, module_refs), lua_to_elixir(value, module_refs)}
         end)
     end
