@@ -26,7 +26,7 @@ defmodule Legion.Tools.AgentTool do
   def extra_allowed_modules, do: Vault.get(__MODULE__, [])[:agents] || []
 
   @impl Legion.Tool
-  def description do
+  def description(sandbox) do
     summaries =
       case extra_allowed_modules() do
         [] ->
@@ -39,99 +39,45 @@ defmodule Legion.Tools.AgentTool do
           end)
       end
 
+    docs = description_docs(sandbox)
+
     """
     Delegate work to a specialized sub-agent. Each call runs a full sub-agent
-    turn, so fan out independent subtasks in parallel rather than sequentially.
+    turn, so start independent subtasks in parallel instead of in sequence.
 
     ## Your sub-agents
 
     #{summaries}
 
-    Call them by their short name (last module segment) - listed sub-agents
-    are auto-aliased in the sandbox.
+    #{docs.sub_agent_reference}
 
     ## One-shot call
 
-    `task` can be any Elixir term - string, map, keyword list, struct:
-
-        {:ok, result} =
-          AgentTool.call(SomeAgent, %{
-            key: value,
-            other_key: other_value
-          })
-
-    Returns:
-      - `{:ok, result}` - `result` matches the sub-agent's `output_schema`
-      - `{:cancel, reason}` - sub-agent hit its iteration/retry cap
+    #{docs.one_shot}
 
     ## Parallel fan-out
 
     Use `AgentTool.parallel/1` for independent subtasks - each `call` blocks on
-    a full sub-agent run, so serial calls cost N turns; parallel costs ~1.
+    a full sub-agent run, so serial calls cost N turns; parallel costs about one.
 
-        {:ok, picks} =
-          AgentTool.parallel(
-            for input <- inputs do
-              {SomeAgent, input}
-            end
-          )
-
-    Returns `{:ok, [result1, result2, ...]}` or the first `{:cancel, reason}`.
+    #{docs.parallel}
 
     ## Split spawning from post-processing across turns
 
-    Prefer one turn to spawn sub-agents and bind results, and a separate turn
-    to shape those results. Combining both in one script makes the script long
-    and brittle: a single sandbox rejection (e.g. `item.field` instead of
-    `Map.fetch!(item, :field)`) discards the whole script and the sub-agent
-    work has to be redone. Bindings persist across turns, so this costs
-    nothing.
+    Prefer one turn to start sub-agents and save results. Use a separate turn
+    to shape the results. A long script is brittle: one sandbox error discards
+    the script and the sub-agent work must run again. Bindings persist across
+    turns, so this does not add work.
 
-    Turn 1 - spawn and bind:
-
-        {:ok, results} =
-          AgentTool.parallel(
-            for input <- inputs do
-              {SomeAgent, input}
-            end
-          )
-
-    Turn 2 - shape the bound `results`:
-
-        Enum.map(results, fn r -> Map.fetch!(r, :title) end)
+    #{docs.split_turns}
 
     ## Sequential pipeline
 
-    `AgentTool.pipeline/1` threads each step's result into the next:
-
-        {:ok, final} =
-          AgentTool.pipeline([
-            {ResearchAgent, "find X"},
-            {WriterAgent, fn research -> "summarize: \#{research}" end}
-          ])
+    #{docs.pipeline}
 
     ## Long-lived sub-agent (multi-turn conversation)
 
-    `call/2` and `parallel/1` run the sub-agent to completion and discard it.
-    Use `start_link/2` when you need to keep talking to the same sub-agent
-    across follow-up messages - it preserves the sub-agent's conversation
-    history, so each subsequent message is interpreted in context.
-
-    Reach for this only when later messages genuinely depend on earlier ones
-    (refining a draft, asking follow-ups about the same data). For independent
-    tasks, prefer one-shot `call/2` or parallel fan-out.
-
-    Turn 1 - spawn and bind the pid:
-
-        {:ok, pid} = AgentTool.start_link(WriterAgent, "Draft a release note for v2.")
-
-    Later turn - send a follow-up and block for the reply:
-
-        reply = AgentTool.call(pid, "Tighten the second paragraph.")
-
-    Or fire-and-forget when you don't need the reply right now:
-
-        AgentTool.cast(pid, "Also drop the marketing line.")
+    #{docs.long_lived}
     """
   end
 
@@ -228,6 +174,163 @@ defmodule Legion.Tools.AgentTool do
   def then(prev, agent, fun) when is_function(fun, 1) do
     check_allowed!(agent)
     Legion.then(prev, agent, fun)
+  end
+
+  defp description_docs(Legion.Sandbox.Lua) do
+    %{
+      sub_agent_reference: """
+      Call them by their short name (last module segment). Each listed
+      sub-agent is a global Lua table. Pass that table directly where a call
+      needs an agent.
+      """,
+      one_shot: """
+      `task` can be a string, table, or list. Lua tables become Elixir maps
+      or lists:
+
+          response = AgentTool.call(SomeAgent, {
+            key = value,
+            other_key = other_value
+          })
+          result = response[2]
+          return result
+
+      Returns:
+        - `{"ok", result}` - `result` matches the sub-agent's `output_schema`
+        - `{"cancel", reason}` - the sub-agent hit its iteration or retry cap
+      """,
+      parallel: """
+          tasks = {}
+
+          for index, input in ipairs(inputs) do
+            tasks[index] = {SomeAgent, input}
+          end
+
+          response = AgentTool.parallel(tasks)
+          picks = response[2]
+          return picks
+
+      Returns `{"ok", {result1, result2, ...}}` or `{"cancel", reason}`.
+      """,
+      split_turns: """
+      Turn 1 - start and save:
+
+          response = AgentTool.parallel({
+            {SomeAgent, first_input},
+            {SomeAgent, second_input}
+          })
+          results = response[2]
+          return results
+
+      Turn 2 - shape the saved `results`:
+
+          titles = {}
+
+          for index, result in ipairs(results) do
+            titles[index] = result.title
+          end
+
+          return titles
+      """,
+      pipeline: """
+      `AgentTool.pipeline/1` runs fixed tasks in order:
+
+          response = AgentTool.pipeline({
+            {ResearchAgent, "find X"},
+            {WriterAgent, "write a summary"}
+          })
+          final = response[2]
+          return final
+
+      Lua cannot pass a function through the tool bridge. If a later task
+      needs an earlier result, call agents in separate executions and build
+      the next task from the saved result.
+      """,
+      long_lived: """
+      Long-lived sub-agents are not available from Lua. `start_link/2`
+      returns an Elixir pid, and pids cannot cross the Lua tool bridge. Use
+      one-shot calls or parallel fan-out instead.
+      """
+    }
+  end
+
+  defp description_docs(_sandbox) do
+    %{
+      sub_agent_reference: """
+      Call them by their short name (last module segment). Listed sub-agents
+      are auto-aliased in the sandbox.
+      """,
+      one_shot: """
+      `task` can be any Elixir term: string, map, keyword list, or struct:
+
+          {:ok, result} =
+            AgentTool.call(SomeAgent, %{
+              key: value,
+              other_key: other_value
+            })
+
+      Returns:
+        - `{:ok, result}` - `result` matches the sub-agent's `output_schema`
+        - `{:cancel, reason}` - the sub-agent hit its iteration or retry cap
+      """,
+      parallel: """
+          {:ok, picks} =
+            AgentTool.parallel(
+              for input <- inputs do
+                {SomeAgent, input}
+              end
+            )
+
+      Returns `{:ok, [result1, result2, ...]}` or the first
+      `{:cancel, reason}`.
+      """,
+      split_turns: """
+      Turn 1 - start and save:
+
+          {:ok, results} =
+            AgentTool.parallel(
+              for input <- inputs do
+                {SomeAgent, input}
+              end
+            )
+
+      Turn 2 - shape the saved `results`:
+
+          Enum.map(results, fn result -> Map.fetch!(result, :title) end)
+      """,
+      pipeline: """
+      `AgentTool.pipeline/1` threads each step result into the next step:
+
+          {:ok, final} =
+            AgentTool.pipeline([
+              {ResearchAgent, "find X"},
+              {WriterAgent, fn research -> "summarize: \#{research}" end}
+            ])
+      """,
+      long_lived: """
+      `call/2` and `parallel/1` run the sub-agent to completion and discard it.
+      Use `start_link/2` when you need to keep talking to the same sub-agent
+      across follow-up messages. It preserves the sub-agent conversation history.
+
+      Use this only when later messages depend on earlier ones. For independent
+      tasks, use one-shot `call/2` or parallel fan-out.
+
+      Turn 1 - start and save the pid:
+
+          {:ok, pid} =
+            AgentTool.start_link(
+              WriterAgent,
+              "Draft a release note for v2."
+            )
+
+      Later turn - send a follow-up and wait for the reply:
+
+          reply = AgentTool.call(pid, "Tighten the second paragraph.")
+
+      Or send a message when you do not need the reply now:
+
+          AgentTool.cast(pid, "Also drop the marketing line.")
+      """
+    }
   end
 
   defp check_allowed!(agent_module) do
