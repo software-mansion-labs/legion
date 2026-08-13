@@ -36,7 +36,10 @@ defmodule Legion.Tool do
   """
 
   @callback description() :: String.t()
+  @callback description(sandbox :: module()) :: String.t()
   @callback extra_allowed_modules() :: [module()]
+
+  @optional_callbacks description: 1
 
   defmacro __using__(_opts) do
     source = extract_module_source(File.read!(__CALLER__.file), __CALLER__.module)

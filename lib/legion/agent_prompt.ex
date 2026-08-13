@@ -16,10 +16,10 @@ defmodule Legion.AgentPrompt do
   end
 
   defp build_system_prompt(agent, config) do
-    tool_contents = Enum.map(agent.tools(), &tool_description/1)
+    sandbox = Map.get(config, :sandbox, Legion.Sandbox.Lua)
+    tool_contents = Enum.map(agent.tools(), &tool_description(&1, sandbox))
     description = agent.moduledoc()
     binding_scope = Map.get(config, :binding_scope, :turn)
-    sandbox = Map.get(config, :sandbox, Legion.Sandbox.Lua)
     prompt_info = sandbox.prompt_info()
 
     {result, _} =
@@ -37,14 +37,19 @@ defmodule Legion.AgentPrompt do
     String.trim(result)
   end
 
-  defp tool_description(module) do
+  defp tool_description(module, sandbox) do
     Code.ensure_loaded!(module)
 
     content =
-      if function_exported?(module, :description, 0) do
-        module.description()
-      else
-        Legion.SourceRegistry.source!(module)
+      cond do
+        function_exported?(module, :description, 1) ->
+          module.description(sandbox)
+
+        function_exported?(module, :description, 0) ->
+          module.description()
+
+        true ->
+          Legion.SourceRegistry.source!(module)
       end
 
     short_name = module |> Module.split() |> List.last()

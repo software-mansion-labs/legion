@@ -11,6 +11,13 @@ defmodule Legion.AgentPromptTest do
     def tools, do: [Jason]
   end
 
+  defmodule AgentToolAgent do
+    @moduledoc "Agent that delegates work."
+    use Legion.Agent
+
+    def tools, do: [Legion.Tools.AgentTool]
+  end
+
   describe "system_prompt/1" do
     test "includes agent moduledoc" do
       prompt = AgentPrompt.system_prompt(MathAgent)
@@ -53,6 +60,25 @@ defmodule Legion.AgentPromptTest do
       prompt = AgentPrompt.system_prompt(JasonAgent)
       assert prompt =~ "## Available Tools"
       assert prompt =~ "defmodule Jason"
+    end
+
+    test "uses Lua-safe AgentTool documentation in the Lua sandbox" do
+      prompt = AgentPrompt.system_prompt(AgentToolAgent)
+
+      assert prompt =~ "response = AgentTool.call(SomeAgent, {"
+      assert prompt =~ "result = response[2]"
+      assert prompt =~ "Lua cannot pass a function through the tool bridge"
+      assert prompt =~ "Long-lived sub-agents are not available from Lua"
+      refute prompt =~ "{:ok, result}"
+    end
+
+    test "uses Elixir AgentTool documentation in the Elixir sandbox" do
+      prompt = AgentPrompt.system_prompt(AgentToolAgent, %{sandbox: Legion.Sandbox.Elixir})
+
+      assert prompt =~ "{:ok, result} ="
+      assert prompt =~ "AgentTool.start_link("
+      assert prompt =~ "WriterAgent,"
+      refute prompt =~ "result = response[2]"
     end
   end
 end
