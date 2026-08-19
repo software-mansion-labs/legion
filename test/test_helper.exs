@@ -11,6 +11,18 @@ defmodule Legion.Test.Support.LegionAgentsMigration do
   def down, do: Postgres.down()
 end
 
+defmodule Legion.Test.Support.LegionRateLimiterMigration do
+  use Ecto.Migration
+
+  alias Legion.RateLimiter.Migration.Postgres
+
+  @version 20_260_819_000_001
+
+  def version, do: @version
+  def up, do: Postgres.up()
+  def down, do: Postgres.down()
+end
+
 # Shared connection and schema for the Legion.Store.Postgres database tests.
 {:ok, _} =
   Legion.Test.Support.PostgresRepo.start_link(
@@ -26,6 +38,13 @@ Ecto.Migrator.up(
   Legion.Test.Support.PostgresRepo,
   20_260_723_100_815,
   Legion.Test.Support.LegionAgentsMigration,
+  log: false
+)
+
+Ecto.Migrator.up(
+  Legion.Test.Support.PostgresRepo,
+  Legion.Test.Support.LegionRateLimiterMigration.version(),
+  Legion.Test.Support.LegionRateLimiterMigration,
   log: false
 )
 

@@ -4,6 +4,7 @@
 
 ### Changes
 
+- Add `Legion.RateLimiter` for applying rolling agent and token limits, with a Postgres adapter that extends `Legion.Store.Postgres` and a matching migration
 - Make sandboxes pluggable: `Legion.Sandbox` is now a behaviour selected per agent (or globally) with the `sandbox` config key, opening the door to sandboxes such as [popcorn](https://github.com/software-mansion/popcorn/) in the user's browser. The Elixir implementation moved to `Legion.Sandbox.Elixir`, and the process isolation with timeout / memory / CPU budgets was extracted to `Legion.Sandbox.Runner`, shared by all sandboxes
 - Add `Legion.Sandbox.Lua` - agents write Lua evaluated by [lua](https://hexdocs.pm/lua), a Lua 5.3 VM in pure Elixir. Generated code cannot reach the host BEAM at all (no AST allowlist to escape); tools are bridged in as global Lua tables with values converted at the boundary
 - Make `Legion.Sandbox.Lua` the default sandbox. Agents now write Lua unless configured otherwise; set `sandbox: Legion.Sandbox.Elixir` (per agent or globally) to keep agents writing Elixir. Note that only `Legion.Tool` modules are callable from Lua - plain modules passed as tools (e.g. `Jason`) are reference-only there
