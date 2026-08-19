@@ -18,7 +18,13 @@ defmodule Legion.Store.PostgresDbTest do
     payload = %Payload{
       agent_id: "usage-jsonb",
       usage: [
-        %{input_tokens: 12, output_tokens: 5, turn_usage: 17, tool_usage: %{web_search: 1}},
+        %{
+          input_tokens: 12,
+          output_tokens: 5,
+          turn_usage: 17,
+          tool_usage: %{web_search: 1},
+          at: 1_786_000_000_000
+        },
         %{input_tokens: 7, output_tokens: 3, turn_usage: 10}
       ]
     }
@@ -32,7 +38,8 @@ defmodule Legion.Store.PostgresDbTest do
                   "input_tokens" => 12,
                   "output_tokens" => 5,
                   "turn_usage" => 17,
-                  "tool_usage" => %{"web_search" => 1}
+                  "tool_usage" => %{"web_search" => 1},
+                  "at" => 1_786_000_000_000
                 },
                 %{"input_tokens" => 7, "output_tokens" => 3, "turn_usage" => 10}
               ]

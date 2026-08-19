@@ -246,7 +246,12 @@ defmodule Legion.Executor do
   end
 
   defp handle_llm_response(response, messages, turn_usage) do
-    turn_usage = turn_usage ++ [normalize_usage(response.usage)]
+    usage =
+      response.usage
+      |> normalize_usage()
+      |> Map.put("at", System.system_time(:millisecond))
+
+    turn_usage = turn_usage ++ [usage]
 
     case extract_object(response) do
       {:ok, action} when is_map(action) ->

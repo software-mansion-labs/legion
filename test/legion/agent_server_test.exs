@@ -618,7 +618,7 @@ defmodule Legion.AgentServerTest do
       refute Enum.any?(messages, &(&1.role == "system"))
     end
 
-    test "accumulates string-keyed usage across turns" do
+    test "accumulates timestamped, string-keyed usage across turns" do
       call_count = :counters.new(1, [:atomics])
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
@@ -635,7 +635,13 @@ defmodule Legion.AgentServerTest do
       assert {:ok, "second"} = Legion.call(pid, "second turn")
 
       assert {:ok, payload} = MemoryStore.get("usage-turns")
-      assert Map.get(payload, :usage) == [%{"turn_usage" => 7}, %{"turn_usage" => 11}]
+
+      assert [
+               %{"turn_usage" => 7, "at" => first_timestamp},
+               %{"turn_usage" => 11, "at" => second_timestamp}
+             ] = Map.fetch!(payload, :usage)
+
+      assert first_timestamp <= second_timestamp
     end
 
     test "restored conversations add only new invocation usage" do
@@ -653,8 +659,11 @@ defmodule Legion.AgentServerTest do
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-restore")
       assert {:ok, "new work"} = Legion.call(pid, "continue")
 
-      assert {:ok, %Payload{usage: [%{turn_usage: 100}, %{"turn_usage" => 20}]}} =
+      assert {:ok,
+              %Payload{usage: [%{turn_usage: 100}, %{"turn_usage" => 20, "at" => timestamp}]}} =
                MemoryStore.get("usage-restore")
+
+      assert is_integer(timestamp)
     end
 
     test "does not update usage when globally disabled" do
