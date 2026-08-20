@@ -52,6 +52,15 @@ defmodule Legion.Telemetry do
   - `[:legion, :eval_guard, :denied]` — a guard refused generated code
     - Metadata: `%{agent: module, agent_id: String.t(), guard: module, code: String.t(), reason: String.t()}`
 
+  ## Rate Limit Events
+
+  - `[:legion, :rate_limit, :exceeded]` — a rate limiter refused a turn before
+    it started; the turn is cancelled with `{:rate_limited, violations}`
+    - Measurements: `%{system_time: NaiveDateTime.t()}`
+    - Metadata: `%{agent: module, agent_id: String.t(), key: map, policy:
+      Legion.RateLimiter.Policy.t(), usage: map, violations: [atom]}`
+    - `violations` names the limits that were reached, e.g. `[:max_tokens]`.
+
   ## Default Logger
 
   A default logger is provided that outputs human-readable telemetry to `Logger`.

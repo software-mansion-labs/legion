@@ -33,4 +33,39 @@ defmodule Legion.RateLimiter.Policy do
           max_agents: pos_integer() | nil,
           max_tokens: non_neg_integer() | nil
         }
+
+  @doc """
+  Returns `:ok` when `policy` is a usable policy.
+
+  Raises `ArgumentError` naming the offending field otherwise. Legion calls
+  this when an agent starts, so a misconfigured policy fails at the agent that
+  configured it rather than at the first limit evaluation.
+  """
+  def validate!(%__MODULE__{} = policy) do
+    validate_interval!(policy.interval_ms)
+    validate_limit!(:max_agents, policy.max_agents)
+    validate_limit!(:max_tokens, policy.max_tokens)
+
+    :ok
+  end
+
+  def validate!(other) do
+    raise ArgumentError,
+          "expected a #{inspect(__MODULE__)} struct, got: #{inspect(other)}"
+  end
+
+  defp validate_interval!(interval_ms) when is_integer(interval_ms) and interval_ms > 0, do: :ok
+
+  defp validate_interval!(other) do
+    raise ArgumentError,
+          "expected :interval_ms to be a positive integer, got: #{inspect(other)}"
+  end
+
+  defp validate_limit!(_name, nil), do: :ok
+  defp validate_limit!(_name, limit) when is_integer(limit) and limit >= 0, do: :ok
+
+  defp validate_limit!(name, other) do
+    raise ArgumentError,
+          "expected #{inspect(name)} to be a non-negative integer or nil, got: #{inspect(other)}"
+  end
 end

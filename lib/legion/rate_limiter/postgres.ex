@@ -3,9 +3,8 @@ defmodule Legion.RateLimiter.Postgres do
   A Postgres-backed `Legion.RateLimiter` extending `Legion.Store.Postgres`.
 
   This adapter depends on an existing `Legion.Store.Postgres` configuration.
-  It stores rate-limit metadata and reads agent start times and persisted usage
-  from that store's table. Configure the store first, then define a rate
-  limiter using the same Ecto repo and table:
+  It stores rate-limit metadata in that store's table and reads persisted usage from it.
+  Configure the store first, then define a rate limiter using the same Ecto repo and table:
 
       defmodule MyApp.AgentStore do
         use Legion.Store.Postgres, repo: MyApp.Repo
@@ -15,14 +14,14 @@ defmodule Legion.RateLimiter.Postgres do
         use Legion.RateLimiter.Postgres, repo: MyApp.Repo
       end
 
-  After the Store migration is in place, add the rate-limiter migration. Roll
-  it back before rolling back the Store migration:
+  The Store migration creates the rate-limit metadata column and its GIN index.
+  No separate rate-limiter migration is required:
 
-      defmodule MyApp.Repo.Migrations.AddLegionRateLimiter do
+      defmodule MyApp.Repo.Migrations.AddLegionAgents do
         use Ecto.Migration
 
-        def up, do: Legion.RateLimiter.Migration.Postgres.up()
-        def down, do: Legion.RateLimiter.Migration.Postgres.down()
+        def up, do: Legion.Store.Migration.Postgres.up()
+        def down, do: Legion.Store.Migration.Postgres.down()
       end
 
   Call the generated limiter before admitting work:
@@ -48,9 +47,12 @@ defmodule Legion.RateLimiter.Postgres do
 
   The adapter includes the currently admitted agent when it evaluates
   `:max_agents`, so it raises only when that call would make the matching count
-  exceed the configured maximum. `:max_tokens` is evaluated from recorded
-  `"total_tokens"` usage whose `"at"` timestamp falls inside the policy's
-  interval; once that total reaches the configured maximum, later calls raise.
+  exceed the configured maximum. Agents are counted by `started_at`, with a
+  `NULL` value treated as now.
+
+  `:max_tokens` is evaluated from recorded `"total_tokens"` usage whose `"at"`
+  timestamp falls inside the policy's interval; once that total reaches the
+  configured maximum, later calls raise.
 
   Token limits require Legion usage tracking, which is enabled by default. If
   your application configures `config :legion, :track_usage, false`, leave
@@ -60,7 +62,7 @@ defmodule Legion.RateLimiter.Postgres do
 
     * `:repo` (required) - the Ecto repo used by the configured store.
     * `:table` - the shared Store table name, defaulting to `"legion_agents"`.
-      It must also be passed to both Store and rate-limiter migrations.
+      It must also be passed to the Store migration.
   """
 
   alias Legion.RateLimiter.ExceededError
@@ -114,12 +116,7 @@ defmodule Legion.RateLimiter.Postgres do
   defp count_agents(_repo, _table, _meta, %{max_agents: nil}, _now), do: nil
 
   defp count_agents(repo, table, meta, policy, now) do
-    cutoff =
-      now
-      |> DateTime.add(-policy.interval_ms, :millisecond)
-      |> DateTime.to_naive()
-
-    scalar!(repo, count_agents_sql(table), [meta, cutoff])
+    scalar!(repo, count_agents_sql(table), [meta, naive_cutoff(now, policy)])
   end
 
   defp sum_tokens(_repo, _table, _meta, %{max_tokens: nil}, _now), do: nil
@@ -127,7 +124,13 @@ defmodule Legion.RateLimiter.Postgres do
   defp sum_tokens(repo, table, meta, policy, now) do
     cutoff = DateTime.to_unix(now, :millisecond) - policy.interval_ms
 
-    scalar!(repo, sum_tokens_sql(table), [meta, cutoff])
+    scalar!(repo, sum_tokens_sql(table), [meta, cutoff, naive_cutoff(now, policy)])
+  end
+
+  defp naive_cutoff(now, policy) do
+    now
+    |> DateTime.add(-policy.interval_ms, :millisecond)
+    |> DateTime.to_naive()
   end
 
   defp scalar!(repo, sql, params) do
@@ -139,14 +142,12 @@ defmodule Legion.RateLimiter.Postgres do
     """
     INSERT INTO #{table} AS agent (
       agent_id,
-      limit_meta,
-      started_at
+      limit_meta
     )
-    VALUES ($1, $2::jsonb, NOW() AT TIME ZONE 'UTC')
+    VALUES ($1, $2::jsonb)
     ON CONFLICT (agent_id) DO UPDATE
     SET
-      limit_meta = EXCLUDED.limit_meta,
-      started_at = COALESCE(agent.started_at, EXCLUDED.started_at)
+      limit_meta = EXCLUDED.limit_meta
     """
   end
 
@@ -155,7 +156,7 @@ defmodule Legion.RateLimiter.Postgres do
     SELECT count(*)::bigint
     FROM #{table}
     WHERE limit_meta @> $1::jsonb
-      AND started_at >= $2
+      AND coalesce(started_at, now() AT TIME ZONE 'UTC') >= $2
     """
   end
 
@@ -165,6 +166,7 @@ defmodule Legion.RateLimiter.Postgres do
     FROM #{table} AS agent
     CROSS JOIN unnest(agent.usage) AS entry(value)
     WHERE agent.limit_meta @> $1::jsonb
+      AND agent.updated_at >= $3
       AND (entry.value->>'at')::bigint >= $2
     """
   end
@@ -199,9 +201,11 @@ defmodule Legion.RateLimiter.Postgres do
     quote do
       @behaviour Legion.RateLimiter
 
+      alias Legion.RateLimiter
+
       @impl Legion.RateLimiter
       def enforce!(agent_id, key, policy) do
-        Legion.RateLimiter.Postgres.enforce!(
+        RateLimiter.Postgres.enforce!(
           unquote(repo),
           unquote(table),
           agent_id,

@@ -2,9 +2,51 @@ defmodule Legion.RateLimiter do
   @moduledoc """
   Behaviour for enforcing rate limits across Legion agents.
 
-  A rate limiter decides whether an agent may proceed under a `Policy`. Call
-  `enforce!/3` at the point where work should be admitted, passing the agent's
-  stable id, a map that identifies its cohort, and the policy to apply:
+  A rate limiter decides whether an agent may proceed under a `Policy`. Legion
+  calls `enforce!/3` for you: configure a limiter, a policy, and a key, and
+  every turn is admitted through it.
+
+      Legion.start_link(ChatAgent,
+        rate_limiter: MyApp.RateLimiter,
+        rate_limit_policy: %Legion.RateLimiter.Policy{
+          interval_ms: :timer.minutes(1),
+          max_agents: 10,
+          max_tokens: 100_000
+        },
+        rate_limit_key: %{provider: "openai"}
+      )
+
+  Set the same three options globally to limit every agent:
+
+      config :legion, :rate_limiter, MyApp.RateLimiter
+      config :legion, :rate_limit_policy, policy
+      config :legion, :rate_limit_key, %{provider: "openai"}
+
+  All three must be present for a limit to apply; leaving any of them `nil`
+  disables rate limiting. Options given to `Legion.start_link/2` win over the
+  application environment, and sub-agents inherit whatever their parent
+  resolved unless given their own.
+
+  ## When Legion enforces
+
+  Enforcement happens once per turn, before the incoming message is appended
+  and before any LLM request. A refusal therefore leaves the conversation
+  untouched and costs nothing.
+
+  Refused turns return `{:cancel, {:rate_limited, violations}}` - the same
+  shape as `{:cancel, :reached_max_iterations}` - so a refused sub-agent
+  reports back to its caller as a value rather than a crash. Legion also emits
+  `[:legion, :rate_limit, :exceeded]`; see `Legion.Telemetry`.
+
+  Resumed and recovered runs are *not* re-admitted. They are finishing work
+  that was already admitted, so re-checking them would discard accepted work
+  instead of shedding new load.
+
+  ## Calling it yourself
+
+  `enforce!/3` is public, so an application can also admit its own work under
+  the same policy - a webhook, a queue worker - by passing a stable id, a map
+  that identifies the cohort, and the policy:
 
       :ok = MyApp.RateLimiter.enforce!(agent_id, %{provider: "openai"}, policy)
 
@@ -42,7 +84,9 @@ defmodule Legion.RateLimiter do
   keys match and how it stores rate-limit state.
 
   Raises `Legion.RateLimiter.ExceededError` when any configured limit has
-  been reached.
+  been reached. Legion catches that exception and cancels the turn; any other
+  error propagates, so an adapter that cannot reach its backing store fails
+  the agent rather than silently admitting it.
   """
   @callback enforce!(agent_id :: Store.agent_id(), key :: limit_key(), policy :: Policy.t()) ::
               :ok | no_return()

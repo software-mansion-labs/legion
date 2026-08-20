@@ -24,6 +24,9 @@ defmodule Legion.Store.Postgres do
         def down, do: Legion.Store.Migration.Postgres.down()
       end
 
+  The Store migration also creates the `limit_meta` column and GIN index used
+  by `Legion.RateLimiter.Postgres`; no additional migration is needed.
+
   Then start agents with it:
 
       {:ok, pid} = Legion.start_link(AssistantAgent, store: MyApp.AgentStore, agent_id: "user_42")

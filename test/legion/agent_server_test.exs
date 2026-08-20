@@ -4,9 +4,32 @@ defmodule Legion.AgentServerTest do
 
   import ExUnit.CaptureLog
 
+  alias Legion.RateLimiter.ExceededError
+  alias Legion.RateLimiter.Policy
   alias Legion.Store.Payload
   alias Legion.Test.Support.MathAgent
   alias ReqLLM.Message.ContentPart
+
+  defmodule TestRateLimiter do
+    @moduledoc "Limiter whose verdict and observer both travel in the key."
+    @behaviour Legion.RateLimiter
+
+    @impl Legion.RateLimiter
+    def enforce!(agent_id, key, policy) do
+      if pid = key[:report_to], do: send(pid, {:enforced, agent_id, key, policy})
+
+      if key[:verdict] == :reject do
+        raise ExceededError,
+          agent_id: agent_id,
+          key: key,
+          policy: policy,
+          usage: %{agents: 3, tokens: nil},
+          violations: [:max_agents]
+      end
+
+      :ok
+    end
+  end
 
   defmodule ConversationBindingsAgent do
     @moduledoc "Agent with bindings persisted across the whole conversation."
@@ -1421,6 +1444,134 @@ defmodule Legion.AgentServerTest do
       [%{role: "system", content: system_prompt} | _] = Legion.get_messages(pid)
 
       assert system_prompt == "completely custom prompt"
+    end
+  end
+
+  defp allowing_key(test_pid), do: %{report_to: test_pid}
+  defp rejecting_key(test_pid), do: %{report_to: test_pid, verdict: :reject}
+
+  defp limit_policy, do: %Policy{interval_ms: 60_000, max_agents: 2}
+
+  defp limited(opts) do
+    Keyword.merge([rate_limiter: TestRateLimiter, rate_limit_policy: limit_policy()], opts)
+  end
+
+  describe "rate limiting" do
+    setup do
+      start_supervised!(%{id: MemoryStore, start: {MemoryStore, :start_link, []}})
+      :ok
+    end
+
+    test "cancels the turn when the limiter rejects it" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, limited(rate_limit_key: rejecting_key(self())))
+
+      assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
+    end
+
+    test "leaves the conversation untouched when the limiter rejects the turn" do
+      test_pid = self()
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        send(test_pid, :llm_called)
+        llm_response("ok")
+      end)
+
+      {:ok, pid} =
+        Legion.start_link(
+          MathAgent,
+          limited(rate_limit_key: rejecting_key(self()), store: MemoryStore, agent_id: "rejected")
+        )
+
+      assert {:cancel, {:rate_limited, _}} = Legion.call(pid, "hi")
+
+      refute_receive :llm_called
+      assert [%{role: "system"}] = Legion.get_messages(pid)
+      assert {:ok, %Payload{conversation_state: nil}} = MemoryStore.get("rejected")
+    end
+
+    test "runs the turn when no limiter is configured" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, rate_limit_key: rejecting_key(self()))
+
+      assert {:ok, "ok"} = Legion.call(pid, "hi")
+      refute_receive {:enforced, _, _, _}
+    end
+
+    test "runs the turn when a limiter is configured without a policy or key" do
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, rate_limiter: TestRateLimiter)
+
+      assert {:ok, "ok"} = Legion.call(pid, "hi")
+      refute_receive {:enforced, _, _, _}
+    end
+
+    test "emits telemetry when a turn is rejected" do
+      handler = {__MODULE__, :rate_limit_telemetry, System.unique_integer()}
+      test_pid = self()
+
+      :telemetry.attach(
+        handler,
+        [:legion, :rate_limit, :exceeded],
+        fn event, measurements, metadata, _config ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, limited(rate_limit_key: rejecting_key(self())))
+      agent_id = Legion.get_agent_id(pid)
+
+      {:cancel, _} = Legion.call(pid, "hi")
+
+      assert_receive {:telemetry, [:legion, :rate_limit, :exceeded], _measurements, metadata}
+      assert metadata.agent == MathAgent
+      assert metadata.agent_id == agent_id
+      assert metadata.violations == [:max_agents]
+      assert metadata.policy == limit_policy()
+    end
+
+    test "sub-agents inherit the limiter, its policy, and its key" do
+      key = allowing_key(self())
+
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        if Enum.any?(messages, &(&1[:role] == "assistant")) do
+          llm_response("child done")
+        else
+          llm_eval_response("""
+          response = AgentTool.call(ChildAgent, "do work")
+          return response[2]
+          """)
+        end
+      end)
+
+      {:ok, pid} = Legion.start_link(DelegatingAgent, limited(rate_limit_key: key))
+      parent_id = Legion.get_agent_id(pid)
+      policy = limit_policy()
+
+      {:ok, _} = Legion.call(pid, "delegate")
+
+      assert_receive {:enforced, ^parent_id, ^key, ^policy}
+      assert_receive {:enforced, child_id, ^key, ^policy}
+      assert child_id != parent_id
+    end
+
+    test "rejects an invalid policy when the agent starts" do
+      assert_raise ArgumentError, ~r/:interval_ms/, fn ->
+        Legion.start_link(
+          MathAgent,
+          rate_limiter: TestRateLimiter,
+          rate_limit_policy: %Policy{interval_ms: 0},
+          rate_limit_key: allowing_key(self())
+        )
+      end
     end
   end
 end

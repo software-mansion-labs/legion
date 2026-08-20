@@ -64,8 +64,7 @@ defmodule Legion.MixProject do
       "Rate Limiting": [
         Legion.RateLimiter,
         Legion.RateLimiter.Policy,
-        Legion.RateLimiter.Postgres,
-        Legion.RateLimiter.Migration.Postgres
+        Legion.RateLimiter.Postgres
       ],
       Runtime: [Legion.AgentServer, Legion.Executor, Legion.Recovery, ~r/^Legion\.Sandbox/],
       Tools: [~r/^Legion\.Tools\./],

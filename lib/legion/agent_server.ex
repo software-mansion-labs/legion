@@ -15,6 +15,8 @@ defmodule Legion.AgentServer do
   require Logger
 
   alias Legion.{Executor, Store, Telemetry}
+  alias Legion.RateLimiter
+  alias Legion.RateLimiter.ExceededError
   alias Legion.Store.Payload
   alias ReqLLM.Message.ContentPart
 
@@ -49,6 +51,7 @@ defmodule Legion.AgentServer do
 
   defp start_args(agent_module, opts) do
     {store, opts} = Keyword.pop(opts, :store)
+    {rate_limit, opts} = build_rate_limit(opts)
     {agent_id, opts} = Keyword.pop(opts, :agent_id)
 
     store = store || Vault.get(:store) || Application.get_env(:legion, :store)
@@ -74,9 +77,31 @@ defmodule Legion.AgentServer do
     track_usage = Application.get_env(:legion, :track_usage, true)
 
     gen_opts = [name: Legion.AgentIndex.name(agent_id)]
-    config = resolve_config(agent_module, opts)
+    config = agent_module |> resolve_config(opts) |> Map.put(:rate_limit, rate_limit)
 
     {{agent_module, config, store, agent_id, persistence_frequency, track_usage}, gen_opts}
+  end
+
+  defp build_rate_limit(opts) do
+    {rate_limiter, opts} = Keyword.pop(opts, :rate_limiter)
+    {rate_limit_policy, opts} = Keyword.pop(opts, :rate_limit_policy)
+    {rate_limit_key, opts} = Keyword.pop(opts, :rate_limit_key)
+
+    rate_limit = %{
+      rate_limiter:
+        rate_limiter || Vault.get(:rate_limiter) || Application.get_env(:legion, :rate_limiter),
+      rate_limit_policy:
+        rate_limit_policy || Vault.get(:rate_limit_policy) ||
+          Application.get_env(:legion, :rate_limit_policy),
+      rate_limit_key:
+        rate_limit_key || Vault.get(:rate_limit_key) ||
+          Application.get_env(:legion, :rate_limit_key)
+    }
+
+    if rate_limit.rate_limit_policy,
+      do: RateLimiter.Policy.validate!(rate_limit.rate_limit_policy)
+
+    {rate_limit, opts}
   end
 
   def call(agent, message, timeout \\ :infinity) do
@@ -110,13 +135,9 @@ defmodule Legion.AgentServer do
       Vault.unsafe_put(tool, agent_module.tool_config(tool))
     end
 
-    system_prompt = Legion.AgentPrompt.system_prompt(agent_module, config)
+    Vault.unsafe_merge(Map.to_list(config.rate_limit))
 
-    Telemetry.emit(
-      [:legion, :agent, :started],
-      %{system_time: NaiveDateTime.utc_now()},
-      %{agent: agent_module}
-    )
+    system_prompt = Legion.AgentPrompt.system_prompt(agent_module, config)
 
     {saved_messages, saved_bindings, saved_executor_state, saved_usage} =
       case store && store.get(agent_id) do
@@ -221,18 +242,60 @@ defmodule Legion.AgentServer do
     - anything else - rendered via `inspect/2`
   """
   def handle_message(message, state) do
-    content = stringify(message, state.config[:max_message_length])
+    case enforce_rate_limit(state) do
+      :ok ->
+        content = stringify(message, state.config[:max_message_length])
 
-    # Persist the user message before the turn runs so store-backed views
-    # (e.g. the legion_web database source) show it without waiting for the
-    # response.
-    state =
-      state
-      |> Map.update!(:messages, &(&1 ++ [Executor.message(:user, content)]))
-      |> persist([:conversation_state, status: :running])
+        # Persist the user message before the turn runs so store-backed views
+        # (e.g. the legion_web database source) show it without waiting for the
+        # response.
+        state =
+          state
+          |> Map.update!(:messages, &(&1 ++ [Executor.message(:user, content)]))
+          |> persist([
+            :conversation_state,
+            status: :running
+          ])
 
-    do_run(state)
+        do_run(state)
+
+      {:rate_limited, violations} ->
+        {{:cancel, {:rate_limited, violations}}, state}
+    end
   end
+
+  defp enforce_rate_limit(
+         %{
+           config: %{
+             rate_limit: %{
+               rate_limiter: limiter,
+               rate_limit_policy: policy,
+               rate_limit_key: key
+             }
+           }
+         } = state
+       )
+       when not is_nil(limiter) and not is_nil(policy) and not is_nil(key) do
+    :ok = limiter.enforce!(state.agent_id, key, policy)
+    :ok
+  rescue
+    error in ExceededError ->
+      Telemetry.emit(
+        [:legion, :rate_limit, :exceeded],
+        %{system_time: NaiveDateTime.utc_now()},
+        %{
+          agent: state.agent_module,
+          key: error.key,
+          policy: error.policy,
+          usage: error.usage,
+          violations: error.violations
+        }
+      )
+
+      {:rate_limited, error.violations}
+  end
+
+  defp enforce_rate_limit(_state), do: :ok
 
   defp do_run(state, executor_state \\ :nonexistent) do
     conversation_scope? = Map.get(state.config, :binding_scope, :turn) == :conversation
