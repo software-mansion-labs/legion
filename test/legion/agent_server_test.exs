@@ -1453,7 +1453,13 @@ defmodule Legion.AgentServerTest do
   defp limit_policy, do: %Policy{interval_ms: 60_000, max_agents: 2}
 
   defp limited(opts) do
-    Keyword.merge([rate_limiter: TestRateLimiter, rate_limit_policy: limit_policy()], opts)
+    {rate_limit, opts} = Keyword.pop(opts, :rate_limit, [])
+
+    Keyword.put(
+      opts,
+      :rate_limit,
+      Keyword.merge([limiter: TestRateLimiter, policy: limit_policy()], rate_limit)
+    )
   end
 
   describe "rate limiting" do
@@ -1465,7 +1471,7 @@ defmodule Legion.AgentServerTest do
     test "cancels the turn when the limiter rejects it" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, limited(rate_limit_key: rejecting_key(self())))
+      {:ok, pid} = Legion.start_link(MathAgent, limited(rate_limit: [key: rejecting_key(self())]))
 
       assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
     end
@@ -1481,7 +1487,11 @@ defmodule Legion.AgentServerTest do
       {:ok, pid} =
         Legion.start_link(
           MathAgent,
-          limited(rate_limit_key: rejecting_key(self()), store: MemoryStore, agent_id: "rejected")
+          limited(
+            rate_limit: [key: rejecting_key(self())],
+            store: MemoryStore,
+            agent_id: "rejected"
+          )
         )
 
       assert {:cancel, {:rate_limited, _}} = Legion.call(pid, "hi")
@@ -1494,7 +1504,7 @@ defmodule Legion.AgentServerTest do
     test "runs the turn when no limiter is configured" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, rate_limit_key: rejecting_key(self()))
+      {:ok, pid} = Legion.start_link(MathAgent, rate_limit: [key: rejecting_key(self())])
 
       assert {:ok, "ok"} = Legion.call(pid, "hi")
       refute_receive {:enforced, _, _, _}
@@ -1503,7 +1513,7 @@ defmodule Legion.AgentServerTest do
     test "runs the turn when a limiter is configured without a policy or key" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, rate_limiter: TestRateLimiter)
+      {:ok, pid} = Legion.start_link(MathAgent, rate_limit: [limiter: TestRateLimiter])
 
       assert {:ok, "ok"} = Legion.call(pid, "hi")
       refute_receive {:enforced, _, _, _}
@@ -1526,7 +1536,7 @@ defmodule Legion.AgentServerTest do
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, limited(rate_limit_key: rejecting_key(self())))
+      {:ok, pid} = Legion.start_link(MathAgent, limited(rate_limit: [key: rejecting_key(self())]))
       agent_id = Legion.get_agent_id(pid)
 
       {:cancel, _} = Legion.call(pid, "hi")
@@ -1552,7 +1562,7 @@ defmodule Legion.AgentServerTest do
         end
       end)
 
-      {:ok, pid} = Legion.start_link(DelegatingAgent, limited(rate_limit_key: key))
+      {:ok, pid} = Legion.start_link(DelegatingAgent, limited(rate_limit: [key: key]))
       parent_id = Legion.get_agent_id(pid)
       policy = limit_policy()
 
@@ -1567,11 +1577,26 @@ defmodule Legion.AgentServerTest do
       assert_raise ArgumentError, ~r/:interval_ms/, fn ->
         Legion.start_link(
           MathAgent,
-          rate_limiter: TestRateLimiter,
-          rate_limit_policy: %Policy{interval_ms: 0},
-          rate_limit_key: allowing_key(self())
+          rate_limit: [
+            limiter: TestRateLimiter,
+            policy: %Policy{interval_ms: 0},
+            key: allowing_key(self())
+          ]
         )
       end
+    end
+
+    test "merges an agent key with application rate-limit defaults" do
+      Application.put_env(:legion, :rate_limit,
+        limiter: TestRateLimiter,
+        policy: limit_policy()
+      )
+
+      on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, rate_limit: [key: rejecting_key(self())])
+
+      assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
     end
   end
 end

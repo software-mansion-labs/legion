@@ -32,14 +32,19 @@ defmodule Legion.RateLimiter.Postgres do
         max_tokens: 100_000
       }
 
-      :ok = MyApp.RateLimiter.enforce!(agent_id, %{provider: "openai"}, policy)
+      :ok = MyApp.RateLimiter.enforce!(agent_id, %{ip: "203.0.113.42"}, policy)
+
+  For concurrent admission, note that `:max_agents` is not concurrency-safe:
+  simultaneous transactions count only rows committed before they started and
+  may collectively exceed the configured maximum. Rejected calls are rolled
+  back, leaving metadata only for admitted calls.
 
   ## Key matching
 
   Keys are stored as JSON metadata and matched with Postgres JSON containment.
   A broad key therefore includes metadata with additional fields. For example,
-  `%{provider: "openai"}` matches an agent recorded with
-  `%{provider: "openai", tenant: "acme"}`. Calling `enforce!/3` again for
+  `%{ip: "203.0.113.42"}` matches an agent recorded with
+  `%{ip: "203.0.113.42", tenant: "acme"}`. Calling `enforce!/3` again for
   the same agent replaces its stored key while retaining its original start
   time.
 
@@ -47,8 +52,7 @@ defmodule Legion.RateLimiter.Postgres do
 
   The adapter includes the currently admitted agent when it evaluates
   `:max_agents`, so it raises only when that call would make the matching count
-  exceed the configured maximum. Agents are counted by `started_at`, with a
-  `NULL` value treated as now.
+  exceed the configured maximum. Agents are counted by `started_at`.
 
   `:max_tokens` is evaluated from recorded `"total_tokens"` usage whose `"at"`
   timestamp falls inside the policy's interval; once that total reaches the
@@ -66,23 +70,23 @@ defmodule Legion.RateLimiter.Postgres do
   """
 
   alias Legion.RateLimiter.ExceededError
+  alias Legion.RateLimiter.Policy
 
   @doc false
-  def enforce!(repo, table, agent_id, key, policy)
-      when is_binary(agent_id) and is_map(key) and is_map(policy) do
-    meta = stringify_keys(key)
-
+  def enforce!(repo, record, agent_id, rate_limit_key, %Policy{} = policy)
+      when is_binary(agent_id) and is_map(rate_limit_key) do
     {:ok, :ok} =
       repo.transaction(fn ->
-        upsert_metadata(repo, table, agent_id, meta)
+        upsert_metadata(repo, record, agent_id, rate_limit_key)
 
-        usage = fetch_usage(repo, table, meta, policy)
+        usage = fetch_usage(repo, record, rate_limit_key, policy)
+
         violations = find_violations(usage, policy)
 
         if violations != [] do
           raise ExceededError,
             agent_id: agent_id,
-            key: key,
+            key: rate_limit_key,
             policy: policy,
             usage: usage,
             violations: violations
@@ -94,37 +98,82 @@ defmodule Legion.RateLimiter.Postgres do
     :ok
   end
 
-  def enforce!(_repo, _table, agent_id, key, policy) do
+  def enforce!(_repo, _record, agent_id, key, policy) do
     raise ArgumentError,
           "invalid rate-limit arguments: " <>
             "#{inspect(agent_id)}, #{inspect(key)}, #{inspect(policy)}"
   end
 
-  defp upsert_metadata(repo, table, agent_id, meta) do
-    repo.query!(upsert_metadata_sql(table), [agent_id, meta])
+  defp upsert_metadata(repo, record, agent_id, meta) do
+    {1, _} =
+      repo.insert_all(
+        record,
+        [
+          %{
+            agent_id: agent_id,
+            ratelimit_metadata: meta,
+            started_at: NaiveDateTime.utc_now()
+          }
+        ],
+        conflict_target: :agent_id,
+        on_conflict: [set: [ratelimit_metadata: meta]]
+      )
+
+    :ok
   end
 
-  defp fetch_usage(repo, table, meta, policy) do
+  defp fetch_usage(repo, record, meta, policy) do
     now = DateTime.utc_now()
 
     %{
-      agents: count_agents(repo, table, meta, policy, now),
-      tokens: sum_tokens(repo, table, meta, policy, now)
+      agents: count_agents(repo, record, meta, policy, now),
+      tokens: sum_tokens(repo, record, meta, policy, now)
     }
   end
 
-  defp count_agents(_repo, _table, _meta, %{max_agents: nil}, _now), do: nil
+  defp count_agents(_repo, _record, _meta, %{max_agents: nil}, _now), do: nil
 
-  defp count_agents(repo, table, meta, policy, now) do
-    scalar!(repo, count_agents_sql(table), [meta, naive_cutoff(now, policy)])
+  defp count_agents(repo, record, meta, policy, now) do
+    import Ecto.Query
+
+    from(agent in record,
+      where:
+        fragment(
+          "? @> ?::jsonb",
+          agent.ratelimit_metadata,
+          type(^meta, :map)
+        ),
+      where: agent.started_at >= ^naive_cutoff(now, policy),
+      select: count(agent.agent_id)
+    )
+    |> repo.one()
   end
 
-  defp sum_tokens(_repo, _table, _meta, %{max_tokens: nil}, _now), do: nil
+  defp sum_tokens(_repo, _record, _meta, %{max_tokens: nil}, _now), do: nil
 
-  defp sum_tokens(repo, table, meta, policy, now) do
+  defp sum_tokens(repo, record, meta, policy, now) do
+    import Ecto.Query
+
     cutoff = DateTime.to_unix(now, :millisecond) - policy.interval_ms
 
-    scalar!(repo, sum_tokens_sql(table), [meta, cutoff, naive_cutoff(now, policy)])
+    from(agent in record,
+      inner_lateral_join: entry in fragment("SELECT unnest(?) AS value", agent.usage),
+      on: true,
+      where:
+        fragment(
+          "? @> ?::jsonb",
+          agent.ratelimit_metadata,
+          type(^meta, :map)
+        ),
+      where: fragment("(?->>'at')::bigint >= ?", field(entry, :value), ^cutoff),
+      where: agent.updated_at >= ^naive_cutoff(now, policy),
+      select:
+        fragment(
+          "coalesce(sum((?->>'total_tokens')::bigint), 0)::bigint",
+          field(entry, :value)
+        )
+    )
+    |> repo.one()
   end
 
   defp naive_cutoff(now, policy) do
@@ -133,66 +182,13 @@ defmodule Legion.RateLimiter.Postgres do
     |> DateTime.to_naive()
   end
 
-  defp scalar!(repo, sql, params) do
-    %{rows: [[value]]} = repo.query!(sql, params)
-    value
-  end
-
-  defp upsert_metadata_sql(table) do
-    """
-    INSERT INTO #{table} AS agent (
-      agent_id,
-      limit_meta
-    )
-    VALUES ($1, $2::jsonb)
-    ON CONFLICT (agent_id) DO UPDATE
-    SET
-      limit_meta = EXCLUDED.limit_meta
-    """
-  end
-
-  defp count_agents_sql(table) do
-    """
-    SELECT count(*)::bigint
-    FROM #{table}
-    WHERE limit_meta @> $1::jsonb
-      AND coalesce(started_at, now() AT TIME ZONE 'UTC') >= $2
-    """
-  end
-
-  defp sum_tokens_sql(table) do
-    """
-    SELECT coalesce(sum((entry.value->>'total_tokens')::bigint), 0)::bigint
-    FROM #{table} AS agent
-    CROSS JOIN unnest(agent.usage) AS entry(value)
-    WHERE agent.limit_meta @> $1::jsonb
-      AND agent.updated_at >= $3
-      AND (entry.value->>'at')::bigint >= $2
-    """
-  end
-
   defp find_violations(usage, policy) do
-    []
-    |> maybe_add_violation(:max_agents, policy.max_agents, usage)
-    |> maybe_add_violation(:max_tokens, policy.max_tokens, usage)
+    for {name, true} <- %{
+          max_agents: usage.agents != nil and usage.agents > policy.max_agents,
+          max_tokens: usage.tokens != nil and usage.tokens >= policy.max_tokens
+        },
+        do: name
   end
-
-  defp maybe_add_violation(violations, _name, nil, _usage), do: violations
-
-  defp maybe_add_violation(violations, :max_agents, limit, usage) do
-    if usage.agents > limit, do: violations ++ [:max_agents], else: violations
-  end
-
-  defp maybe_add_violation(violations, :max_tokens, limit, usage) do
-    if usage.tokens >= limit, do: violations ++ [:max_tokens], else: violations
-  end
-
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn {key, value} -> {to_string(key), stringify_keys(value)} end)
-  end
-
-  defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
-  defp stringify_keys(value), do: value
 
   defmacro __using__(opts) do
     repo = Keyword.fetch!(opts, :repo)
@@ -203,11 +199,26 @@ defmodule Legion.RateLimiter.Postgres do
 
       alias Legion.RateLimiter
 
+      defmodule Record do
+        @moduledoc false
+
+        use Ecto.Schema
+
+        @primary_key {:agent_id, :string, autogenerate: false}
+
+        schema unquote(table) do
+          field :started_at, :naive_datetime_usec
+          field :usage, {:array, :map}
+          field :updated_at, :naive_datetime_usec
+          field :ratelimit_metadata, :map
+        end
+      end
+
       @impl Legion.RateLimiter
       def enforce!(agent_id, key, policy) do
         RateLimiter.Postgres.enforce!(
           unquote(repo),
-          unquote(table),
+          Record,
           agent_id,
           key,
           policy

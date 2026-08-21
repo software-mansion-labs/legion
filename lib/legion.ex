@@ -83,10 +83,11 @@ defmodule Legion do
       every agent, so you need only pass `:agent_id`. If a store is in effect but no
       `:agent_id` is given, Legion generates one - read it back with `get_agent_id/1`.
       An agent ID can belong to at most one live process across connected nodes.
-    - `:rate_limiter`, `:rate_limit_policy`, `:rate_limit_key` - admit every turn
-      through a `Legion.RateLimiter`. All three are required for a limit to
-      apply, and each can be set globally instead. A refused turn returns
-      `{:cancel, {:rate_limited, violations}}`; see `Legion.RateLimiter`.
+    - `:rate_limit` - a keyword list with `:limiter`, `:policy`, and `:key`
+      (for example, `%{ip: "203.0.113.42"}`) that admits every turn through a
+      `Legion.RateLimiter`. All three fields are required for a limit to apply,
+      and each can be set globally instead. A refused turn returns `{:cancel,
+      {:rate_limited, violations}}`; see `Legion.RateLimiter`.
     - Any config overrides (`:model`, `:max_iterations`, etc.)
 
   ## Examples

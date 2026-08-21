@@ -17,14 +17,14 @@ defmodule Legion.Store.Migration.Postgres do
   When a new Legion release adds a schema version, generate another migration
   using the same calls. You can pin that migration to a specific version:
 
-      defmodule MyApp.Repo.Migrations.UpgradeLegionAgentsToV2 do
+      defmodule MyApp.Repo.Migrations.AddLegionAgentsV01 do
         use Ecto.Migration
 
-        def up, do: Legion.Store.Migration.Postgres.up(version: 2)
-        def down, do: Legion.Store.Migration.Postgres.down(version: 2)
+        def up, do: Legion.Store.Migration.Postgres.up(version: 1)
+        def down, do: Legion.Store.Migration.Postgres.down(version: 1)
       end
 
-  Rolling back the example above removes version 2 and leaves version 1 applied.
+  Rolling back the example above removes version 1.
 
   ## Options
 

@@ -24,7 +24,7 @@ defmodule Legion.Store.Postgres do
         def down, do: Legion.Store.Migration.Postgres.down()
       end
 
-  The Store migration also creates the `limit_meta` column and GIN index used
+  The Store migration also creates the `ratelimit_metadata` column and GIN index used
   by `Legion.RateLimiter.Postgres`; no additional migration is needed.
 
   Then start agents with it:

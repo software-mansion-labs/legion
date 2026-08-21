@@ -7,25 +7,28 @@ defmodule Legion.RateLimiter do
   every turn is admitted through it.
 
       Legion.start_link(ChatAgent,
-        rate_limiter: MyApp.RateLimiter,
-        rate_limit_policy: %Legion.RateLimiter.Policy{
-          interval_ms: :timer.minutes(1),
-          max_agents: 10,
-          max_tokens: 100_000
-        },
-        rate_limit_key: %{provider: "openai"}
+        rate_limit: [
+          limiter: MyApp.RateLimiter,
+          policy: %Legion.RateLimiter.Policy{
+            interval_ms: :timer.minutes(1),
+            max_agents: 10,
+            max_tokens: 100_000
+          },
+          key: %{ip: "203.0.113.42"}
+        ]
       )
 
-  Set the same three options globally to limit every agent:
+  Configure the same values globally to limit every agent:
 
-      config :legion, :rate_limiter, MyApp.RateLimiter
-      config :legion, :rate_limit_policy, policy
-      config :legion, :rate_limit_key, %{provider: "openai"}
+      config :legion, :rate_limit,
+        limiter: MyApp.RateLimiter,
+        policy: policy,
+        key: %{ip: "203.0.113.42"}
 
   All three must be present for a limit to apply; leaving any of them `nil`
-  disables rate limiting. Options given to `Legion.start_link/2` win over the
-  application environment, and sub-agents inherit whatever their parent
-  resolved unless given their own.
+  disables rate limiting. Each field in `:rate_limit` given to
+  `Legion.start_link/2` wins over the application environment, and sub-agents
+  inherit whatever their parent resolved unless given their own.
 
   ## When Legion enforces
 
@@ -48,7 +51,7 @@ defmodule Legion.RateLimiter do
   the same policy - a webhook, a queue worker - by passing a stable id, a map
   that identifies the cohort, and the policy:
 
-      :ok = MyApp.RateLimiter.enforce!(agent_id, %{provider: "openai"}, policy)
+      :ok = MyApp.RateLimiter.enforce!(agent_id, %{ip: "203.0.113.42"}, policy)
 
   The behaviour is the seam for custom rate-limiter adapters. The bundled
   `Legion.RateLimiter.Postgres` adapter records cohort metadata and evaluates

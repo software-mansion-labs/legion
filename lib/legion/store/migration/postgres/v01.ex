@@ -14,7 +14,7 @@ defmodule Legion.Store.Migration.Postgres.V01 do
       add :started_at, :naive_datetime_usec
       add :conversation_state, :binary
       add :usage, {:array, :map}, null: false, default: []
-      add :limit_meta, :map
+      add :ratelimit_metadata, :map
 
       add :inserted_at, :naive_datetime_usec,
         null: false,
@@ -25,11 +25,12 @@ defmodule Legion.Store.Migration.Postgres.V01 do
         default: fragment("now()")
     end
 
-    execute """
-    CREATE INDEX IF NOT EXISTS #{table}_limit_meta_gin_idx
-    ON #{table}
-    USING GIN (limit_meta jsonb_path_ops);
-    """
+    create_if_not_exists(
+      index(table, ["ratelimit_metadata jsonb_path_ops"],
+        name: "#{table}_ratelimit_metadata_gin_idx",
+        using: :gin
+      )
+    )
 
     execute """
     CREATE OR REPLACE FUNCTION #{table}_notify() RETURNS trigger AS $$
@@ -51,7 +52,11 @@ defmodule Legion.Store.Migration.Postgres.V01 do
   def down(opts) do
     table = Keyword.fetch!(opts, :table)
 
-    execute "DROP INDEX IF EXISTS #{table}_limit_meta_gin_idx"
+    drop_if_exists(
+      index(table, ["ratelimit_metadata jsonb_path_ops"],
+        name: "#{table}_ratelimit_metadata_gin_idx"
+      )
+    )
 
     drop_if_exists table(table)
     execute "DROP FUNCTION IF EXISTS #{table}_notify()"

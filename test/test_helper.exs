@@ -7,7 +7,7 @@ defmodule Legion.Test.Support.LegionAgentsMigration do
 
   alias Legion.Store.Migration.Postgres
 
-  @version 20_260_819_000_001
+  @version 20_260_820_000_001
 
   def version, do: @version
   def up, do: Postgres.up()

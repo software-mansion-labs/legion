@@ -30,7 +30,7 @@ defmodule Legion.RateLimiter.Policy do
 
   @type t :: %__MODULE__{
           interval_ms: pos_integer(),
-          max_agents: pos_integer() | nil,
+          max_agents: non_neg_integer() | nil,
           max_tokens: non_neg_integer() | nil
         }
 

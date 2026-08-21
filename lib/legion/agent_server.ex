@@ -83,23 +83,19 @@ defmodule Legion.AgentServer do
   end
 
   defp build_rate_limit(opts) do
-    {rate_limiter, opts} = Keyword.pop(opts, :rate_limiter)
-    {rate_limit_policy, opts} = Keyword.pop(opts, :rate_limit_policy)
-    {rate_limit_key, opts} = Keyword.pop(opts, :rate_limit_key)
+    {overrides, opts} = Keyword.pop(opts, :rate_limit, [])
 
-    rate_limit = %{
-      rate_limiter:
-        rate_limiter || Vault.get(:rate_limiter) || Application.get_env(:legion, :rate_limiter),
-      rate_limit_policy:
-        rate_limit_policy || Vault.get(:rate_limit_policy) ||
-          Application.get_env(:legion, :rate_limit_policy),
-      rate_limit_key:
-        rate_limit_key || Vault.get(:rate_limit_key) ||
-          Application.get_env(:legion, :rate_limit_key)
-    }
+    rate_limit =
+      %{
+        limiter: nil,
+        policy: nil,
+        key: nil
+      }
+      |> Map.merge(Map.new(Application.get_env(:legion, :rate_limit, [])))
+      |> Map.merge(Vault.get(:rate_limit) || %{})
+      |> Map.merge(Map.new(overrides))
 
-    if rate_limit.rate_limit_policy,
-      do: RateLimiter.Policy.validate!(rate_limit.rate_limit_policy)
+    if rate_limit.policy, do: RateLimiter.Policy.validate!(rate_limit.policy)
 
     {rate_limit, opts}
   end
@@ -135,9 +131,15 @@ defmodule Legion.AgentServer do
       Vault.unsafe_put(tool, agent_module.tool_config(tool))
     end
 
-    Vault.unsafe_merge(Map.to_list(config.rate_limit))
+    Vault.unsafe_put(:rate_limit, config.rate_limit)
 
     system_prompt = Legion.AgentPrompt.system_prompt(agent_module, config)
+
+    Telemetry.emit(
+      [:legion, :agent, :started],
+      %{system_time: NaiveDateTime.utc_now()},
+      %{agent: agent_module}
+    )
 
     {saved_messages, saved_bindings, saved_executor_state, saved_usage} =
       case store && store.get(agent_id) do
@@ -268,9 +270,9 @@ defmodule Legion.AgentServer do
          %{
            config: %{
              rate_limit: %{
-               rate_limiter: limiter,
-               rate_limit_policy: policy,
-               rate_limit_key: key
+               limiter: limiter,
+               policy: policy,
+               key: key
              }
            }
          } = state
