@@ -118,7 +118,7 @@ defmodule MyApp.APIAgent do
 end
 ```
 
-Use it to hand agents your existing app logic directly - no schemas to write, nothing to keep in sync. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (see [Credentials never reach the LLM](#7-credentials-never-reach-the-llm)). For large libraries, write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source.
+Use it to hand agents your existing app logic directly - no schemas to write, nothing to keep in sync. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (see [Credentials never reach the LLM](#6-credentials-never-reach-the-llm)). For large libraries, write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source.
 
 See [`Legion.Tool`](https://hexdocs.pm/legion/Legion.Tool.html) for more details.
 
@@ -233,11 +233,34 @@ end
 
 See [Vault](https://github.com/dimamik/vault) for more details.
 
-### **7. Structured output when you need it**
+### **7. Rate limiting baked in**
+
+Configure a limiter, a policy, and a key, and every turn is admitted through it - agents with matching keys form a cohort that shares the policy's rolling-window limits.
+
+```elixir
+# config/config.exs
+config :legion, :rate_limit,
+  limiter: MyApp.RateLimiter,
+  policy: %Legion.RateLimiter.Policy{
+    interval_ms: :timer.minutes(1),
+    max_agents: 10,
+    max_tokens: 100_000
+  },
+  key: %{"ip" => "203.0.113.42"}
+```
+
+Key by user, IP, or anything you desire to stop any one cohort from draining your token budget. Enforcement happens once per turn, before any LLM request - a refused turn costs nothing and leaves the conversation untouched.
+
+Set it once and every agent runs under it. `Legion.start_link/2` overrides any field on its own - keep the global limiter and policy, swap in a per-user key - and sub-agents inherit whatever their parent resolved unless given their own. Implement the `Legion.RateLimiter` behaviour to keep limit state anywhere you like.
+
+See [`Legion.RateLimiter`](https://hexdocs.pm/legion/Legion.RateLimiter.html) for more details.
+
+### **8. Structured output when you need it**
 
 Define `output_schema/0` on the agent to get typed, validated responses instead of prose. Skip it and you get plain text.
 
 See [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) for this and the other agent callbacks (`system_prompt/0`, `config/0`, `action_types/0`) - all optional with sensible defaults.
+
 
 ## Configuration
 
