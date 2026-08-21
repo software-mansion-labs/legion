@@ -84,7 +84,7 @@ defmodule Legion do
       `:agent_id` is given, Legion generates one - read it back with `get_agent_id/1`.
       An agent ID can belong to at most one live process across connected nodes.
     - `:rate_limit` - a keyword list with `:limiter`, `:policy`, and `:key`
-      (for example, `%{ip: "203.0.113.42"}`) that admits every turn through a
+      (for example, `%{"ip" => "203.0.113.42"}`) that admits every turn through a
       `Legion.RateLimiter`. All three fields are required for a limit to apply,
       and each can be set globally instead. A refused turn returns `{:cancel,
       {:rate_limited, violations}}`; see `Legion.RateLimiter`.
@@ -105,7 +105,7 @@ defmodule Legion do
               max_agents: 10,
               max_tokens: 100_000
             },
-            key: %{ip: "203.0.113.42"}
+            key: %{"ip" => "203.0.113.42"}
           ]
         )
   """

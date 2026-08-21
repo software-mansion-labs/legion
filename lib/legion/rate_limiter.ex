@@ -14,7 +14,7 @@ defmodule Legion.RateLimiter do
             max_agents: 10,
             max_tokens: 100_000
           },
-          key: %{ip: "203.0.113.42"}
+          key: %{"ip" => "203.0.113.42"}
         ]
       )
 
@@ -24,7 +24,7 @@ defmodule Legion.RateLimiter do
       config :legion, :rate_limit,
         limiter: MyApp.RateLimiter,
         policy: policy,
-        key: %{ip: "203.0.113.42"}
+        key: %{"ip" => "203.0.113.42"}
 
   All three must be present for a limit to apply; leaving any of them `nil`
   disables rate limiting. The `key` identifies the shared cohort: agents with
@@ -54,7 +54,7 @@ defmodule Legion.RateLimiter do
   the same policy - a webhook, a queue worker - by passing a stable id, a map
   that identifies the shared cohort, and the policy:
 
-      :ok = MyApp.RateLimiter.enforce!(agent_id, %{ip: "203.0.113.42"}, policy)
+      :ok = MyApp.RateLimiter.enforce!(agent_id, %{"ip" => "203.0.113.42"}, policy)
 
   The behaviour is the seam for custom rate-limiter adapters. The bundled
   `Legion.RateLimiter.Postgres` adapter records cohort metadata and evaluates

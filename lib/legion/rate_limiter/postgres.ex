@@ -32,7 +32,7 @@ defmodule Legion.RateLimiter.Postgres do
         max_tokens: 100_000
       }
 
-      :ok = MyApp.RateLimiter.enforce!(agent_id, %{ip: "203.0.113.42"}, policy)
+      :ok = MyApp.RateLimiter.enforce!(agent_id, %{"ip" => "203.0.113.42"}, policy)
 
   For concurrent admission, note that `:max_agents` is not concurrency-safe:
   simultaneous transactions count only rows committed before they started and
@@ -43,8 +43,8 @@ defmodule Legion.RateLimiter.Postgres do
 
   Keys are stored as JSON metadata and matched with Postgres JSON containment.
   A broad key therefore includes metadata with additional fields. For example,
-  `%{ip: "203.0.113.42"}` matches an agent recorded with
-  `%{ip: "203.0.113.42", tenant: "acme"}`. Calling `enforce!/3` again for
+  `%{"ip" => "203.0.113.42"}` matches an agent recorded with
+  `%{"ip" => "203.0.113.42", "tenant" => "acme"}`. Calling `enforce!/3` again for
   the same agent replaces its stored key while retaining its original start
   time.
 

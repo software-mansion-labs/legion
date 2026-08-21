@@ -6,9 +6,9 @@ defmodule Legion.RateLimiter.PostgresDbTest do
   alias Legion.Test.Support.LegionAgentsMigration
   alias Legion.Test.Support.PostgresRepo, as: Repo
 
-  @ip_key %{ip: "203.0.113.42"}
-  @other_ip_key %{ip: "198.51.100.7"}
-  @tenant_ip_key %{ip: "203.0.113.42", tenant: "acme"}
+  @ip_key %{"ip" => "203.0.113.42"}
+  @other_ip_key %{"ip" => "198.51.100.7"}
+  @tenant_ip_key %{"ip" => "203.0.113.42", "tenant" => "acme"}
 
   defmodule RateLimiter do
     use Legion.RateLimiter.Postgres, repo: Legion.Test.Support.PostgresRepo
