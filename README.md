@@ -235,7 +235,7 @@ See [Vault](https://github.com/dimamik/vault) for more details.
 
 ### **7. Rate limiting baked in**
 
-Configure a limiter, a policy, and a key, and every turn is admitted through it - agents with matching keys form a cohort that shares the policy's rolling-window limits.
+Set a limiter with a policy and a key. Every turn passes through the limiter, and agents that share a key share the policy's rolling-window limits.
 
 ```elixir
 # config/config.exs
@@ -249,9 +249,9 @@ config :legion, :rate_limit,
   key: %{"ip" => "203.0.113.42"}
 ```
 
-Key by user, IP, or anything you desire to stop any one cohort from draining your token budget. Enforcement happens once per turn, before any LLM request - a refused turn costs nothing and leaves the conversation untouched.
+The key can be a user, an IP, or anything else - a map, so it can combine several fields - and no single group can drain your token budget. The check runs once per turn, before any LLM request - a refused turn costs nothing and leaves the conversation untouched.
 
-Set it once and every agent runs under it. `Legion.start_link/2` overrides any field on its own - keep the global limiter and policy, swap in a per-user key - and sub-agents inherit whatever their parent resolved unless given their own. Implement the `Legion.RateLimiter` behaviour to keep limit state anywhere you like.
+Configure it once and every agent uses it. `Legion.start_link/2` can override any single field - for example, keep the global limiter and policy but pass a per-user key. Sub-agents inherit their parent's settings unless given their own. To store limit state somewhere else, implement the `Legion.RateLimiter` behaviour.
 
 See [`Legion.RateLimiter`](https://hexdocs.pm/legion/Legion.RateLimiter.html) for more details.
 
