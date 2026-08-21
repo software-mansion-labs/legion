@@ -104,36 +104,47 @@ defmodule Legion.RateLimiter.Postgres do
             "#{inspect(agent_id)}, #{inspect(key)}, #{inspect(policy)}"
   end
 
-  defp upsert_metadata(repo, record, agent_id, meta) do
-    {1, _} =
+  defp upsert_metadata(repo, record, agent_id, metadata_key) do
+    import Ecto.Query
+
+    {_count, _} =
       repo.insert_all(
         record,
         [
           %{
             agent_id: agent_id,
-            ratelimit_metadata: meta,
+            ratelimit_metadata: metadata_key,
             started_at: NaiveDateTime.utc_now()
           }
         ],
         conflict_target: :agent_id,
-        on_conflict: [set: [ratelimit_metadata: meta]]
+        on_conflict:
+          from(agent in record,
+            update: [set: [ratelimit_metadata: ^metadata_key]],
+            where:
+              fragment(
+                "? IS DISTINCT FROM ?",
+                agent.ratelimit_metadata,
+                type(^metadata_key, :map)
+              )
+          )
       )
 
     :ok
   end
 
-  defp fetch_usage(repo, record, meta, policy) do
+  defp fetch_usage(repo, record, metadata_key, policy) do
     now = DateTime.utc_now()
 
     %{
-      agents: count_agents(repo, record, meta, policy, now),
-      tokens: sum_tokens(repo, record, meta, policy, now)
+      agents: count_agents(repo, record, metadata_key, policy, now),
+      tokens: sum_tokens(repo, record, metadata_key, policy, now)
     }
   end
 
-  defp count_agents(_repo, _record, _meta, %{max_agents: nil}, _now), do: nil
+  defp count_agents(_repo, _record, _metadata_key, %{max_agents: nil}, _now), do: nil
 
-  defp count_agents(repo, record, meta, policy, now) do
+  defp count_agents(repo, record, metadata_key, policy, now) do
     import Ecto.Query
 
     from(agent in record,
@@ -141,7 +152,7 @@ defmodule Legion.RateLimiter.Postgres do
         fragment(
           "? @> ?::jsonb",
           agent.ratelimit_metadata,
-          type(^meta, :map)
+          type(^metadata_key, :map)
         ),
       where: agent.started_at >= ^naive_cutoff(now, policy),
       select: count(agent.agent_id)
@@ -149,9 +160,9 @@ defmodule Legion.RateLimiter.Postgres do
     |> repo.one()
   end
 
-  defp sum_tokens(_repo, _record, _meta, %{max_tokens: nil}, _now), do: nil
+  defp sum_tokens(_repo, _record, _metadata_key, %{max_tokens: nil}, _now), do: nil
 
-  defp sum_tokens(repo, record, meta, policy, now) do
+  defp sum_tokens(repo, record, metadata_key, policy, now) do
     import Ecto.Query
 
     cutoff = DateTime.to_unix(now, :millisecond) - policy.interval_ms
@@ -163,7 +174,7 @@ defmodule Legion.RateLimiter.Postgres do
         fragment(
           "? @> ?::jsonb",
           agent.ratelimit_metadata,
-          type(^meta, :map)
+          type(^metadata_key, :map)
         ),
       where: fragment("(?->>'at')::bigint >= ?", field(entry, :value), ^cutoff),
       where: agent.updated_at >= ^naive_cutoff(now, policy),

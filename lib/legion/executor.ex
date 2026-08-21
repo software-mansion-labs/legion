@@ -247,7 +247,8 @@ defmodule Legion.Executor do
 
   defp handle_llm_response(response, messages, turn_usage) do
     usage =
-      response.usage
+      (response.usage ||
+         %{})
       |> normalize_usage()
       |> Map.put("at", System.system_time(:millisecond))
 

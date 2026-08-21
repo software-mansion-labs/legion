@@ -18,7 +18,8 @@ defmodule Legion.RateLimiter do
         ]
       )
 
-  Configure the same values globally to limit every agent:
+  Configure the same values globally to apply the policy to every matching
+  agent:
 
       config :legion, :rate_limit,
         limiter: MyApp.RateLimiter,
@@ -26,9 +27,11 @@ defmodule Legion.RateLimiter do
         key: %{ip: "203.0.113.42"}
 
   All three must be present for a limit to apply; leaving any of them `nil`
-  disables rate limiting. Each field in `:rate_limit` given to
-  `Legion.start_link/2` wins over the application environment, and sub-agents
-  inherit whatever their parent resolved unless given their own.
+  disables rate limiting. The `key` identifies the shared cohort: agents with
+  matching keys consume the same rolling-window limits. Each field in
+  `:rate_limit` given to `Legion.start_link/2` wins over the application
+  environment, and sub-agents inherit whatever their parent resolved unless
+  given their own.
 
   ## When Legion enforces
 
@@ -49,7 +52,7 @@ defmodule Legion.RateLimiter do
 
   `enforce!/3` is public, so an application can also admit its own work under
   the same policy - a webhook, a queue worker - by passing a stable id, a map
-  that identifies the cohort, and the policy:
+  that identifies the shared cohort, and the policy:
 
       :ok = MyApp.RateLimiter.enforce!(agent_id, %{ip: "203.0.113.42"}, policy)
 

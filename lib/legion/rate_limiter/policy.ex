@@ -3,7 +3,8 @@ defmodule Legion.RateLimiter.Policy do
   Defines the limits enforced by a `Legion.RateLimiter`.
 
   Every policy has a rolling `:interval_ms`. Within that interval, it can
-  limit newly admitted agents, recorded token usage, or both:
+  limit newly admitted agents matching a rate-limit key, recorded token usage
+  for those agents, or both:
 
       %Legion.RateLimiter.Policy{
         interval_ms: :timer.minutes(1),
@@ -15,7 +16,7 @@ defmodule Legion.RateLimiter.Policy do
 
     * `:interval_ms` (required) - positive rolling-window duration in
       milliseconds.
-    * `:max_agents` - maximum number of matching agents admitted during the
+    * `:max_agents` - maximum number of matching agent IDs admitted during the
       interval. `0` admits no agents; `nil` disables this limit.
     * `:max_tokens` - maximum recorded token total for matching agents during
       the interval. `0` allows no token use; `nil` disables this limit.

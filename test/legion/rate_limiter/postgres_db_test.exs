@@ -136,6 +136,19 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     assert :ok = RateLimiter.enforce!("unrestricted", @ip_key, policy())
   end
 
+  test "does not notify for a metadata upsert with an unchanged key" do
+    notifications = start_supervised!({Postgrex.Notifications, postgres_options()})
+    listen_ref = Postgrex.Notifications.listen!(notifications, "legion_agents")
+
+    assert :ok = RateLimiter.enforce!("agent", @ip_key, policy())
+
+    assert_receive {:notification, ^notifications, ^listen_ref, "legion_agents", "agent"}
+
+    assert :ok = RateLimiter.enforce!("agent", @ip_key, policy())
+
+    refute_receive {:notification, ^notifications, ^listen_ref, "legion_agents", "agent"}
+  end
+
   test "moves an agent to its new key without resetting its start time" do
     assert :ok = RateLimiter.enforce!("agent", @ip_key, policy())
 
@@ -269,5 +282,15 @@ defmodule Legion.RateLimiter.PostgresDbTest do
   defp index_exists?(index) do
     %{rows: [[exists?]]} = Repo.query!("SELECT to_regclass($1) IS NOT NULL", [index])
     exists?
+  end
+
+  defp postgres_options do
+    [
+      hostname: System.get_env("POSTGRES_HOST", "localhost"),
+      port: String.to_integer(System.get_env("POSTGRES_PORT", "5432")),
+      username: System.get_env("POSTGRES_USER", "postgres"),
+      password: System.get_env("POSTGRES_PASSWORD", "postgres"),
+      database: System.get_env("POSTGRES_DB", "postgres")
+    ]
   end
 end

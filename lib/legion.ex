@@ -95,6 +95,19 @@ defmodule Legion do
       {:ok, pid} = Legion.start_link(AssistantAgent)
       {:ok, pid} = Legion.start_link(ChatAgent, store: MyApp.AgentStore, agent_id: "user_42:chat_7")
       {:ok, pid} = Legion.start_link(ChatAgent, agent_id: "user_42:chat_7")   # store from app config
+
+      {:ok, pid} =
+        Legion.start_link(ChatAgent,
+          rate_limit: [
+            limiter: MyApp.RateLimiter,
+            policy: %Legion.RateLimiter.Policy{
+              interval_ms: :timer.minutes(1),
+              max_agents: 10,
+              max_tokens: 100_000
+            },
+            key: %{ip: "203.0.113.42"}
+          ]
+        )
   """
   def start_link(agent_module, opts \\ []) when is_atom(agent_module) do
     AgentServer.start_link(agent_module, opts)
