@@ -91,7 +91,7 @@ defmodule Legion.ExecutorTest do
   end
 
   describe "run/3-5" do
-    test "returns recursively string-keyed usage from a single LLM request" do
+    test "returns recursively string-keyed usage with its receipt timestamp" do
       usage = %{
         input_tokens: 12,
         output_tokens: 5,
@@ -110,15 +110,20 @@ defmodule Legion.ExecutorTest do
          }}
       end)
 
+      before = System.system_time(:millisecond)
+
       assert {:ok, "42", _messages, [],
               [
                 %{
                   "input_tokens" => 12,
                   "output_tokens" => 5,
                   "turn_usage" => 17,
-                  "tool_usage" => %{"web_search" => 1}
+                  "tool_usage" => %{"web_search" => 1},
+                  "at" => timestamp
                 }
               ]} = Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
+
+      assert timestamp in before..System.system_time(:millisecond)
     end
 
     test "returns usage list from a single LLM request" do

@@ -7,6 +7,9 @@ defmodule Legion.Test.Support.LegionAgentsMigration do
 
   alias Legion.Store.Migration.Postgres
 
+  @version 20_260_820_000_001
+
+  def version, do: @version
   def up, do: Postgres.up()
   def down, do: Postgres.down()
 end
@@ -24,7 +27,7 @@ end
 
 Ecto.Migrator.up(
   Legion.Test.Support.PostgresRepo,
-  20_260_723_100_815,
+  Legion.Test.Support.LegionAgentsMigration.version(),
   Legion.Test.Support.LegionAgentsMigration,
   log: false
 )

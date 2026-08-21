@@ -83,6 +83,11 @@ defmodule Legion do
       every agent, so you need only pass `:agent_id`. If a store is in effect but no
       `:agent_id` is given, Legion generates one - read it back with `get_agent_id/1`.
       An agent ID can belong to at most one live process across connected nodes.
+    - `:rate_limit` - a keyword list with `:limiter`, `:policy`, and `:key`
+      (for example, `%{"ip" => "203.0.113.42"}`) that admits every turn through a
+      `Legion.RateLimiter`. All three fields are required for a limit to apply,
+      and each can be set globally instead. A refused turn returns `{:cancel,
+      {:rate_limited, violations}}`; see `Legion.RateLimiter`.
     - Any config overrides (`:model`, `:max_iterations`, etc.)
 
   ## Examples
@@ -90,6 +95,19 @@ defmodule Legion do
       {:ok, pid} = Legion.start_link(AssistantAgent)
       {:ok, pid} = Legion.start_link(ChatAgent, store: MyApp.AgentStore, agent_id: "user_42:chat_7")
       {:ok, pid} = Legion.start_link(ChatAgent, agent_id: "user_42:chat_7")   # store from app config
+
+      {:ok, pid} =
+        Legion.start_link(ChatAgent,
+          rate_limit: [
+            limiter: MyApp.RateLimiter,
+            policy: %Legion.RateLimiter.Policy{
+              interval_ms: :timer.minutes(1),
+              max_agents: 10,
+              max_tokens: 100_000
+            },
+            key: %{"ip" => "203.0.113.42"}
+          ]
+        )
   """
   def start_link(agent_module, opts \\ []) when is_atom(agent_module) do
     AgentServer.start_link(agent_module, opts)

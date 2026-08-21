@@ -55,8 +55,9 @@ defmodule Legion.Store do
   ## Usage tracking
 
   Legion persists a string-keyed copy of `ReqLLM.Response.usage` for every LLM
-  request in a conversation, ordered by request. Tracking is enabled by
-  default. Disable it globally before starting an agent:
+  request in a conversation, ordered by request. Each map includes an `"at"`
+  Unix timestamp in milliseconds for when Legion received the response.
+  Tracking is enabled by default. Disable it globally before starting an agent:
 
       config :legion, :track_usage, false
 
@@ -87,7 +88,9 @@ defmodule Legion.Store do
   and `:retries` for step checkpoints. `:status` records whether the agent is
   mid-turn. The payload also carries the agent  module, parent conversation,
   and start time when those values are known. Its `:usage` field is the ordered
-  list of string-keyed LLM usage maps when tracking is enabled.
+  list of string-keyed LLM usage maps when tracking is enabled. Each map's
+  `"at"` value is the Unix timestamp in milliseconds when Legion received the
+  response.
 
   With `binding_scope: :turn`, active bindings are included in step snapshots
   while the turn is running and cleared from the final snapshot. Bindings with
