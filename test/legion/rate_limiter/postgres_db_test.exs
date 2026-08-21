@@ -177,7 +177,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
   # committed before it started, so simultaneous starts can overshoot the
   # limit. What must hold is that every caller gets a verdict and that only
   # admitted agents leave a row behind.
-  test "gives every concurrent caller a verdict and records only the admitted ones" do
+  test "admits exactly max_agents under concurrent calls and records only the admitted ones" do
     policy = policy(max_agents: 1)
     test_pid = self()
 
@@ -202,8 +202,8 @@ defmodule Legion.RateLimiter.PostgresDbTest do
 
     outcomes = Enum.map(tasks, &Task.await(&1, 5_000))
 
-    assert Enum.all?(outcomes, &(&1 in [:ok, :exceeded]))
-    assert Enum.any?(outcomes, &(&1 == :ok))
+    assert Enum.count(outcomes, &(&1 == :ok)) == 1
+    assert Enum.count(outcomes, &(&1 == :exceeded)) == 19
 
     %{rows: [[recorded]]} =
       Repo.query!("SELECT count(*) FROM legion_agents WHERE ratelimit_metadata IS NOT NULL", [])

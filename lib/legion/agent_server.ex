@@ -287,6 +287,7 @@ defmodule Legion.AgentServer do
         %{system_time: NaiveDateTime.utc_now()},
         %{
           agent: state.agent_module,
+          agent_id: state.agent_id,
           key: error.key,
           policy: error.policy,
           usage: error.usage,

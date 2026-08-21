@@ -31,7 +31,8 @@ defmodule Legion.RateLimiter do
   matching keys consume the same rolling-window limits. Each field in
   `:rate_limit` given to `Legion.start_link/2` wins over the application
   environment, and sub-agents inherit whatever their parent resolved unless
-  given their own.
+  given their own. Each sub-agent is a separate agent ID in the cohort, so it
+  counts towards `:max_agents` and its usage towards `:max_tokens`.
 
   ## When Legion enforces
 

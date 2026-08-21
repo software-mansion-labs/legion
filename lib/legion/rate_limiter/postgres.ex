@@ -34,10 +34,13 @@ defmodule Legion.RateLimiter.Postgres do
 
       :ok = MyApp.RateLimiter.enforce!(agent_id, %{"ip" => "203.0.113.42"}, policy)
 
-  For concurrent admission, note that `:max_agents` is not concurrency-safe:
-  simultaneous transactions count only rows committed before they started and
-  may collectively exceed the configured maximum. Rejected calls are rolled
-  back, leaving metadata only for admitted calls.
+  Concurrent calls for the same key are serialized with a transaction-scoped
+  advisory lock, so `:max_agents` holds under simultaneous admission. Rejected
+  calls are rolled back, leaving metadata only for admitted calls.
+
+  Limits are evaluated when a turn starts; a turn that is already running is
+  never interrupted, so one turn can carry the recorded total past
+  `:max_tokens` before the next call is refused.
 
   ## Key matching
 
@@ -77,6 +80,7 @@ defmodule Legion.RateLimiter.Postgres do
       when is_binary(agent_id) and is_map(rate_limit_key) do
     {:ok, :ok} =
       repo.transaction(fn ->
+        lock_key(repo, rate_limit_key)
         upsert_metadata(repo, record, agent_id, rate_limit_key)
 
         usage = fetch_usage(repo, record, rate_limit_key, policy)
@@ -102,6 +106,13 @@ defmodule Legion.RateLimiter.Postgres do
     raise ArgumentError,
           "invalid rate-limit arguments: " <>
             "#{inspect(agent_id)}, #{inspect(key)}, #{inspect(policy)}"
+  end
+
+  # Serializes concurrent admissions for the same key so `:max_agents` counts
+  # every in-flight transaction, not only those already committed.
+  defp lock_key(repo, metadata_key) do
+    repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [Jason.encode!(metadata_key)])
+    :ok
   end
 
   defp upsert_metadata(repo, record, agent_id, metadata_key) do
@@ -193,6 +204,8 @@ defmodule Legion.RateLimiter.Postgres do
     |> DateTime.to_naive()
   end
 
+  # The agent count includes the caller's own row, hence `>`; tokens are
+  # consumed before this check, hence `>=`.
   defp find_violations(usage, policy) do
     for {name, true} <- %{
           max_agents: usage.agents != nil and usage.agents > policy.max_agents,

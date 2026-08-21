@@ -17,9 +17,12 @@ defmodule Legion.RateLimiter.Policy do
     * `:interval_ms` (required) - positive rolling-window duration in
       milliseconds.
     * `:max_agents` - maximum number of matching agent IDs admitted during the
-      interval. `0` admits no agents; `nil` disables this limit.
+      interval, including sub-agents spawned by an admitted agent. `0` admits
+      no agents; `nil` disables this limit.
     * `:max_tokens` - maximum recorded token total for matching agents during
-      the interval. `0` allows no token use; `nil` disables this limit.
+      the interval. Limits are checked when a turn starts and never interrupt
+      a running turn, so `0` refuses every turn after the first one that
+      records usage; `nil` disables this limit.
 
   A policy with both optional limits set to `nil` is unrestricted. See
   `Legion.RateLimiter` for the adapter interface and
