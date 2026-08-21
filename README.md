@@ -87,9 +87,7 @@ end
 return relevant
 ```
 
-Agents write Lua by default, since it's much easier to sandbox securely. Prefer Elixir? Switch to `Legion.Sandbox.Elixir` (see [Generated code runs in a sandbox](#3-generated-code-runs-in-a-sandbox)).
-
-The agent looked at the output, judged which posts were worth keeping, and followed up with:
+...looked at the output, judged which posts were worth keeping, and followed up with:
 
 ```lua
 local titles = {"Elixir Advent of Code 2024 - Day 5 walkthrough", "My first AoC in Elixir!"}
@@ -100,11 +98,36 @@ end
 
 Two evaluations, with variables, loops, and conditionals available at every step.
 
+Agents write Lua by default, since it's much easier to sandbox securely. Prefer Elixir? Switch to `Legion.Sandbox.Elixir` (see [Generated code runs in a sandbox](#3-generated-code-runs-in-a-sandbox)).
+
 ## Features
 
 ### **1. Tools are plain Elixir modules**
 
-`use Legion.Tool` on any module and the LLM reads its source and calls its public functions. Third-party modules work too, without a wrapper:
+`use Legion.Tool` on any module and the LLM reads its source and calls its public functions:
+
+```elixir
+defmodule MyApp.Tools.WeatherTool do
+  use Legion.Tool
+
+  @doc "Returns the current temperature in Celsius for a city"
+  def temperature(city) do
+    Req.get!("https://wttr.in/#{city}?format=j1").body["current_condition"]
+    |> hd()
+    |> Map.fetch!("temp_C")
+    |> String.to_integer()
+  end
+end
+
+defmodule MyApp.WeatherAgent do
+  @moduledoc "Answers questions about the current weather."
+  use Legion.Agent
+
+  def tools, do: [MyApp.Tools.WeatherTool]
+end
+```
+
+Third-party modules work too, without a wrapper:
 
 ```elixir
 # config/config.exs
