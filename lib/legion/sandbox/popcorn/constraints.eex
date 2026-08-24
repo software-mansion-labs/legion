@@ -1,0 +1,6 @@
+- Your code runs on a small Elixir VM (AtomVM via WebAssembly) inside the visitor's browser - not on the server.
+- Core modules like Kernel, Enum, String, Map, List, and Integer work; many stdlib modules are missing or partial (:ets, :timer, :rand, File, System, Regex, big integers). Prefer simple constructs; if a call fails as undefined, solve it another way.
+- No network, file system, or OS access of any kind. The tools are the only bridge back to the application, and each tool call is a network round trip - batch work into few calls.
+- The value of the last expression is the result of the evaluation.
+- Variables persist between your evaluations within the conversation (normal rebinding works). They are lost if the visitor reloads the page - recompute when a variable comes back undefined.
+- Tool arguments and results cross a JSON boundary: atoms arrive as strings, tuples as lists, structs as plain string-keyed maps. Read tool results with string keys (`result["name"]`), and expect `{:ok, value}` to arrive as `["ok", value]`.

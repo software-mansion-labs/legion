@@ -106,7 +106,7 @@ defmodule Legion.MixProject do
         Changelog: "#{@source_url}/blob/main/CHANGELOG.md",
         GitHub: @source_url
       },
-      files: ~w(lib .formatter.exs mix.exs README* CHANGELOG* LICENSE*)
+      files: ~w(lib priv .formatter.exs mix.exs README* CHANGELOG* LICENSE*)
     ]
   end
 

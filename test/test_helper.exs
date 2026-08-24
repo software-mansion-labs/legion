@@ -32,4 +32,9 @@ Ecto.Migrator.up(
   log: false
 )
 
+# The host registry normally runs under `{Legion, []}` in the consuming
+# application's supervision tree; tests start just the registry so that
+# supervisor_test can still boot its own embedded `{Legion, []}`.
+{:ok, _} = Supervisor.start_link([Legion.Sandbox.Popcorn.Host], strategy: :one_for_one)
+
 ExUnit.start(exclude: [:integration])

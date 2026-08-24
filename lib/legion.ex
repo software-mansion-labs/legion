@@ -47,7 +47,10 @@ defmodule Legion do
 
   @impl Supervisor
   def init(_opts) do
-    children = [{Legion.Recovery, Application.fetch_env(:legion, :recovery)}]
+    children = [
+      Legion.Sandbox.Popcorn.Host,
+      {Legion.Recovery, Application.fetch_env(:legion, :recovery)}
+    ]
 
     Supervisor.init(children, strategy: :one_for_one, name: Legion.Supervisor)
   end

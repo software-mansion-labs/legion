@@ -58,7 +58,10 @@ defmodule Legion.SupervisorTest do
 
     assert {:ok,
             {_supervisor_flags,
-             [%{id: Legion.Recovery, start: {Legion.Recovery, :start_link, [{:ok, ^config}]}}]}} =
+             [
+               %{id: Legion.Sandbox.Popcorn.HostRegistry},
+               %{id: Legion.Recovery, start: {Legion.Recovery, :start_link, [{:ok, ^config}]}}
+             ]}} =
              Legion.init([])
   end
 

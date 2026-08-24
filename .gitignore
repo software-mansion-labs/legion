@@ -23,3 +23,5 @@ erl_crash.dump
 legion-*.tar
 
 .env
+
+priv/popcorn
