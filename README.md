@@ -32,14 +32,25 @@ def deps do
 end
 ```
 
-2. Configure an LLM provider ([all options](https://hexdocs.pm/req_llm/ReqLLM.html#module-configuration)):
+2. Add Legion to your apps supervision tree (after its Repo)
+
+```elixir
+# lib/my_app/application.ex
+
+children = [
+  MyApp.Repo,
+  {Legion, []}
+]
+```
+
+3. Configure an LLM provider ([all options](https://hexdocs.pm/req_llm/ReqLLM.html#module-configuration)):
 
 ```elixir
 # config/runtime.exs
 config :req_llm, openai_api_key: System.get_env("OPENAI_API_KEY")
 ```
 
-3. Expose existing or new modules as tools and hand them to an agent:
+4. Expose existing or new modules as tools and hand them to an agent:
 
 ```elixir
 defmodule MyApp.Tools.ScraperTool do
@@ -66,7 +77,7 @@ defmodule MyApp.ResearchAgent do
 end
 ```
 
-4. Run it!
+5. Run it!
 
 ```elixir
 Legion.execute(MyApp.ResearchAgent, "Find cool Elixir posts about Advent of Code and save them")
