@@ -256,11 +256,11 @@ defmodule Legion.Executor do
     case extract_object(response) do
       {:ok, action} when is_map(action) ->
         messages = messages ++ [message(:assistant, Jason.encode!(action))]
-        {{:ok, action, messages, turn_usage}, %{object: action}}
+        {{:ok, action, messages, turn_usage}, %{object: action, usage: usage}}
 
       {:error, reason} ->
         {{:error, "LLM response object invalid: #{inspect(reason)}", turn_usage},
-         %{error: reason}}
+         %{error: reason, usage: usage}}
     end
   end
 
