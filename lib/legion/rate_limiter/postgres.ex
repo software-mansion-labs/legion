@@ -34,7 +34,7 @@ defmodule Legion.RateLimiter.Postgres do
 
       :ok = MyApp.RateLimiter.enforce!(agent_id, %{"ip" => "203.0.113.42"}, policy)
 
-  Concurrent calls for the same key are serialized with a transaction-scoped
+  Concurrent calls for the same identity are serialized with a transaction-scoped
   advisory lock, so `:max_agents` holds under simultaneous admission. Rejected
   calls are rolled back, leaving metadata only for admitted calls.
 
@@ -42,13 +42,13 @@ defmodule Legion.RateLimiter.Postgres do
   never interrupted, so one turn can carry the recorded total past
   `:max_tokens` before the next call is refused.
 
-  ## Key matching
+  ## Identity matching
 
-  Keys are stored as JSON metadata and matched with Postgres JSON containment.
-  A broad key therefore includes metadata with additional fields. For example,
+  Identities are stored as JSON metadata and matched with Postgres JSON containment.
+  A broader identity therefore includes metadata with additional fields. For example,
   `%{"ip" => "203.0.113.42"}` matches an agent recorded with
   `%{"ip" => "203.0.113.42", "tenant" => "acme"}`. Calling `enforce!/3` again for
-  the same agent replaces its stored key while retaining its original start
+  the same agent replaces its stored identity while retaining its original start
   time.
 
   ## Limit evaluation
@@ -76,21 +76,21 @@ defmodule Legion.RateLimiter.Postgres do
   alias Legion.RateLimiter.Policy
 
   @doc false
-  def enforce!(repo, record, agent_id, rate_limit_key, %Policy{} = policy)
-      when is_binary(agent_id) and is_map(rate_limit_key) do
+  def enforce!(repo, record, agent_id, rate_limit_identity, %Policy{} = policy)
+      when is_binary(agent_id) and is_map(rate_limit_identity) do
     {:ok, :ok} =
       repo.transaction(fn ->
-        lock_key(repo, rate_limit_key)
-        upsert_metadata(repo, record, agent_id, rate_limit_key)
+        lock_identity(repo, rate_limit_identity)
+        upsert_metadata(repo, record, agent_id, rate_limit_identity)
 
-        usage = fetch_usage(repo, record, rate_limit_key, policy)
+        usage = fetch_usage(repo, record, rate_limit_identity, policy)
 
         violations = find_violations(usage, policy)
 
         if violations != [] do
           raise ExceededError,
             agent_id: agent_id,
-            key: rate_limit_key,
+            identity: rate_limit_identity,
             policy: policy,
             usage: usage,
             violations: violations
@@ -102,20 +102,20 @@ defmodule Legion.RateLimiter.Postgres do
     :ok
   end
 
-  def enforce!(_repo, _record, agent_id, key, policy) do
+  def enforce!(_repo, _record, agent_id, identity, policy) do
     raise ArgumentError,
           "invalid rate-limit arguments: " <>
-            "#{inspect(agent_id)}, #{inspect(key)}, #{inspect(policy)}"
+            "#{inspect(agent_id)}, #{inspect(identity)}, #{inspect(policy)}"
   end
 
-  # Serializes concurrent admissions for the same key so `:max_agents` counts
+  # Serializes concurrent admissions for the same identity so `:max_agents` counts
   # every in-flight transaction, not only those already committed.
-  defp lock_key(repo, metadata_key) do
-    repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [Jason.encode!(metadata_key)])
+  defp lock_identity(repo, metadata_identity) do
+    repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [Jason.encode!(metadata_identity)])
     :ok
   end
 
-  defp upsert_metadata(repo, record, agent_id, metadata_key) do
+  defp upsert_metadata(repo, record, agent_id, metadata_identity) do
     import Ecto.Query
 
     {_count, _} =
@@ -124,19 +124,19 @@ defmodule Legion.RateLimiter.Postgres do
         [
           %{
             agent_id: agent_id,
-            ratelimit_metadata: metadata_key,
+            ratelimit_metadata: metadata_identity,
             started_at: NaiveDateTime.utc_now()
           }
         ],
         conflict_target: :agent_id,
         on_conflict:
           from(agent in record,
-            update: [set: [ratelimit_metadata: ^metadata_key]],
+            update: [set: [ratelimit_metadata: ^metadata_identity]],
             where:
               fragment(
                 "? IS DISTINCT FROM ?",
                 agent.ratelimit_metadata,
-                type(^metadata_key, :map)
+                type(^metadata_identity, :map)
               )
           )
       )
@@ -144,18 +144,18 @@ defmodule Legion.RateLimiter.Postgres do
     :ok
   end
 
-  defp fetch_usage(repo, record, metadata_key, policy) do
+  defp fetch_usage(repo, record, metadata_identity, policy) do
     now = DateTime.utc_now()
 
     %{
-      agents: count_agents(repo, record, metadata_key, policy, now),
-      tokens: sum_tokens(repo, record, metadata_key, policy, now)
+      agents: count_agents(repo, record, metadata_identity, policy, now),
+      tokens: sum_tokens(repo, record, metadata_identity, policy, now)
     }
   end
 
-  defp count_agents(_repo, _record, _metadata_key, %{max_agents: nil}, _now), do: nil
+  defp count_agents(_repo, _record, _metadata_identity, %{max_agents: nil}, _now), do: nil
 
-  defp count_agents(repo, record, metadata_key, policy, now) do
+  defp count_agents(repo, record, metadata_identity, policy, now) do
     import Ecto.Query
 
     from(agent in record,
@@ -163,7 +163,7 @@ defmodule Legion.RateLimiter.Postgres do
         fragment(
           "? @> ?::jsonb",
           agent.ratelimit_metadata,
-          type(^metadata_key, :map)
+          type(^metadata_identity, :map)
         ),
       where: agent.started_at >= ^naive_cutoff(now, policy),
       select: count(agent.agent_id)
@@ -171,9 +171,9 @@ defmodule Legion.RateLimiter.Postgres do
     |> repo.one()
   end
 
-  defp sum_tokens(_repo, _record, _metadata_key, %{max_tokens: nil}, _now), do: nil
+  defp sum_tokens(_repo, _record, _metadata_identity, %{max_tokens: nil}, _now), do: nil
 
-  defp sum_tokens(repo, record, metadata_key, policy, now) do
+  defp sum_tokens(repo, record, metadata_identity, policy, now) do
     import Ecto.Query
 
     cutoff = DateTime.to_unix(now, :millisecond) - policy.interval_ms
@@ -185,7 +185,7 @@ defmodule Legion.RateLimiter.Postgres do
         fragment(
           "? @> ?::jsonb",
           agent.ratelimit_metadata,
-          type(^metadata_key, :map)
+          type(^metadata_identity, :map)
         ),
       where: fragment("(?->>'at')::bigint >= ?", field(entry, :value), ^cutoff),
       where: agent.updated_at >= ^naive_cutoff(now, policy),
@@ -239,12 +239,12 @@ defmodule Legion.RateLimiter.Postgres do
       end
 
       @impl Legion.RateLimiter
-      def enforce!(agent_id, key, policy) do
+      def enforce!(agent_id, identity, policy) do
         RateLimiter.Postgres.enforce!(
           unquote(repo),
           Record,
           agent_id,
-          key,
+          identity,
           policy
         )
       end

@@ -1,8 +1,8 @@
 defmodule Legion.RateLimiter.ExceededError do
-  defexception [:agent_id, :key, :policy, :usage, :violations]
+  defexception [:agent_id, :identity, :policy, :usage, :violations]
 
   @impl Exception
-  def message(%__MODULE__{key: key, violations: violations}) do
-    "rate limit exceeded for #{inspect(key)}: #{inspect(violations)}"
+  def message(%__MODULE__{identity: identity, violations: violations}) do
+    "rate limit exceeded for #{inspect(identity)}: #{inspect(violations)}"
   end
 end

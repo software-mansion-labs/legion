@@ -11,17 +11,17 @@ defmodule Legion.AgentServerTest do
   alias ReqLLM.Message.ContentPart
 
   defmodule TestRateLimiter do
-    @moduledoc "Limiter whose verdict and observer both travel in the key."
+    @moduledoc "Limiter whose verdict and observer both travel in the identity."
     @behaviour Legion.RateLimiter
 
     @impl Legion.RateLimiter
-    def enforce!(agent_id, key, policy) do
-      if pid = key[:report_to], do: send(pid, {:enforced, agent_id, key, policy})
+    def enforce!(agent_id, identity, policy) do
+      if pid = identity[:report_to], do: send(pid, {:enforced, agent_id, identity, policy})
 
-      if key[:verdict] == :reject do
+      if identity[:verdict] == :reject do
         raise ExceededError,
           agent_id: agent_id,
-          key: key,
+          identity: identity,
           policy: policy,
           usage: %{agents: 3, tokens: nil},
           violations: [:max_agents]
@@ -1447,8 +1447,8 @@ defmodule Legion.AgentServerTest do
     end
   end
 
-  defp allowing_key(test_pid), do: %{report_to: test_pid}
-  defp rejecting_key(test_pid), do: %{report_to: test_pid, verdict: :reject}
+  defp allowing_identity(test_pid), do: %{report_to: test_pid}
+  defp rejecting_identity(test_pid), do: %{report_to: test_pid, verdict: :reject}
 
   defp limit_policy, do: %Policy{interval_ms: 60_000, max_agents: 2}
 
@@ -1471,7 +1471,8 @@ defmodule Legion.AgentServerTest do
     test "cancels the turn when the limiter rejects it" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, limited(rate_limit: [key: rejecting_key(self())]))
+      {:ok, pid} =
+        Legion.start_link(MathAgent, limited(rate_limit: [identity: rejecting_identity(self())]))
 
       assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
     end
@@ -1488,7 +1489,7 @@ defmodule Legion.AgentServerTest do
         Legion.start_link(
           MathAgent,
           limited(
-            rate_limit: [key: rejecting_key(self())],
+            rate_limit: [identity: rejecting_identity(self())],
             store: MemoryStore,
             agent_id: "rejected"
           )
@@ -1504,13 +1505,14 @@ defmodule Legion.AgentServerTest do
     test "runs the turn when no limiter is configured" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, rate_limit: [key: rejecting_key(self())])
+      {:ok, pid} =
+        Legion.start_link(MathAgent, rate_limit: [identity: rejecting_identity(self())])
 
       assert {:ok, "ok"} = Legion.call(pid, "hi")
       refute_receive {:enforced, _, _, _}
     end
 
-    test "runs the turn when a limiter is configured without a policy or key" do
+    test "runs the turn when a limiter is configured without a policy or identity" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
       {:ok, pid} = Legion.start_link(MathAgent, rate_limit: [limiter: TestRateLimiter])
@@ -1536,7 +1538,9 @@ defmodule Legion.AgentServerTest do
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, limited(rate_limit: [key: rejecting_key(self())]))
+      {:ok, pid} =
+        Legion.start_link(MathAgent, limited(rate_limit: [identity: rejecting_identity(self())]))
+
       agent_id = Legion.get_agent_id(pid)
 
       {:cancel, _} = Legion.call(pid, "hi")
@@ -1548,8 +1552,8 @@ defmodule Legion.AgentServerTest do
       assert metadata.policy == limit_policy()
     end
 
-    test "sub-agents inherit the limiter, its policy, and its key" do
-      key = allowing_key(self())
+    test "sub-agents inherit the limiter, its policy, and its identity" do
+      identity = allowing_identity(self())
 
       stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
         if Enum.any?(messages, &(&1[:role] == "assistant")) do
@@ -1562,14 +1566,14 @@ defmodule Legion.AgentServerTest do
         end
       end)
 
-      {:ok, pid} = Legion.start_link(DelegatingAgent, limited(rate_limit: [key: key]))
+      {:ok, pid} = Legion.start_link(DelegatingAgent, limited(rate_limit: [identity: identity]))
       parent_id = Legion.get_agent_id(pid)
       policy = limit_policy()
 
       {:ok, _} = Legion.call(pid, "delegate")
 
-      assert_receive {:enforced, ^parent_id, ^key, ^policy}
-      assert_receive {:enforced, child_id, ^key, ^policy}
+      assert_receive {:enforced, ^parent_id, ^identity, ^policy}
+      assert_receive {:enforced, child_id, ^identity, ^policy}
       assert child_id != parent_id
     end
 
@@ -1580,13 +1584,13 @@ defmodule Legion.AgentServerTest do
           rate_limit: [
             limiter: TestRateLimiter,
             policy: %Policy{interval_ms: 0},
-            key: allowing_key(self())
+            identity: allowing_identity(self())
           ]
         )
       end
     end
 
-    test "merges an agent key with application rate-limit defaults" do
+    test "merges an agent identity with application rate-limit defaults" do
       Application.put_env(:legion, :rate_limit,
         limiter: TestRateLimiter,
         policy: limit_policy()
@@ -1594,7 +1598,8 @@ defmodule Legion.AgentServerTest do
 
       on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, rate_limit: [key: rejecting_key(self())])
+      {:ok, pid} =
+        Legion.start_link(MathAgent, rate_limit: [identity: rejecting_identity(self())])
 
       assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
     end
