@@ -89,7 +89,7 @@ defmodule Legion.AgentServer do
       %{
         limiter: nil,
         policy: nil,
-        key: nil
+        identity: nil
       }
       |> Map.merge(Map.new(Application.get_env(:legion, :rate_limit, [])))
       |> Map.merge(Vault.get(:rate_limit) || %{})
@@ -272,13 +272,13 @@ defmodule Legion.AgentServer do
              rate_limit: %{
                limiter: limiter,
                policy: policy,
-               key: key
+               identity: identity
              }
            }
          } = state
        )
-       when not is_nil(limiter) and not is_nil(policy) and not is_nil(key) do
-    :ok = limiter.enforce!(state.agent_id, key, policy)
+       when not is_nil(limiter) and not is_nil(policy) and not is_nil(identity) do
+    :ok = limiter.enforce!(state.agent_id, identity, policy)
     :ok
   rescue
     error in ExceededError ->
@@ -288,7 +288,7 @@ defmodule Legion.AgentServer do
         %{
           agent: state.agent_module,
           agent_id: state.agent_id,
-          key: error.key,
+          identity: error.identity,
           policy: error.policy,
           usage: error.usage,
           violations: error.violations

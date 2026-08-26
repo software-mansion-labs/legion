@@ -3,7 +3,7 @@ defmodule Legion.RateLimiter do
   Behaviour for enforcing rate limits across Legion agents.
 
   A rate limiter decides whether an agent may proceed under a `Policy`. Legion
-  calls `enforce!/3` for you: configure a limiter, a policy, and a key, and
+  calls `enforce!/3` for you: configure a limiter, a policy, and an identity, and
   every turn is admitted through it.
 
       Legion.start_link(ChatAgent,
@@ -14,7 +14,7 @@ defmodule Legion.RateLimiter do
             max_agents: 10,
             max_tokens: 100_000
           },
-          key: %{"ip" => "203.0.113.42"}
+          identity: %{"ip" => "203.0.113.42"}
         ]
       )
 
@@ -24,11 +24,11 @@ defmodule Legion.RateLimiter do
       config :legion, :rate_limit,
         limiter: MyApp.RateLimiter,
         policy: policy,
-        key: %{"ip" => "203.0.113.42"}
+        identity: %{"ip" => "203.0.113.42"}
 
   All three must be present for a limit to apply; leaving any of them `nil`
-  disables rate limiting. The `key` identifies the shared cohort: agents with
-  matching keys consume the same rolling-window limits. Each field in
+  disables rate limiting. An `identity` identifies the shared cohort: agents with
+  matching identities consume the same rolling-window limits. Each field in
   `:rate_limit` given to `Legion.start_link/2` wins over the application
   environment, and sub-agents inherit whatever their parent resolved unless
   given their own. Each sub-agent is a separate agent ID in the cohort, so it
@@ -70,7 +70,7 @@ defmodule Legion.RateLimiter do
         @behaviour Legion.RateLimiter
 
         @impl Legion.RateLimiter
-        def enforce!(agent_id, key, policy) do
+        def enforce!(agent_id, identity, policy) do
           # Check and record the rate-limit state for this adapter.
           :ok
         end
@@ -82,19 +82,19 @@ defmodule Legion.RateLimiter do
   alias Legion.RateLimiter.Policy
   alias Legion.Store
 
-  @type limit_key :: %{String.t() => any()}
+  @type limit_identity :: %{String.t() => any()}
 
   @doc """
-  Enforces `policy` for agents matching `key`.
+  Enforces `policy` for agents with a given `identity`.
 
   Returns `:ok` when the adapter admits the agent. The adapter defines how
-  keys match and how it stores rate-limit state.
+  identities match and how it stores rate-limit state.
 
   Raises `Legion.RateLimiter.ExceededError` when any configured limit has
   been reached. Legion catches that exception and cancels the turn; any other
   error propagates, so an adapter that cannot reach its backing store fails
   the agent rather than silently admitting it.
   """
-  @callback enforce!(agent_id :: Store.agent_id(), key :: limit_key(), policy :: Policy.t()) ::
+  @callback enforce!(agent_id :: Store.agent_id(), identity :: limit_identity(), policy :: Policy.t()) ::
               :ok | no_return()
 end
