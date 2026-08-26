@@ -95,6 +95,10 @@ defmodule Legion.RateLimiter do
   error propagates, so an adapter that cannot reach its backing store fails
   the agent rather than silently admitting it.
   """
-  @callback enforce!(agent_id :: Store.agent_id(), identity :: limit_identity(), policy :: Policy.t()) ::
+  @callback enforce!(
+              agent_id :: Store.agent_id(),
+              identity :: limit_identity(),
+              policy :: Policy.t()
+            ) ::
               :ok | no_return()
 end

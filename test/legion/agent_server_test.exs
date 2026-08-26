@@ -1471,7 +1471,8 @@ defmodule Legion.AgentServerTest do
     test "cancels the turn when the limiter rejects it" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, limited(rate_limit: [identity: rejecting_identity(self())]))
+      {:ok, pid} =
+        Legion.start_link(MathAgent, limited(rate_limit: [identity: rejecting_identity(self())]))
 
       assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
     end
@@ -1504,7 +1505,8 @@ defmodule Legion.AgentServerTest do
     test "runs the turn when no limiter is configured" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, rate_limit: [identity: rejecting_identity(self())])
+      {:ok, pid} =
+        Legion.start_link(MathAgent, rate_limit: [identity: rejecting_identity(self())])
 
       assert {:ok, "ok"} = Legion.call(pid, "hi")
       refute_receive {:enforced, _, _, _}
@@ -1536,7 +1538,9 @@ defmodule Legion.AgentServerTest do
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, limited(rate_limit: [identity: rejecting_identity(self())]))
+      {:ok, pid} =
+        Legion.start_link(MathAgent, limited(rate_limit: [identity: rejecting_identity(self())]))
+
       agent_id = Legion.get_agent_id(pid)
 
       {:cancel, _} = Legion.call(pid, "hi")
@@ -1594,7 +1598,8 @@ defmodule Legion.AgentServerTest do
 
       on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, rate_limit: [identity: rejecting_identity(self())])
+      {:ok, pid} =
+        Legion.start_link(MathAgent, rate_limit: [identity: rejecting_identity(self())])
 
       assert {:cancel, {:rate_limited, [:max_agents]}} = Legion.call(pid, "hi")
     end
