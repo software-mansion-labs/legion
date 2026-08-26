@@ -55,9 +55,10 @@ defmodule Legion.Telemetry do
   ## Rate Limit Events
 
   - `[:legion, :rate_limit, :exceeded]` — a rate limiter refused a turn before
-    it started; the turn is cancelled with `{:rate_limited, violations}`
+    it started; metadata carries the identity and policy of the rule that
+    refused, the usage measured for it, and the violations
     - Measurements: `%{system_time: NaiveDateTime.t()}`
-    - Metadata: `%{agent: module, agent_id: String.t(), key: map, policy:
+    - Metadata: `%{agent: module, agent_id: String.t(), identity: map, policy:
       Legion.RateLimiter.Policy.t(), usage: map, violations: [atom]}`
     - `violations` names the limits that were reached, e.g. `[:max_tokens]`.
 

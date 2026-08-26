@@ -24,7 +24,8 @@ defmodule Legion.RateLimiter.Postgres do
         def down, do: Legion.Store.Migration.Postgres.down()
       end
 
-  Call the generated limiter before admitting work:
+  Call the generated limiter before admitting work, passing every rule that
+  applies to the agent:
 
       policy = %Legion.RateLimiter.Policy{
         interval_ms: :timer.minutes(1),
@@ -32,11 +33,16 @@ defmodule Legion.RateLimiter.Postgres do
         max_tokens: 100_000
       }
 
-      :ok = MyApp.RateLimiter.enforce!(agent_id, %{"ip" => "203.0.113.42"}, policy)
+      :ok =
+        MyApp.RateLimiter.enforce!(agent_id, [
+          %Legion.RateLimiter.Rule{identity: %{"ip" => "203.0.113.42"}, policy: policy}
+        ])
 
-  Concurrent calls for the same identity are serialized with a transaction-scoped
-  advisory lock, so `:max_agents` holds under simultaneous admission. Rejected
-  calls are rolled back, leaving metadata only for admitted calls.
+  All rules are evaluated inside one transaction: the adapter locks every
+  distinct identity (in a global order, so agents naming the same identities
+  in different orders cannot deadlock), records the agent, then checks the
+  rules in the order given. The first violated rule raises and rolls the whole
+  call back, leaving metadata only for admitted calls.
 
   Limits are evaluated when a turn starts; a turn that is already running is
   never interrupted, so one turn can carry the recorded total past
@@ -44,12 +50,16 @@ defmodule Legion.RateLimiter.Postgres do
 
   ## Identity matching
 
-  Identities are stored as JSON metadata and matched with Postgres JSON containment.
-  A broader identity therefore includes metadata with additional fields. For example,
-  `%{"ip" => "203.0.113.42"}` matches an agent recorded with
-  `%{"ip" => "203.0.113.42", "tenant" => "acme"}`. Calling `enforce!/3` again for
-  the same agent replaces its stored identity while retaining its original start
-  time.
+  An agent's rule identities are merged into one JSON metadata document and
+  matched with Postgres JSON containment. Each rule is evaluated against the
+  agents whose metadata contains its identity, so an agent admitted under
+  `%{"ip" => "203.0.113.42"}` and `%{"email" => "someone@example.com"}` counts
+  towards both cohorts, and a broader identity such as
+  `%{"ip" => "203.0.113.42"}` also matches an agent recorded with a `"tenant"`
+  field. Rules passed directly to `enforce!/2` must agree on shared fields;
+  `Legion.start_link/2` validates this, and the adapter does not. Calling
+  `enforce!/2` again for the same agent replaces its stored metadata while
+  retaining its original start time.
 
   ## Limit evaluation
 
@@ -73,28 +83,34 @@ defmodule Legion.RateLimiter.Postgres do
   """
 
   alias Legion.RateLimiter.ExceededError
-  alias Legion.RateLimiter.Policy
+  alias Legion.RateLimiter.Rule
 
   @doc false
-  def enforce!(repo, record, agent_id, rate_limit_identity, %Policy{} = policy)
-      when is_binary(agent_id) and is_map(rate_limit_identity) do
+  def enforce!(repo, record, agent_id, rules) when is_binary(agent_id) and is_list(rules) do
+    metadata = Enum.reduce(rules, %{}, &Map.merge(&2, &1.identity))
+
     {:ok, :ok} =
       repo.transaction(fn ->
-        lock_identity(repo, rate_limit_identity)
-        upsert_metadata(repo, record, agent_id, rate_limit_identity)
+        rules
+        |> Enum.map(&Jason.encode!(&1.identity))
+        |> Enum.sort()
+        |> Enum.uniq()
+        |> Enum.each(&lock_identity(repo, &1))
 
-        usage = fetch_usage(repo, record, rate_limit_identity, policy)
+        upsert_metadata(repo, record, agent_id, metadata)
 
-        violations = find_violations(usage, policy)
+        Enum.each(rules, fn %Rule{identity: identity, policy: policy} ->
+          usage = fetch_usage(repo, record, identity, policy)
+          violations = find_violations(usage, policy)
 
-        if violations != [] do
-          raise ExceededError,
-            agent_id: agent_id,
-            identity: rate_limit_identity,
-            policy: policy,
-            usage: usage,
-            violations: violations
-        end
+          violations == [] ||
+            raise ExceededError,
+              agent_id: agent_id,
+              identity: identity,
+              policy: policy,
+              usage: usage,
+              violations: violations
+        end)
 
         :ok
       end)
@@ -102,10 +118,10 @@ defmodule Legion.RateLimiter.Postgres do
     :ok
   end
 
-  def enforce!(_repo, _record, agent_id, identity, policy) do
+  def enforce!(_repo, _record, agent_id, other) do
     raise ArgumentError,
           "invalid rate-limit arguments: " <>
-            "#{inspect(agent_id)}, #{inspect(identity)}, #{inspect(policy)}"
+            "#{inspect(agent_id)}, #{inspect(other)}}"
   end
 
   # Serializes concurrent admissions for the same identity so `:max_agents` counts
@@ -239,13 +255,12 @@ defmodule Legion.RateLimiter.Postgres do
       end
 
       @impl Legion.RateLimiter
-      def enforce!(agent_id, identity, policy) do
+      def enforce!(agent_id, rules) do
         RateLimiter.Postgres.enforce!(
           unquote(repo),
           Record,
           agent_id,
-          identity,
-          policy
+          rules
         )
       end
     end

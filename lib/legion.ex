@@ -83,11 +83,12 @@ defmodule Legion do
       every agent, so you need only pass `:agent_id`. If a store is in effect but no
       `:agent_id` is given, Legion generates one - read it back with `get_agent_id/1`.
       An agent ID can belong to at most one live process across connected nodes.
-    - `:rate_limit` - a keyword list with `:limiter`, `:policy`, and `:identity`
-      (for example, `%{"ip" => "203.0.113.42"}`) that admits every turn through a
-      `Legion.RateLimiter`. All three fields are required for a limit to apply,
-      and each can be set globally instead. A refused turn returns `{:cancel,
-      {:rate_limited, violations}}`; see `Legion.RateLimiter`.
+    - `:rate_limit` - a keyword list with `:limiter` and `:rules`, a list of
+      `Legion.RateLimiter.Rule`s pairing an identity (for example,
+      `%{"ip" => "203.0.113.42"}`) with a policy, that admits every turn through a
+      `Legion.RateLimiter`. Both are required for a limit to apply; the limiter
+      and a default policy can be set globally. A refused turn returns
+      `{:cancel, {:rate_limited, violations}}`; see `Legion.RateLimiter`.
     - Any config overrides (`:model`, `:max_iterations`, etc.)
 
   ## Examples
@@ -100,12 +101,16 @@ defmodule Legion do
         Legion.start_link(ChatAgent,
           rate_limit: [
             limiter: MyApp.RateLimiter,
-            policy: %Legion.RateLimiter.Policy{
-              interval_ms: :timer.minutes(1),
-              max_agents: 10,
-              max_tokens: 100_000
-            },
-            identity: %{"ip" => "203.0.113.42"}
+            rules: [
+              %Legion.RateLimiter.Rule{
+                identity: %{"ip" => "203.0.113.42"},
+                policy: %Legion.RateLimiter.Policy{
+                  interval_ms: :timer.minutes(1),
+                  max_agents: 10,
+                  max_tokens: 100_000
+                }
+              }
+            ]
           ]
         )
   """

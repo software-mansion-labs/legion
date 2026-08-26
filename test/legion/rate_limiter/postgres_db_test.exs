@@ -3,12 +3,14 @@ defmodule Legion.RateLimiter.PostgresDbTest do
 
   alias Legion.RateLimiter.ExceededError
   alias Legion.RateLimiter.Policy
+  alias Legion.RateLimiter.Rule
   alias Legion.Test.Support.LegionAgentsMigration
   alias Legion.Test.Support.PostgresRepo, as: Repo
 
   @ip_key %{"ip" => "203.0.113.42"}
   @other_ip_key %{"ip" => "198.51.100.7"}
   @tenant_ip_key %{"ip" => "203.0.113.42", "tenant" => "acme"}
+  @email_key %{"email" => "someone@example.com"}
 
   defmodule RateLimiter do
     use Legion.RateLimiter.Postgres, repo: Legion.Test.Support.PostgresRepo
@@ -20,29 +22,29 @@ defmodule Legion.RateLimiter.PostgresDbTest do
   end
 
   test "allows exactly max_agents newly started matching agents" do
-    policy = policy(max_agents: 2)
+    rules = [rule(@ip_key, policy(max_agents: 2))]
 
-    assert :ok = RateLimiter.enforce!("first", @ip_key, policy)
-    assert :ok = RateLimiter.enforce!("second", @ip_key, policy)
+    assert :ok = RateLimiter.enforce!("first", rules)
+    assert :ok = RateLimiter.enforce!("second", rules)
   end
 
   test "rejects the agent that would exceed max_agents" do
-    policy = policy(max_agents: 1)
+    rules = [rule(@ip_key, policy(max_agents: 1))]
 
-    assert :ok = RateLimiter.enforce!("first", @ip_key, policy)
+    assert :ok = RateLimiter.enforce!("first", rules)
 
     assert_raise ExceededError, fn ->
-      RateLimiter.enforce!("second", @ip_key, policy)
+      RateLimiter.enforce!("second", rules)
     end
   end
 
   test "counts a broader key's agents with more specific metadata" do
     policy = policy(max_agents: 1)
 
-    assert :ok = RateLimiter.enforce!("acme", @tenant_ip_key, policy)
+    assert :ok = RateLimiter.enforce!("acme", [rule(@tenant_ip_key, policy)])
 
     assert_raise ExceededError, fn ->
-      RateLimiter.enforce!("ip-wide", @ip_key, policy)
+      RateLimiter.enforce!("ip-wide", [rule(@ip_key, policy)])
     end
   end
 
@@ -52,8 +54,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     assert :ok =
              RateLimiter.enforce!(
                "new",
-               @ip_key,
-               policy(interval_ms: 1_000, max_agents: 1)
+               [rule(@ip_key, policy(interval_ms: 1_000, max_agents: 1))]
              )
   end
 
@@ -66,8 +67,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     assert_raise ExceededError, fn ->
       RateLimiter.enforce!(
         "new",
-        @ip_key,
-        policy(interval_ms: 1_000, max_tokens: 10)
+        [rule(@ip_key, policy(interval_ms: 1_000, max_tokens: 10))]
       )
     end
   end
@@ -80,8 +80,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     assert :ok =
              RateLimiter.enforce!(
                "new",
-               @ip_key,
-               policy(interval_ms: 1_000, max_tokens: 10)
+               [rule(@ip_key, policy(interval_ms: 1_000, max_tokens: 10))]
              )
   end
 
@@ -98,8 +97,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     assert :ok =
              RateLimiter.enforce!(
                "new",
-               @ip_key,
-               policy(interval_ms: 1_000, max_tokens: 10)
+               [rule(@ip_key, policy(interval_ms: 1_000, max_tokens: 10))]
              )
   end
 
@@ -107,16 +105,16 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     insert_agent("first", @ip_key, usage: [usage(total_tokens: 10)])
 
     assert_raise ExceededError, fn ->
-      RateLimiter.enforce!("next", @ip_key, policy(max_tokens: 10))
+      RateLimiter.enforce!("next", [rule(@ip_key, policy(max_tokens: 10))])
     end
   end
 
-  test "reports every active violation without requiring an order" do
+  test "reports every active violation of a rule without requiring an order" do
     insert_agent("first", @ip_key, usage: [usage(total_tokens: 10)])
 
     error =
       assert_raise ExceededError, fn ->
-        RateLimiter.enforce!("next", @ip_key, policy(max_agents: 1, max_tokens: 10))
+        RateLimiter.enforce!("next", [rule(@ip_key, policy(max_agents: 1, max_tokens: 10))])
       end
 
     assert MapSet.new(error.violations) == MapSet.new([:max_agents, :max_tokens])
@@ -124,49 +122,177 @@ defmodule Legion.RateLimiter.PostgresDbTest do
 
   test "zero limits allow none" do
     assert_raise ExceededError, fn ->
-      RateLimiter.enforce!("agent-limit", @ip_key, policy(max_agents: 0))
+      RateLimiter.enforce!("agent-limit", [rule(@ip_key, policy(max_agents: 0))])
     end
 
     assert_raise ExceededError, fn ->
-      RateLimiter.enforce!("token-limit", @other_ip_key, policy(max_tokens: 0))
+      RateLimiter.enforce!("token-limit", [rule(@other_ip_key, policy(max_tokens: 0))])
     end
   end
 
   test "allows an unrestricted policy" do
-    assert :ok = RateLimiter.enforce!("unrestricted", @ip_key, policy())
+    assert :ok = RateLimiter.enforce!("unrestricted", [rule(@ip_key, policy())])
+  end
+
+  test "rejects arguments that are not an agent id and a list of rules" do
+    assert_raise ArgumentError, ~r/invalid rate-limit arguments/, fn ->
+      RateLimiter.enforce!("agent", rule(@ip_key, policy()))
+    end
+  end
+
+  describe "several rules" do
+    test "records the merged identities of every rule" do
+      assert :ok =
+               RateLimiter.enforce!("agent", [
+                 rule(@ip_key, policy()),
+                 rule(@email_key, policy())
+               ])
+
+      assert %{rows: [[metadata]]} =
+               Repo.query!("SELECT ratelimit_metadata FROM legion_agents WHERE agent_id = $1", [
+                 "agent"
+               ])
+
+      assert metadata == Map.merge(@ip_key, @email_key)
+    end
+
+    test "counts an agent under each of its rules' cohorts" do
+      assert :ok =
+               RateLimiter.enforce!("agent", [
+                 rule(@ip_key, policy()),
+                 rule(@email_key, policy())
+               ])
+
+      assert_raise ExceededError, fn ->
+        RateLimiter.enforce!("same-ip", [rule(@ip_key, policy(max_agents: 1))])
+      end
+
+      assert_raise ExceededError, fn ->
+        RateLimiter.enforce!("same-email", [rule(@email_key, policy(max_agents: 1))])
+      end
+    end
+
+    test "rejects the agent when any rule is violated and records nothing" do
+      insert_agent("existing", @email_key)
+
+      error =
+        assert_raise ExceededError, fn ->
+          RateLimiter.enforce!("new", [
+            rule(@ip_key, policy(max_agents: 5)),
+            rule(@email_key, policy(max_agents: 1))
+          ])
+        end
+
+      assert error.identity == @email_key
+      assert error.violations == [:max_agents]
+
+      assert %{rows: [[0]]} =
+               Repo.query!("SELECT count(*) FROM legion_agents WHERE agent_id = $1", ["new"])
+    end
+
+    test "reports the first violated rule in list order" do
+      insert_agent("existing", Map.merge(@ip_key, @email_key))
+      ip_rule = rule(@ip_key, policy(max_agents: 1))
+      email_rule = rule(@email_key, policy(max_agents: 1))
+
+      error =
+        assert_raise(ExceededError, fn -> RateLimiter.enforce!("a", [ip_rule, email_rule]) end)
+
+      assert error.identity == @ip_key
+
+      error =
+        assert_raise(ExceededError, fn -> RateLimiter.enforce!("b", [email_rule, ip_rule]) end)
+
+      assert error.identity == @email_key
+    end
+
+    test "evaluates one identity under several windows" do
+      insert_agent("old", @ip_key, started_at: milliseconds_ago(2_000))
+      short = policy(interval_ms: 1_000, max_agents: 1)
+      long = policy(interval_ms: 60_000, max_agents: 1)
+
+      error =
+        assert_raise ExceededError, fn ->
+          RateLimiter.enforce!("new", [rule(@ip_key, short), rule(@ip_key, long)])
+        end
+
+      assert error.policy == long
+    end
+
+    # Rules lock their identities in a global order, so two agents naming the
+    # same identities in different orders never deadlock; one of them wins
+    # every shared cohort and the rest are refused.
+    test "admits exactly one agent under concurrent calls with overlapping rules in mixed order" do
+      ip_rule = rule(@ip_key, policy(max_agents: 1))
+      email_rule = rule(@email_key, policy(max_agents: 1))
+      test_pid = self()
+
+      tasks =
+        for index <- 1..20 do
+          rules = if rem(index, 2) == 0, do: [ip_rule, email_rule], else: [email_rule, ip_rule]
+
+          Task.async(fn ->
+            send(test_pid, {:ready, self()})
+
+            receive do
+              :enforce ->
+                try do
+                  RateLimiter.enforce!("concurrent-#{index}", rules)
+                rescue
+                  ExceededError -> :exceeded
+                end
+            end
+          end)
+        end
+
+      for _ <- tasks, do: assert_receive({:ready, _})
+      Enum.each(tasks, &send(&1.pid, :enforce))
+
+      outcomes = Enum.map(tasks, &Task.await(&1, 5_000))
+
+      assert Enum.count(outcomes, &(&1 == :ok)) == 1
+      assert Enum.count(outcomes, &(&1 == :exceeded)) == 19
+
+      %{rows: [[recorded]]} =
+        Repo.query!("SELECT count(*) FROM legion_agents WHERE ratelimit_metadata IS NOT NULL", [])
+
+      assert recorded == 1
+    end
   end
 
   test "does not notify for a metadata upsert with an unchanged key" do
     notifications = start_supervised!({Postgrex.Notifications, postgres_options()})
     listen_ref = Postgrex.Notifications.listen!(notifications, "legion_agents")
+    rules = [rule(@ip_key, policy())]
 
-    assert :ok = RateLimiter.enforce!("agent", @ip_key, policy())
+    assert :ok = RateLimiter.enforce!("agent", rules)
 
     assert_receive {:notification, ^notifications, ^listen_ref, "legion_agents", "agent"}
 
-    assert :ok = RateLimiter.enforce!("agent", @ip_key, policy())
+    assert :ok = RateLimiter.enforce!("agent", rules)
 
     refute_receive {:notification, ^notifications, ^listen_ref, "legion_agents", "agent"}
   end
 
   test "moves an agent to its new key without resetting its start time" do
-    assert :ok = RateLimiter.enforce!("agent", @ip_key, policy())
+    assert :ok = RateLimiter.enforce!("agent", [rule(@ip_key, policy())])
 
-    assert :ok = RateLimiter.enforce!("agent", @other_ip_key, policy())
+    assert :ok = RateLimiter.enforce!("agent", [rule(@other_ip_key, policy())])
 
-    assert :ok =
-             RateLimiter.enforce!("ip-agent", @ip_key, policy(max_agents: 1))
+    assert :ok = RateLimiter.enforce!("ip-agent", [rule(@ip_key, policy(max_agents: 1))])
 
     assert_raise ExceededError, fn ->
-      RateLimiter.enforce!("other-ip-agent", @other_ip_key, policy(max_agents: 1))
+      RateLimiter.enforce!("other-ip-agent", [rule(@other_ip_key, policy(max_agents: 1))])
     end
   end
 
   test "rolls back a rejected new agent's metadata" do
-    assert :ok = RateLimiter.enforce!("first", @ip_key, policy(max_agents: 1))
+    rules = [rule(@ip_key, policy(max_agents: 1))]
+
+    assert :ok = RateLimiter.enforce!("first", rules)
 
     assert_raise ExceededError, fn ->
-      RateLimiter.enforce!("rejected", @ip_key, policy(max_agents: 1))
+      RateLimiter.enforce!("rejected", rules)
     end
 
     assert %{rows: [[0]]} =
@@ -178,7 +304,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
   # limit. What must hold is that every caller gets a verdict and that only
   # admitted agents leave a row behind.
   test "admits exactly max_agents under concurrent calls and records only the admitted ones" do
-    policy = policy(max_agents: 1)
+    rules = [rule(@ip_key, policy(max_agents: 1))]
     test_pid = self()
 
     tasks =
@@ -189,7 +315,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
           receive do
             :enforce ->
               try do
-                RateLimiter.enforce!("concurrent-#{index}", @ip_key, policy)
+                RateLimiter.enforce!("concurrent-#{index}", rules)
               rescue
                 ExceededError -> :exceeded
               end
@@ -227,6 +353,8 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     assert :already_up = Ecto.Migrator.up(Repo, version, LegionAgentsMigration, log: false)
   end
 
+  defp rule(identity, policy), do: %Rule{identity: identity, policy: policy}
+
   defp policy(opts \\ []) do
     struct!(Policy, Keyword.merge([interval_ms: 60_000, max_agents: nil, max_tokens: nil], opts))
   end
@@ -238,7 +366,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     %{"total_tokens" => total_tokens, "at" => at}
   end
 
-  defp insert_agent(agent_id, key, opts) do
+  defp insert_agent(agent_id, key, opts \\ []) do
     started_at = Keyword.get(opts, :started_at, NaiveDateTime.utc_now())
     usage = Keyword.get(opts, :usage, [])
     updated_at = Keyword.get(opts, :updated_at, NaiveDateTime.utc_now())
