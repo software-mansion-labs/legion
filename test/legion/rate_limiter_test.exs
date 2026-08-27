@@ -51,7 +51,7 @@ defmodule Legion.RateLimiterTest do
     end
 
     test "fills a rule's missing policy from the application policy" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter, policy: @policy)
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, default_policy: @policy)
 
       assert %{limiter: Limiter, rules: [rule(@ip, @policy), rule(@email, @narrow)]} ==
                RateLimiter.resolve!(rules: [%Rule{identity: @ip}, rule(@email, @narrow)])
@@ -146,7 +146,7 @@ defmodule Legion.RateLimiterTest do
     end
 
     test "carries only the limiter and rules" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter, policy: @policy)
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, default_policy: @policy)
 
       resolved = RateLimiter.resolve!(rules: [%Rule{identity: @ip}])
 

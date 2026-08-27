@@ -39,13 +39,13 @@ defmodule Legion.RateLimiter do
 
       config :legion, :rate_limit,
         limiter: MyApp.RateLimiter,
-        policy: %Legion.RateLimiter.Policy{interval_ms: :timer.minutes(1), max_agents: 10}
+        default_policy: %Legion.RateLimiter.Policy{interval_ms: :timer.minutes(1), max_agents: 10}
 
       Legion.start_link(ChatAgent,
         rate_limit: [rules: [%Legion.RateLimiter.Rule{identity: %{"ip" => "203.0.113.42"}}]]
       )
 
-  A rule given without a `:policy` takes the global one. Rate limiting applies
+  A rule given without a `:policy` takes the default one. Rate limiting applies
   only when a limiter and at least one rule resolve; a limiter without rules,
   or rules without a limiter, disables it. Sub-agents inherit whatever their
   parent resolved and cannot override it; each sub-agent is a separate agent ID
@@ -137,7 +137,7 @@ defmodule Legion.RateLimiter do
 
   def resolve!(overrides) when is_list(overrides) do
     app_config = Application.get_env(:legion, :rate_limit, [])
-    overrides = fill_policies(overrides, Keyword.get(app_config, :policy))
+    overrides = fill_policies(overrides, Keyword.get(app_config, :default_policy))
 
     %{limiter: nil, rules: []}
     |> Map.merge(layer(app_config))
@@ -146,10 +146,10 @@ defmodule Legion.RateLimiter do
     |> finish!()
   end
 
-  defp fill_policies(overrides, global_policy) do
+  defp fill_policies(overrides, default_policy) do
     case Keyword.fetch(overrides, :rules) do
       {:ok, rules} when is_list(rules) ->
-        Keyword.put(overrides, :rules, Enum.map(rules, &fill(&1, global_policy)))
+        Keyword.put(overrides, :rules, Enum.map(rules, &fill(&1, default_policy)))
 
       {:ok, other} ->
         raise ArgumentError, "expected :rules to be a list, got: #{inspect(other)}"
@@ -159,10 +159,10 @@ defmodule Legion.RateLimiter do
     end
   end
 
-  defp fill(%Rule{policy: nil} = rule, global_policy), do: %{rule | policy: global_policy}
-  defp fill(%Rule{} = rule, _global_policy), do: rule
+  defp fill(%Rule{policy: nil} = rule, default_policy), do: %{rule | policy: default_policy}
+  defp fill(%Rule{} = rule, _default_policy), do: rule
 
-  defp fill(other, _global_policy),
+  defp fill(other, _default_policy),
     do: raise(ArgumentError, "expected a #{inspect(Rule)} in :rules, got: #{inspect(other)}")
 
   defp layer(config), do: config |> Map.new() |> Map.take([:limiter, :rules])

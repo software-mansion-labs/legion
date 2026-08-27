@@ -1636,7 +1636,7 @@ defmodule Legion.AgentServerTest do
     test "fills rules from the application limiter and policy" do
       Application.put_env(:legion, :rate_limit,
         limiter: TestRateLimiter,
-        policy: limit_policy()
+        default_policy: limit_policy()
       )
 
       on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
