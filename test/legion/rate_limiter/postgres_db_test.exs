@@ -54,7 +54,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     assert :ok =
              RateLimiter.enforce!(
                "new",
-               [rule(@ip_key, policy(interval_ms: 1_000, max_agents: 1))]
+               [rule(@ip_key, policy(window_ms: 1_000, max_agents: 1))]
              )
   end
 
@@ -67,7 +67,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     assert_raise ExceededError, fn ->
       RateLimiter.enforce!(
         "new",
-        [rule(@ip_key, policy(interval_ms: 1_000, max_tokens: 10))]
+        [rule(@ip_key, policy(window_ms: 1_000, max_tokens: 10))]
       )
     end
   end
@@ -80,14 +80,14 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     assert :ok =
              RateLimiter.enforce!(
                "new",
-               [rule(@ip_key, policy(interval_ms: 1_000, max_tokens: 10))]
+               [rule(@ip_key, policy(window_ms: 1_000, max_tokens: 10))]
              )
   end
 
   # Usage is only ever appended by a store save, and every save bumps
   # updated_at, so a row untouched since before the window cannot hold usage
   # inside it. Skipping those rows keeps the token sum proportional to the
-  # window rather than to the whole history of the cohort.
+  # window rather than to the whole history of the group.
   test "ignores rows untouched since before the token window" do
     insert_agent("stale", @ip_key,
       usage: [usage(total_tokens: 10, at: timestamp_milliseconds_ago(100))],
@@ -97,7 +97,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
     assert :ok =
              RateLimiter.enforce!(
                "new",
-               [rule(@ip_key, policy(interval_ms: 1_000, max_tokens: 10))]
+               [rule(@ip_key, policy(window_ms: 1_000, max_tokens: 10))]
              )
   end
 
@@ -156,7 +156,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
       assert metadata == Map.merge(@ip_key, @email_key)
     end
 
-    test "counts an agent under each of its rules' cohorts" do
+    test "counts an agent under each of its rules' groups" do
       assert :ok =
                RateLimiter.enforce!("agent", [
                  rule(@ip_key, policy()),
@@ -208,8 +208,8 @@ defmodule Legion.RateLimiter.PostgresDbTest do
 
     test "evaluates one identity under several windows" do
       insert_agent("old", @ip_key, started_at: milliseconds_ago(2_000))
-      short = policy(interval_ms: 1_000, max_agents: 1)
-      long = policy(interval_ms: 60_000, max_agents: 1)
+      short = policy(window_ms: 1_000, max_agents: 1)
+      long = policy(window_ms: 60_000, max_agents: 1)
 
       error =
         assert_raise ExceededError, fn ->
@@ -221,8 +221,8 @@ defmodule Legion.RateLimiter.PostgresDbTest do
 
     # Rules lock their identities in a global order, so two agents naming the
     # same identities in different orders never deadlock; one of them wins
-    # every shared cohort and the rest are refused.
-    test "admits exactly one agent under concurrent calls with overlapping rules in mixed order" do
+    # every shared group and the rest are denied.
+    test "allows exactly one agent under concurrent calls with overlapping rules in mixed order" do
       ip_rule = rule(@ip_key, policy(max_agents: 1))
       email_rule = rule(@email_key, policy(max_agents: 1))
       test_pid = self()
@@ -302,8 +302,8 @@ defmodule Legion.RateLimiter.PostgresDbTest do
   # `max_agents` is not concurrency-safe: each transaction counts only rows
   # committed before it started, so simultaneous starts can overshoot the
   # limit. What must hold is that every caller gets a verdict and that only
-  # admitted agents leave a row behind.
-  test "admits exactly max_agents under concurrent calls and records only the admitted ones" do
+  # allowed agents leave a row behind.
+  test "allows exactly max_agents under concurrent calls and records only the allowed ones" do
     rules = [rule(@ip_key, policy(max_agents: 1))]
     test_pid = self()
 
@@ -356,7 +356,7 @@ defmodule Legion.RateLimiter.PostgresDbTest do
   defp rule(identity, policy), do: %Rule{identity: identity, policy: policy}
 
   defp policy(opts \\ []) do
-    struct!(Policy, Keyword.merge([interval_ms: 60_000, max_agents: nil, max_tokens: nil], opts))
+    struct!(Policy, Keyword.merge([window_ms: 60_000, max_agents: nil, max_tokens: nil], opts))
   end
 
   defp usage(opts) do

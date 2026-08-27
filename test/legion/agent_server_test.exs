@@ -1453,7 +1453,7 @@ defmodule Legion.AgentServerTest do
   defp allowing_identity(test_pid), do: %{"report_to" => test_pid}
   defp rejecting_identity(test_pid), do: %{"report_to" => test_pid, "verdict" => :reject}
 
-  defp limit_policy, do: %Policy{interval_ms: 60_000, max_agents: 2}
+  defp limit_policy, do: %Policy{window_ms: 60_000, max_agents: 2}
 
   defp rule(identity, policy \\ limit_policy()), do: %Rule{identity: identity, policy: policy}
 
@@ -1581,7 +1581,7 @@ defmodule Legion.AgentServerTest do
     test "sub-agents inherit the limiter and every rule" do
       ip_identity = allowing_identity(self())
       tenant_identity = Map.put(allowing_identity(self()), "tenant", "acme")
-      tenant_policy = %Policy{interval_ms: 1_000, max_agents: 1}
+      tenant_policy = %Policy{window_ms: 1_000, max_agents: 1}
 
       stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
         if Enum.any?(messages, &(&1[:role] == "assistant")) do
@@ -1612,13 +1612,39 @@ defmodule Legion.AgentServerTest do
       assert child_id != parent_id
     end
 
+    test "sub-agents of a parent that opted out are not rate limited" do
+      Application.put_env(:legion, :rate_limit,
+        limiter: TestRateLimiter,
+        rules: [rule(rejecting_identity(self()))]
+      )
+
+      on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
+
+      stub(ReqLLM, :generate_object, fn _model, messages, _schema ->
+        if Enum.any?(messages, &(&1[:role] == "assistant")) do
+          llm_response("child done")
+        else
+          llm_eval_response("""
+          response = AgentTool.call(ChildAgent, "do work")
+          return response[2]
+          """)
+        end
+      end)
+
+      {:ok, pid} = Legion.start_link(DelegatingAgent, rate_limit: [rules: []])
+
+      assert {:ok, _} = Legion.call(pid, "delegate")
+
+      refute_receive {:enforced, _, _, _}
+    end
+
     test "rejects an invalid policy when the agent starts" do
-      assert_raise ArgumentError, ~r/:interval_ms/, fn ->
+      assert_raise ArgumentError, ~r/:window_ms/, fn ->
         Legion.start_link(
           MathAgent,
           rate_limit: [
             limiter: TestRateLimiter,
-            rules: [rule(allowing_identity(self()), %Policy{interval_ms: 0})]
+            rules: [rule(allowing_identity(self()), %Policy{window_ms: 0})]
           ]
         )
       end

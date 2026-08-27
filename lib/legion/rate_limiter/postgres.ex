@@ -24,11 +24,11 @@ defmodule Legion.RateLimiter.Postgres do
         def down, do: Legion.Store.Migration.Postgres.down()
       end
 
-  Call the generated limiter before admitting work, passing every rule that
+  Call the generated limiter before running work, passing every rule that
   applies to the agent:
 
       policy = %Legion.RateLimiter.Policy{
-        interval_ms: :timer.minutes(1),
+        window_ms: :timer.minutes(1),
         max_agents: 10,
         max_tokens: 100_000
       }
@@ -42,19 +42,19 @@ defmodule Legion.RateLimiter.Postgres do
   distinct identity (in a global order, so agents naming the same identities
   in different orders cannot deadlock), records the agent, then checks the
   rules in the order given. The first violated rule raises and rolls the whole
-  call back, leaving metadata only for admitted calls.
+  call back, leaving metadata only for allowed calls.
 
   Limits are evaluated when a turn starts; a turn that is already running is
   never interrupted, so one turn can carry the recorded total past
-  `:max_tokens` before the next call is refused.
+  `:max_tokens` before the next call is denied.
 
   ## Identity matching
 
   An agent's rule identities are merged into one JSON metadata document and
   matched with Postgres JSON containment. Each rule is evaluated against the
-  agents whose metadata contains its identity, so an agent admitted under
+  agents whose metadata contains its identity, so an agent recorded under
   `%{"ip" => "203.0.113.42"}` and `%{"email" => "someone@example.com"}` counts
-  towards both cohorts, and a broader identity such as
+  towards both groups, and a broader identity such as
   `%{"ip" => "203.0.113.42"}` also matches an agent recorded with a `"tenant"`
   field. Rules passed directly to `enforce!/2` must agree on shared fields;
   `Legion.start_link/2` validates this, and the adapter does not. Calling
@@ -63,12 +63,12 @@ defmodule Legion.RateLimiter.Postgres do
 
   ## Limit evaluation
 
-  The adapter includes the currently admitted agent when it evaluates
+  The adapter includes the agent being checked when it evaluates
   `:max_agents`, so it raises only when that call would make the matching count
   exceed the configured maximum. Agents are counted by `started_at`.
 
   `:max_tokens` is evaluated from recorded `"total_tokens"` usage whose `"at"`
-  timestamp falls inside the policy's interval; once that total reaches the
+  timestamp falls inside the policy's window; once that total reaches the
   configured maximum, later calls raise.
 
   Token limits require Legion usage tracking, which is enabled by default. If
@@ -121,13 +121,13 @@ defmodule Legion.RateLimiter.Postgres do
   def enforce!(_repo, _record, agent_id, other) do
     raise ArgumentError,
           "invalid rate-limit arguments: " <>
-            "#{inspect(agent_id)}, #{inspect(other)}}"
+            "#{inspect(agent_id)}, #{inspect(other)}"
   end
 
-  # Serializes concurrent admissions for the same identity so `:max_agents` counts
+  # Serializes concurrent calls for the same identity so `:max_agents` counts
   # every in-flight transaction, not only those already committed.
-  defp lock_identity(repo, metadata_identity) do
-    repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [Jason.encode!(metadata_identity)])
+  defp lock_identity(repo, encoded_identity) do
+    repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [encoded_identity])
     :ok
   end
 
@@ -192,7 +192,7 @@ defmodule Legion.RateLimiter.Postgres do
   defp sum_tokens(repo, record, metadata_identity, policy, now) do
     import Ecto.Query
 
-    cutoff = DateTime.to_unix(now, :millisecond) - policy.interval_ms
+    cutoff = DateTime.to_unix(now, :millisecond) - policy.window_ms
 
     from(agent in record,
       inner_lateral_join: entry in fragment("SELECT unnest(?) AS value", agent.usage),
@@ -216,7 +216,7 @@ defmodule Legion.RateLimiter.Postgres do
 
   defp naive_cutoff(now, policy) do
     now
-    |> DateTime.add(-policy.interval_ms, :millisecond)
+    |> DateTime.add(-policy.window_ms, :millisecond)
     |> DateTime.to_naive()
   end
 

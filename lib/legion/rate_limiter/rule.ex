@@ -1,15 +1,15 @@
 defmodule Legion.RateLimiter.Rule do
   @moduledoc """
-  One rate-limit rule: the cohort it applies to and the limits it enforces.
+  One rate-limit rule: the group it applies to and the limits it enforces.
 
       %Legion.RateLimiter.Rule{
         identity: %{"ip" => "203.0.113.42"},
-        policy: %Legion.RateLimiter.Policy{interval_ms: :timer.minutes(1), max_agents: 10}
+        policy: %Legion.RateLimiter.Policy{window_ms: :timer.minutes(1), max_agents: 10}
       }
 
   ## Fields
 
-    * `:identity` (required) - string-keyed map naming the cohort. Agents with
+    * `:identity` (required) - string-keyed map naming the group. Agents with
       matching identities consume the same rolling-window limits; how "matching"
       is decided belongs to the adapter (`Legion.RateLimiter.Postgres` uses JSON
       containment, so a broader identity also covers agents recorded with extra

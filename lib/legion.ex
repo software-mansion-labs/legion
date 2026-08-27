@@ -85,9 +85,9 @@ defmodule Legion do
       An agent ID can belong to at most one live process across connected nodes.
     - `:rate_limit` - a keyword list with `:limiter` and `:rules`, a list of
       `Legion.RateLimiter.Rule`s pairing an identity (for example,
-      `%{"ip" => "203.0.113.42"}`) with a policy, that admits every turn through a
+      `%{"ip" => "203.0.113.42"}`) with a policy, checked for every turn by a
       `Legion.RateLimiter`. Both are required for a limit to apply; the limiter
-      and a default policy can be set globally. A refused turn returns
+      and a default policy can be set globally. A denied turn returns
       `{:cancel, {:rate_limited, violations}}`; see `Legion.RateLimiter`.
     - Any config overrides (`:model`, `:max_iterations`, etc.)
 
@@ -105,7 +105,7 @@ defmodule Legion do
               %Legion.RateLimiter.Rule{
                 identity: %{"ip" => "203.0.113.42"},
                 policy: %Legion.RateLimiter.Policy{
-                  interval_ms: :timer.minutes(1),
+                  window_ms: :timer.minutes(1),
                   max_agents: 10,
                   max_tokens: 100_000
                 }

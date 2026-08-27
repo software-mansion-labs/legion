@@ -22,8 +22,9 @@ defmodule Legion.RateLimiterTest do
   @ip %{"ip" => "203.0.113.42"}
   @other_ip %{"ip" => "198.51.100.7"}
   @email %{"email" => "someone@example.com"}
-  @policy %Policy{interval_ms: 60_000, max_agents: 2}
-  @narrow %Policy{interval_ms: 1_000, max_agents: 1}
+  @policy %Policy{window_ms: 60_000, max_agents: 2}
+  @narrow %Policy{window_ms: 1_000, max_agents: 1}
+  @off %{limiter: nil, rules: []}
 
   setup do
     on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
@@ -31,9 +32,9 @@ defmodule Legion.RateLimiterTest do
   end
 
   describe "resolve!/1" do
-    test "returns nil when nothing is configured" do
-      assert RateLimiter.resolve!(nil) == nil
-      assert RateLimiter.resolve!([]) == nil
+    test "resolves to no limit when nothing is configured" do
+      assert RateLimiter.resolve!(nil) == @off
+      assert RateLimiter.resolve!([]) == @off
     end
 
     test "combines the application limiter with the rules given at start" do
@@ -65,15 +66,15 @@ defmodule Legion.RateLimiterTest do
       end
     end
 
-    test "returns nil with rules but no limiter" do
-      assert RateLimiter.resolve!(rules: [rule(@ip, @policy)]) == nil
+    test "resolves to no limit with rules but no limiter" do
+      assert RateLimiter.resolve!(rules: [rule(@ip, @policy)]) == @off
     end
 
-    test "returns nil with a limiter but no rules" do
+    test "resolves to no limit with a limiter but no rules" do
       Application.put_env(:legion, :rate_limit, limiter: Limiter)
 
-      assert RateLimiter.resolve!(nil) == nil
-      assert RateLimiter.resolve!(rules: []) == nil
+      assert RateLimiter.resolve!(nil) == @off
+      assert RateLimiter.resolve!(rules: []) == @off
     end
 
     test "validates rules even when no limiter is configured" do
@@ -85,8 +86,8 @@ defmodule Legion.RateLimiterTest do
     test "rejects an invalid policy" do
       Application.put_env(:legion, :rate_limit, limiter: Limiter)
 
-      assert_raise ArgumentError, ~r/:interval_ms/, fn ->
-        RateLimiter.resolve!(rules: [rule(@ip, %Policy{interval_ms: 0})])
+      assert_raise ArgumentError, ~r/:window_ms/, fn ->
+        RateLimiter.resolve!(rules: [rule(@ip, %Policy{window_ms: 0})])
       end
     end
 
@@ -122,6 +123,25 @@ defmodule Legion.RateLimiterTest do
       Vault.unsafe_put(:rate_limit, inherited)
 
       assert RateLimiter.resolve!(nil) == inherited
+    end
+
+    test "a sub-agent of a parent that opted out stays unlimited" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, rules: [rule(%{}, @policy)])
+
+      parent = RateLimiter.resolve!(rules: [])
+      assert parent == @off
+
+      # AgentServer.init stores the parent's verdict for sub-agents to inherit.
+      Vault.unsafe_put(:rate_limit, parent)
+
+      assert RateLimiter.resolve!(nil) == @off
+    end
+
+    test "a sub-agent of a parent that opted out cannot re-enable the application rules" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, rules: [rule(%{}, @policy)])
+      Vault.unsafe_put(:rate_limit, @off)
+
+      assert RateLimiter.resolve!(limiter: OtherLimiter) == @off
     end
 
     test "the parent's resolved configuration wins over the application environment" do
@@ -189,7 +209,7 @@ defmodule Legion.RateLimiterTest do
 
     test "rejects an invalid policy" do
       assert_raise ArgumentError, ~r/:max_agents/, fn ->
-        Rule.validate!(rule(@ip, %Policy{interval_ms: 1_000, max_agents: -1}))
+        Rule.validate!(rule(@ip, %Policy{window_ms: 1_000, max_agents: -1}))
       end
     end
   end
