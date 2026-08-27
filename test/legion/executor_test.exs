@@ -187,6 +187,78 @@ defmodule Legion.ExecutorTest do
                Legion.Executor.run(MathAgent, executor_messages("recover"), %{})
     end
 
+    test "emits normalized usage in LLM request stop telemetry" do
+      handler_id = "executor-llm-stop-#{System.unique_integer()}"
+
+      :telemetry.attach(
+        handler_id,
+        [:legion, :llm, :request, :stop],
+        fn event, _measurements, metadata, pid -> send(pid, {:telemetry, event, metadata}) end,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        {:ok,
+         %ReqLLM.Response{
+           id: "test",
+           model: "test",
+           context: nil,
+           object: %{"action" => "return", "code" => "", "result" => "42"},
+           usage: %{input_tokens: 12, output_tokens: 5}
+         }}
+      end)
+
+      before = System.system_time(:millisecond)
+
+      assert {:ok, "42", _messages, [], [_usage]} =
+               Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
+
+      assert_receive {:telemetry, [:legion, :llm, :request, :stop], metadata}
+
+      assert %{
+               object: %{"action" => "return"},
+               usage: %{"input_tokens" => 12, "output_tokens" => 5, "at" => timestamp}
+             } = metadata
+
+      assert timestamp in before..System.system_time(:millisecond)
+    end
+
+    test "emits usage in LLM request stop telemetry for an invalid response" do
+      handler_id = "executor-llm-stop-invalid-#{System.unique_integer()}"
+
+      :telemetry.attach(
+        handler_id,
+        [:legion, :llm, :request, :stop],
+        fn event, _measurements, metadata, pid -> send(pid, {:telemetry, event, metadata}) end,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 -> response(nil, 7)
+          2 -> response(%{"action" => "return", "code" => "", "result" => "recovered"}, 11)
+        end
+      end)
+
+      assert {:ok, "recovered", _messages, [], [_first, _second]} =
+               Legion.Executor.run(MathAgent, executor_messages("recover"), %{})
+
+      assert_receive {:telemetry, [:legion, :llm, :request, :stop], %{error: _, usage: usage}}
+      assert %{"turn_usage" => 7, "at" => at} = usage
+      assert is_integer(at)
+
+      assert_receive {:telemetry, [:legion, :llm, :request, :stop],
+                      %{object: %{"action" => "return"}, usage: %{"turn_usage" => 11}}}
+    end
+
     test "returns result for return action" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         response(%{"action" => "return", "code" => "", "result" => "42"})
