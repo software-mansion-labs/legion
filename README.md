@@ -1,3 +1,7 @@
+[![Ad](https://swm-delivery.com/www/images/zone-gh-legion-1?n=1)](https://swm-delivery.com/www/delivery/ck-slug.php?zoneid=zone-gh-legion-1&n=1)
+[![Ad](https://swm-delivery.com/www/images/zone-gh-legion-2?n=1)](https://swm-delivery.com/www/delivery/ck-slug.php?zoneid=zone-gh-legion-2&n=1)
+[![Ad](https://swm-delivery.com/www/images/zone-gh-legion-3?n=1)](https://swm-delivery.com/www/delivery/ck-slug.php?zoneid=zone-gh-legion-3&n=1)
+
 # Legion
 
 <div align="center">
@@ -6,10 +10,6 @@
 [![License](https://img.shields.io/hexpm/l/legion.svg)](https://github.com/software-mansion-labs/legion/blob/main/LICENSE)
 [![Version](https://img.shields.io/hexpm/v/legion.svg)](https://hex.pm/packages/legion)
 [![Hex Docs](https://img.shields.io/badge/documentation-gray.svg)](https://hexdocs.pm/legion)
-
-[![Ad](https://swm-delivery.com/www/images/zone-gh-legion-1?n=1)](https://swm-delivery.com/www/delivery/ck-slug.php?zoneid=zone-gh-legion-1&n=1)
-[![Ad](https://swm-delivery.com/www/images/zone-gh-legion-2?n=1)](https://swm-delivery.com/www/delivery/ck-slug.php?zoneid=zone-gh-legion-2&n=1)
-[![Ad](https://swm-delivery.com/www/images/zone-gh-legion-3?n=1)](https://swm-delivery.com/www/delivery/ck-slug.php?zoneid=zone-gh-legion-3&n=1)
 
 </div>
 <!-- MDOC -->
