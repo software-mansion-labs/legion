@@ -51,7 +51,7 @@ defmodule Legion.AgentServer do
 
   defp start_args(agent_module, opts) do
     {store, opts} = Keyword.pop(opts, :store)
-    {rate_limit, opts} = build_rate_limit(opts)
+    {rate_limit_opts, opts} = Keyword.pop(opts, :rate_limit)
     {agent_id, opts} = Keyword.pop(opts, :agent_id)
 
     store = store || Vault.get(:store) || Application.get_env(:legion, :store)
@@ -76,28 +76,11 @@ defmodule Legion.AgentServer do
     persistence_frequency = Store.persistence_frequency(store)
     track_usage = Application.get_env(:legion, :track_usage, true)
 
+    rate_limit = RateLimiter.resolve!(rate_limit_opts)
     gen_opts = [name: Legion.AgentIndex.name(agent_id)]
     config = agent_module |> resolve_config(opts) |> Map.put(:rate_limit, rate_limit)
 
     {{agent_module, config, store, agent_id, persistence_frequency, track_usage}, gen_opts}
-  end
-
-  defp build_rate_limit(opts) do
-    {overrides, opts} = Keyword.pop(opts, :rate_limit, [])
-
-    rate_limit =
-      %{
-        limiter: nil,
-        policy: nil,
-        identity: nil
-      }
-      |> Map.merge(Map.new(Application.get_env(:legion, :rate_limit, [])))
-      |> Map.merge(Vault.get(:rate_limit) || %{})
-      |> Map.merge(Map.new(overrides))
-
-    if rate_limit.policy, do: RateLimiter.Policy.validate!(rate_limit.policy)
-
-    {rate_limit, opts}
   end
 
   def call(agent, message, timeout \\ :infinity) do
@@ -266,20 +249,9 @@ defmodule Legion.AgentServer do
     end
   end
 
-  defp enforce_rate_limit(
-         %{
-           config: %{
-             rate_limit: %{
-               limiter: limiter,
-               policy: policy,
-               identity: identity
-             }
-           }
-         } = state
-       )
-       when not is_nil(limiter) and not is_nil(policy) and not is_nil(identity) do
-    :ok = limiter.enforce!(state.agent_id, identity, policy)
-    :ok
+  defp enforce_rate_limit(%{config: %{rate_limit: %{limiter: limiter, rules: rules}}} = state)
+       when not is_nil(limiter) and is_list(rules) do
+    :ok = limiter.enforce!(state.agent_id, rules)
   rescue
     error in ExceededError ->
       Telemetry.emit(

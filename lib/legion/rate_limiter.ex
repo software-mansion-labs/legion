@@ -2,103 +2,232 @@ defmodule Legion.RateLimiter do
   @moduledoc """
   Behaviour for enforcing rate limits across Legion agents.
 
-  A rate limiter decides whether an agent may proceed under a `Policy`. Legion
-  calls `enforce!/3` for you: configure a limiter, a policy, and an identity, and
-  every turn is admitted through it.
+  A rate limiter decides whether an agent may proceed under a list of
+  `Legion.RateLimiter.Rule`s. Each rule pairs an identity - the group of
+  agents sharing a limit - with a `Legion.RateLimiter.Policy`. Legion calls
+  `enforce!/2` for you: configure a limiter and rules, and every turn is
+  checked against them.
 
       Legion.start_link(ChatAgent,
         rate_limit: [
           limiter: MyApp.RateLimiter,
-          policy: %Legion.RateLimiter.Policy{
-            interval_ms: :timer.minutes(1),
-            max_agents: 10,
-            max_tokens: 100_000
-          },
-          identity: %{"ip" => "203.0.113.42"}
+          rules: [
+            %Legion.RateLimiter.Rule{
+              identity: %{"ip" => "203.0.113.42", "tenant" => "acme"},
+              policy: %Legion.RateLimiter.Policy{
+                window_ms: :timer.minutes(30),
+                max_agents: 40,
+                max_tokens: 200_000
+              }
+            },
+            %Legion.RateLimiter.Rule{
+              identity: %{"email" => "someone@example.com"},
+              policy: %Legion.RateLimiter.Policy{window_ms: :timer.hours(24), max_agents: 5}
+            }
+          ]
         ]
       )
 
-  Configure the same values globally to apply the policy to every matching
-  agent:
+  A turn runs only if every rule allows it; the first rule that denies it
+  cancels the turn. Rules are evaluated in the order given, so put the rule
+  whose denial you want reported first.
+
+  For Postgres users there is a ready-made adapter - see
+  `Legion.RateLimiter.Postgres`. It extends `Legion.Store.Postgres`, keeping
+  rate-limit metadata in the store's table and counting the usage persisted
+  there:
+
+      defmodule MyApp.RateLimiter do
+        use Legion.RateLimiter.Postgres, repo: MyApp.Repo
+      end
+
+  ## Configuration
+
+  The limiter and a default policy can be set globally, leaving only the
+  identities to the call site:
 
       config :legion, :rate_limit,
         limiter: MyApp.RateLimiter,
-        policy: policy,
-        identity: %{"ip" => "203.0.113.42"}
+        default_policy: %Legion.RateLimiter.Policy{window_ms: :timer.minutes(1), max_agents: 10}
 
-  All three must be present for a limit to apply; leaving any of them `nil`
-  disables rate limiting. An `identity` identifies the shared cohort: agents with
-  matching identities consume the same rolling-window limits. Each field in
-  `:rate_limit` given to `Legion.start_link/2` wins over the application
-  environment, and sub-agents inherit whatever their parent resolved unless
-  given their own. Each sub-agent is a separate agent ID in the cohort, so it
-  counts towards `:max_agents` and its usage towards `:max_tokens`.
+      Legion.start_link(ChatAgent,
+        rate_limit: [rules: [%Legion.RateLimiter.Rule{identity: %{"ip" => "203.0.113.42"}}]]
+      )
+
+  A rule given without a `:policy` takes the default one. Rate limiting applies
+  only when a limiter and at least one rule resolve; a limiter without rules,
+  or rules without a limiter, disables it. Sub-agents inherit whatever their
+  parent resolved and cannot override it - a parent started without rate
+  limiting runs its whole subtree without it, even when the application
+  configures rules globally. Each sub-agent is a separate agent ID in every
+  group, so it counts towards `:max_agents` and its usage towards
+  `:max_tokens`.
+
+  Rules must agree on their identities: two rules may share a field only with
+  the same value, since the adapter records one group membership per agent.
+  Two rules with the same identity and different policies are fine - for
+  example a per-minute and a per-day window on one IP. Identity keys must be
+  strings; an empty identity `%{}` matches every agent and acts as a global cap.
 
   ## When Legion enforces
 
   Enforcement happens once per turn, before the incoming message is appended
-  and before any LLM request. A refusal therefore leaves the conversation
+  and before any LLM request. A denial therefore leaves the conversation
   untouched and costs nothing.
 
-  Refused turns return `{:cancel, {:rate_limited, violations}}` - the same
-  shape as `{:cancel, :reached_max_iterations}` - so a refused sub-agent
+  Denied turns return `{:cancel, {:rate_limited, violations}}` - the same
+  shape as `{:cancel, :reached_max_iterations}` - so a denied sub-agent
   reports back to its caller as a value rather than a crash. Legion also emits
-  `[:legion, :rate_limit, :exceeded]`; see `Legion.Telemetry`.
+  `[:legion, :rate_limit, :exceeded]` with the identity and policy of the rule
+  that denied it; see `Legion.Telemetry`.
 
-  Resumed and recovered runs are *not* re-admitted. They are finishing work
-  that was already admitted, so re-checking them would discard accepted work
+  Resumed and recovered runs are *not* checked again. They are finishing work
+  that was already allowed, so checking it again would discard accepted work
   instead of shedding new load.
 
   ## Calling it yourself
 
-  `enforce!/3` is public, so an application can also admit its own work under
-  the same policy - a webhook, a queue worker - by passing a stable id, a map
-  that identifies the shared cohort, and the policy:
+  `resolve!/1` and `enforce!/2` are public, so an application can rate-limit its
+  own work - a webhook, a queue worker - under the same configuration as
+  agents. Resolve the configured limiter and rules, which fills in the
+  default policy, then enforce them under a stable id:
 
-      :ok = MyApp.RateLimiter.enforce!(agent_id, %{"ip" => "203.0.113.42"}, policy)
+      %{limiter: limiter, rules: rules} =
+        Legion.RateLimiter.resolve!(
+          rules: [%Legion.RateLimiter.Rule{identity: %{"ip" => "203.0.113.42"}}]
+        )
 
-  The behaviour is the seam for custom rate-limiter adapters. The bundled
-  `Legion.RateLimiter.Postgres` adapter records cohort metadata and evaluates
-  policies from the same Postgres table used by `Legion.Store.Postgres`.
+      if limiter, do: :ok = limiter.enforce!(agent_id, rules)
+
+  A `nil` limiter means rate limiting is off. An adapter can also be called
+  directly with complete rules, skipping `resolve!/1`.
 
   ## Implementing a rate limiter
 
-  Define a module that implements `enforce!/3` when rate-limit state lives
+  Define a module that implements `enforce!/2` when rate-limit state lives
   outside Postgres or needs application-specific coordination:
 
       defmodule MyApp.RateLimiter do
         @behaviour Legion.RateLimiter
 
         @impl Legion.RateLimiter
-        def enforce!(agent_id, identity, policy) do
-          # Check and record the rate-limit state for this adapter.
+        def enforce!(agent_id, rules) do
+          # Check and record the rate-limit state for every rule, atomically.
           :ok
         end
       end
 
-  See `Legion.RateLimiter.Policy` for the available limits and
-  `Legion.RateLimiter.Postgres` for the ready-made Postgres adapter.
+  An adapter receives all of an agent's rules in one call so it can allow or
+  deny the call as a unit. See `Legion.RateLimiter.Rule`,
+  `Legion.RateLimiter.Policy`, and `Legion.RateLimiter.Postgres`.
   """
-  alias Legion.RateLimiter.Policy
+  alias Legion.RateLimiter.Rule
   alias Legion.Store
 
   @type limit_identity :: %{String.t() => any()}
 
   @doc """
-  Enforces `policy` for agents with a given `identity`.
+  Enforces every rule in `rules` for the agent identified by `agent_id`.
 
-  Returns `:ok` when the adapter admits the agent. The adapter defines how
-  identities match and how it stores rate-limit state.
+  Returns `:ok` when every rule allows the call, and the agent counts towards
+  each rule's limits from then on; a denied call counts for nothing. Rules are
+  allowed together or denied together, never one by one. How identities match
+  and where that state lives is up to the adapter.
 
-  Raises `Legion.RateLimiter.ExceededError` when any configured limit has
-  been reached. Legion catches that exception and cancels the turn; any other
-  error propagates, so an adapter that cannot reach its backing store fails
-  the agent rather than silently admitting it.
+  Raises `Legion.RateLimiter.ExceededError` for the first rule, in list order,
+  that is exceeded. Legion catches that exception and cancels the turn; any
+  other error propagates, so an adapter that cannot reach its backing store
+  fails the agent rather than silently allowing the call.
   """
   @callback enforce!(
               agent_id :: Store.agent_id(),
-              identity :: limit_identity(),
-              policy :: Policy.t()
+              rules :: [Rule.t()]
             ) ::
               :ok | no_return()
+
+  @off %{limiter: nil, rules: []}
+
+  @doc """
+  Resolves the limiter and rules to enforce.
+
+  Reads the application's `:rate_limit` config and applies `overrides`, a
+  keyword list with `:limiter` and `:rules`, on top. Each key given in
+  `overrides` replaces the configured value wholesale - rules are never
+  merged one by one. When called inside an agent, the rate limit that agent
+  resolved sits between the two, so overrides win over it and it wins over
+  the application config.
+
+  Rules given without a `:policy` take the configured `:default_policy`. A
+  policy that is present is used as is; missing fields are not filled in.
+
+  Returns `%{limiter: module | nil, rules: [Legion.RateLimiter.Rule.t()]}`.
+  A `nil` limiter or an empty rule list means rate limiting is off; both keys
+  are then reset, so the result is always a complete map.
+
+  Raises `ArgumentError` when `:rules` is not a list of
+  `Legion.RateLimiter.Rule` structs, a rule fails
+  `Legion.RateLimiter.Rule.validate!/1`, or two rules give one identity key
+  different values.
+
+  ## Examples
+
+      # config :legion, :rate_limit, limiter: MyApp.RateLimiter, default_policy: policy
+      Legion.RateLimiter.resolve!(rules: [%Legion.RateLimiter.Rule{identity: %{"ip" => ip}}])
+      #=> %{limiter: MyApp.RateLimiter, rules: [%Legion.RateLimiter.Rule{identity: %{"ip" => ip}, policy: policy}]}
+
+      Legion.RateLimiter.resolve!(nil)
+      #=> %{limiter: nil, rules: []}
+  """
+  def resolve!(nil), do: resolve!([])
+
+  def resolve!(overrides) when is_list(overrides) do
+    app_config = Application.get_env(:legion, :rate_limit, [])
+    overrides = fill_policies(overrides, Keyword.get(app_config, :default_policy))
+
+    @off
+    |> Map.merge(layer(app_config))
+    |> Map.merge(layer(Vault.get(:rate_limit) || %{}))
+    |> Map.merge(layer(overrides))
+    |> finish!()
+  end
+
+  defp fill_policies(overrides, default_policy) do
+    case Keyword.fetch(overrides, :rules) do
+      {:ok, rules} when is_list(rules) ->
+        Keyword.put(overrides, :rules, Enum.map(rules, &fill(&1, default_policy)))
+
+      {:ok, other} ->
+        raise ArgumentError, "expected :rules to be a list, got: #{inspect(other)}"
+
+      :error ->
+        overrides
+    end
+  end
+
+  defp fill(%Rule{policy: nil} = rule, default_policy), do: %{rule | policy: default_policy}
+  defp fill(%Rule{} = rule, _default_policy), do: rule
+
+  defp fill(other, _default_policy),
+    do: raise(ArgumentError, "expected a #{inspect(Rule)} in :rules, got: #{inspect(other)}")
+
+  defp layer(config), do: config |> Map.new() |> Map.take([:limiter, :rules])
+
+  defp finish!(%{limiter: limiter, rules: rules}) do
+    Enum.each(rules, &Rule.validate!/1)
+    validate_identities!(rules)
+
+    if is_nil(limiter) or rules == [], do: @off, else: %{limiter: limiter, rules: rules}
+  end
+
+  defp validate_identities!(rules) do
+    Enum.reduce(rules, %{}, fn rule, seen ->
+      Map.merge(seen, rule.identity, fn key, a, b ->
+        a == b ||
+          raise ArgumentError,
+                "rate-limit rules disagree on #{inspect(key)}: #{inspect(a)} vs #{inspect(b)}"
+
+        a
+      end)
+    end)
+  end
 end
