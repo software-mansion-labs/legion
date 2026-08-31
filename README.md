@@ -129,6 +129,8 @@ Use it when a conversation spans multiple messages - variables can persist betwe
 
 See [`start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2), [`call/3`](https://hexdocs.pm/legion/Legion.html#call/3), and [`cast/2`](https://hexdocs.pm/legion/Legion.html#cast/2) for more details.
 
+<a id="3-generated-code-runs-in-a-sandbox"></a>
+
 ### **3. Generated code runs in a sandbox**
 
 Every evaluation runs in a monitored process with timeout, memory, and CPU budgets. Two sandboxes ship with Legion today, differing in language and trust model, with a third on the way:
@@ -178,6 +180,8 @@ Sub-agents are linked processes - when a parent dies, its children stop too. Fro
 
 See [`Legion.Tools.AgentTool`](https://hexdocs.pm/legion/Legion.Tools.AgentTool.html) for more details.
 
+<a id="5-conversations-survive-restarts"></a>
+
 ### **5. Conversations survive restarts**
 
 Plug in the Postgres store (it can reuse your Ecto repo) and resume any conversation by id, even after a deploy.
@@ -206,7 +210,9 @@ GenServer.stop(pid)
 DynamicSupervisor.start_child(MyApp.AgentSupervisor, {MyApp.AssistantAgent, agent_id: "user_42:chat_7"})
 ```
 
-See [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) and [`Legion.AgentIndex`](https://hexdocs.pm/legion/Legion.AgentIndex.html) for more details.
+See [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html), [`Legion.resume/2`](https://hexdocs.pm/legion/Legion.html#resume/2), and [`Legion.lookup/1`](https://hexdocs.pm/legion/Legion.html#lookup/1) for more details.
+
+<a id="6-credentials-never-reach-the-llm"></a>
 
 ### **6. Credentials never reach the LLM**
 
@@ -235,7 +241,6 @@ See [Vault](https://github.com/dimamik/vault) for more details.
 Configure a limiter and a default policy:
 
 ```elixir
-# reuses the store's table from above - no extra migration
 defmodule MyApp.RateLimiter do
   use Legion.RateLimiter.Postgres, repo: MyApp.Repo
 end
@@ -326,6 +331,8 @@ Events emitted at every level:
 - `[:legion, :iteration, :start | :stop | :exception]` - each execution step
 - `[:legion, :llm, :request, :start | :stop | :exception]` - LLM API calls
 - `[:legion, :sandbox, :eval, :start | :stop | :exception]` - code evaluation
+- `[:legion, :eval_guard, :denied]` - generated code refused by an eval guard
+- `[:legion, :rate_limit, :exceeded]` - turn denied by a rate limiter
 
 ## Web Dashboard
 

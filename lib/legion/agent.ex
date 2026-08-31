@@ -40,7 +40,7 @@ defmodule Legion.Agent do
       - `model` — LLM model identifier (default: `"openai:gpt-5.4"`)
       - `sandbox` — a `Legion.Sandbox` module that validates and evaluates the
         code the agent writes. `Legion.Sandbox.Lua` (the default) evaluates Lua
-        in a pure-Erlang VM where only bridged tool functions can reach the
+        in a pure-Elixir VM where only bridged tool functions can reach the
         host; `Legion.Sandbox.Elixir` evaluates Elixir behind an AST allowlist
         (default: `Legion.Sandbox.Lua`)
       - `max_iterations` — max successful execution steps per turn (default: `10`)

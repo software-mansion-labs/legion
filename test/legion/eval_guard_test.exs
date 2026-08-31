@@ -55,8 +55,11 @@ defmodule Legion.EvalGuardTest do
 
     Legion.EvalGuard.check(DenyEverything, "Shop.checkout()", @context)
 
-    assert_receive {:telemetry, [:legion, :eval_guard, :denied], metadata}
-    assert metadata.guard == DenyEverything
+    # The handler is global, so denials from concurrently running tests also
+    # land in this mailbox - match on this test's own guard.
+    assert_receive {:telemetry, [:legion, :eval_guard, :denied],
+                    %{guard: DenyEverything} = metadata}
+
     assert metadata.code == "Shop.checkout()"
     assert metadata.reason =~ "renovations"
   end
