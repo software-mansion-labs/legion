@@ -29,6 +29,7 @@ defmodule Legion.MixProject do
         formatters: ["html"],
         extras: [
           "LICENSE",
+          "guides/installation.md": [title: "Installation"],
           "guides/sandboxes.md": [title: "Sandboxes"],
           "CHANGELOG.md": [title: "Changelog"]
         ],
@@ -85,9 +86,7 @@ defmodule Legion.MixProject do
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
       {:lua, "~> 1.0"},
-
-      # Optional
-      {:postgrex, "~> 0.22", optional: true},
+      {:postgrex, "~> 0.22"},
 
       # Test and Dev
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},

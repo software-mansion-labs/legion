@@ -45,7 +45,9 @@ defmodule Legion.Agent do
         (default: `Legion.Sandbox.Lua`)
       - `max_iterations` — max successful execution steps per turn (default: `10`)
       - `max_retries` — max consecutive failures before giving up (default: `3`)
-      - `sandbox_timeout` — timeout in ms for code execution (default: `60_000`)
+      - `sandbox_timeout` — timeout in ms for code execution. Set `:infinity` to
+        disable it, leaving `sandbox_max_reductions` as the only limit that stops
+        an eval that never returns (default: `60_000`)
       - `sandbox_max_heap` — memory budget in bytes for the process evaluating
         generated code. The VM kills the eval when its heap and stack exceed the
         budget; the binaries it references are polled separately (~50ms granularity)

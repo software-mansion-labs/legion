@@ -22,35 +22,7 @@ One evaluation can filter, branch, and loop - work that would cost a tool-callin
 
 ## Usage
 
-1. Add Legion to your `mix.exs`:
-
-```elixir
-def deps do
-  [
-    {:legion, "~> 0.4"}
-  ]
-end
-```
-
-2. Add Legion to your apps supervision tree (after its Repo)
-
-```elixir
-# lib/my_app/application.ex
-
-children = [
-  MyApp.Repo,
-  Legion
-]
-```
-
-3. Configure an LLM provider ([all options](https://hexdocs.pm/req_llm/ReqLLM.html#module-configuration)):
-
-```elixir
-# config/runtime.exs
-config :req_llm, openai_api_key: System.get_env("OPENAI_API_KEY")
-```
-
-4. Expose existing or new modules as tools and hand them to an agent:
+1. Expose existing or new modules as tools and hand them to an agent:
 
 ```elixir
 defmodule MyApp.Tools.ScraperTool do
@@ -77,7 +49,7 @@ defmodule MyApp.ResearchAgent do
 end
 ```
 
-5. Run it!
+2. Run it!
 
 ```elixir
 Legion.execute(MyApp.ResearchAgent, "Find cool Elixir posts about Advent of Code and save them")
@@ -111,6 +83,8 @@ Two evaluations, with variables, loops, and conditionals available at every step
 
 Agents write Lua by default, since it's much easier to sandbox securely. Prefer Elixir? Switch to `Legion.Sandbox.Elixir` (see [Generated code runs in a sandbox](#3-generated-code-runs-in-a-sandbox)).
 
+See the [installation guide](https://hexdocs.pm/legion/installation.html) for more details.
+
 ## Features
 
 ### **1. Tools are plain Elixir modules**
@@ -138,21 +112,7 @@ defmodule MyApp.WeatherAgent do
 end
 ```
 
-Third-party modules work too, without a wrapper:
-
-```elixir
-# config/config.exs
-config :legion, extra_source_modules: [Req, Jason]
-
-defmodule MyApp.APIAgent do
-  @moduledoc "Fetches data from JSON APIs and decodes responses."
-  use Legion.Agent
-
-  def tools, do: [Req, Jason]
-end
-```
-
-Use it to hand agents your existing app logic directly - no schemas to write, nothing to keep in sync. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (see [Credentials never reach the LLM](#6-credentials-never-reach-the-llm)). For large libraries, write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source.
+Use it to hand agents your existing app logic directly - no schemas to write, nothing to keep in sync. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (see [Credentials never reach the LLM](#6-credentials-never-reach-the-llm)). For large modules you could write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source. If for any reason the source isn't what the LLM should see, define `description/0` on the tool and it is sent verbatim instead.
 
 See [`Legion.Tool`](https://hexdocs.pm/legion/Legion.Tool.html) for more details.
 
@@ -174,12 +134,13 @@ See [`start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2), [`call
 
 ### **3. Generated code runs in a sandbox**
 
-Every evaluation runs in a monitored process with timeout, memory, and CPU budgets. Two sandboxes ship with Legion, differing in language and trust model:
+Every evaluation runs in a monitored process with timeout, memory, and CPU budgets. Two sandboxes ship with Legion today, differing in language and trust model, with a third on the way:
 
 - [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html) (default) - agents write Lua, evaluated by [lua](https://hexdocs.pm/lua), a Lua 5.3 VM in pure Elixir. Lua code cannot reach the host BEAM at all - the only bridges out are the tool functions Legion registers - making it the safer choice for less trusted generation. Tool arguments and results are converted at the boundary (Lua tables to maps/lists and back; Elixir tuples become arrays, atoms become strings).
 - [`Legion.Sandbox.Elixir`](https://hexdocs.pm/legion/Legion.Sandbox.Elixir.html) - agents write Elixir. Dangerous constructs (`defmodule`, `import`, `spawn`, `send`, `apply`, ...) are blocked at the AST level and module access is allowlisted (stdlib + your tools). Powerful, but the allowlist guards an enormous language surface - use it for your own LLM-backed agents with controlled tool access, not arbitrary code from unknown sources.
+- **Popcorn (work in progress)** - agents write Elixir that runs in the user's browser on [popcorn](https://github.com/software-mansion/popcorn/), an AtomVM-based BEAM in WebAssembly, so generated code never touches your server at all. Not released yet.
 
-Neither is OS-level isolation - evaluation still runs inside your BEAM VM, and that's intended. If your threat model requires that, run agents in a separate BEAM instance. Custom sandboxes (for example, executing in the user's browser via [popcorn](https://github.com/software-mansion/popcorn/)) implement the [`Legion.Sandbox`](https://hexdocs.pm/legion/Legion.Sandbox.html) behaviour.
+You could add custom sandbox by implementing [`Legion.Sandbox`](https://hexdocs.pm/legion/Legion.Sandbox.html) behaviour.
 
 ### **4. Agents orchestrate agents**
 
@@ -229,21 +190,26 @@ defmodule MyApp.AgentStore do
   use Legion.Store.Postgres, repo: MyApp.Repo
 end
 
-{:ok, pid} =
-  Legion.start_link(MyApp.AssistantAgent,
-    store: MyApp.AgentStore,
-    agent_id: "user_42:chat_7"
-  )
+# config/config.exs
+config :legion, :store, MyApp.AgentStore
+
+{:ok, pid} = Legion.start_link(MyApp.AssistantAgent, agent_id: "user_42:chat_7")
 
 {:ok, response} = Legion.call(pid, "Remember that my budget is $100")
 
-# Later, after the original process has stopped
-{:ok, pid} = Legion.resume("user_42:chat_7", store: MyApp.AgentStore)
+GenServer.stop(pid)
+
+# Later, in another process - or after a deploy
+{:ok, pid} = Legion.resume("user_42:chat_7")
+{:ok, response} = Legion.call(pid, "What was my budget again?")
 ```
 
-Create the table with `Legion.Store.Migration.Postgres.up()` in a migration. Stores persist at turn boundaries by default; pass `persistence_frequency: :step` to also checkpoint intermediate results and recoverable errors. Use `Legion.Store` to implement any other storage.
+```elixir
+# `start_link/2` links to the caller - supervise it yourself to outlive a request
+DynamicSupervisor.start_child(MyApp.AgentSupervisor, {MyApp.AssistantAgent, agent_id: "user_42:chat_7"})
+```
 
-See [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) for more details.
+See [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) and [`Legion.AgentIndex`](https://hexdocs.pm/legion/Legion.AgentIndex.html) for more details.
 
 ### **6. Credentials never reach the LLM**
 
@@ -269,9 +235,14 @@ See [Vault](https://github.com/dimamik/vault) for more details.
 
 ### **7. Rate limiting baked in**
 
-Configure a limiter and a default policy once.
+Configure a limiter and a default policy:
 
 ```elixir
+# reuses the store's table from above - no extra migration
+defmodule MyApp.RateLimiter do
+  use Legion.RateLimiter.Postgres, repo: MyApp.Repo
+end
+
 # config/config.exs
 config :legion, :rate_limit,
   limiter: MyApp.RateLimiter,
@@ -288,11 +259,11 @@ Then name the groups an agent belongs to when it starts - a turn runs only if ev
 Legion.start_link(ChatAgent,
   rate_limit: [
     rules: [
-      # default policy
+      # This rule uses the default policy from `config.exs`
       %Legion.RateLimiter.Rule{identity: %{"ip" => "203.0.113.42"}},
-      # own policy
+      # This rule uses custom policy
       %Legion.RateLimiter.Rule{
-        identity: %{"email" => "someone@example.com"},
+        identity: %{"email" => "someone@example.com", "tenant" => "acme"},
         policy: %Legion.RateLimiter.Policy{window_ms: :timer.hours(24), max_agents: 5}
       }
     ]
@@ -300,9 +271,7 @@ Legion.start_link(ChatAgent,
 )
 ```
 
-Agents that share an identity share the policy's rolling-window limits. The identity can be a user, an IP, or anything else - a map, so it can combine several fields - and no single group can drain your token budget. The check runs once per turn, before any LLM request - a denied turn costs nothing and leaves the conversation untouched.
-
-A rule without a policy takes the default one - give it a policy, or pass a limiter, to override the config for that agent. Sub-agents inherit their parent's settings. `Legion.RateLimiter.Postgres` ships ready-made and extends the Postgres store from [Conversations survive restarts](#5-conversations-survive-restarts); to keep limit state anywhere else, implement the `Legion.RateLimiter` behaviour.
+A rule without a policy takes the default one - give it a policy, or pass a limiter, to override the config for that agent. Sub-agents inherit their parent's settings. `Legion.RateLimiter.Postgres` comes with Legion and extends the Postgres store from [Conversations survive restarts](#5-conversations-survive-restarts). Implement the `Legion.RateLimiter` behaviour to keep limit state anywhere else.
 
 See [`Legion.RateLimiter`](https://hexdocs.pm/legion/Legion.RateLimiter.html) for more details.
 
@@ -317,28 +286,24 @@ See [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) for this and t
 
 ```elixir
 config :legion, :store, MyApp.AgentStore
-
-config :legion, :config, %{
-  model: "openai:gpt-5.4",
-  max_iterations: 10,
-  max_retries: 3,
-  sandbox_timeout: 60_000,
-  binding_scope: :turn,
-  max_message_length: 20_000
-}
+config :legion, :config, %{model: "openai:gpt-5.4", max_iterations: 10}
 ```
 
-| Option               | Description                                                                                                                                                                       |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model`              | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm), e.g. `"openai:gpt-5.4"`.                                                                                         |
-| `max_iterations`     | Successful execution steps before the agent is stopped.                                                                                                                           |
-| `max_retries`        | Consecutive failures (bad code, tool errors) before giving up. Resets after each success.                                                                                         |
-| `sandbox`            | Sandbox module evaluating generated code: `Legion.Sandbox.Lua` (default) or `Legion.Sandbox.Elixir`. See [Generated code runs in a sandbox](#3-generated-code-runs-in-a-sandbox). |
-| `sandbox_timeout`    | Milliseconds a single code evaluation may run before it is killed.                                                                                                                |
-| `binding_scope`      | `:iteration` (fresh each step), `:turn` (persist within a message, default), or `:conversation` (persist across messages).                                                        |
-| `max_message_length` | Byte limit for any single message. Longer content is truncated. Set to `:infinity` to disable.                                                                                    |
+| Option                   | Default              | Description                                                                                             |
+| ------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------- |
+| `model`                  | `"openai:gpt-5.4"`   | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm).                                         |
+| `sandbox`                | `Legion.Sandbox.Lua` | Module validating and evaluating generated code. See [Generated code runs in a sandbox](#3-generated-code-runs-in-a-sandbox). |
+| `max_iterations`         | `10`                 | Successful execution steps before the turn is stopped.                                                  |
+| `max_retries`            | `3`                  | Consecutive failures (bad code, tool errors) before giving up. Resets after each success.               |
+| `binding_scope`          | `:turn`              | How long variables live: `:iteration`, `:turn`, or `:conversation`.                                     |
+| `max_message_length`     | `20_000`             | Byte limit for a single message; longer content is truncated. `:infinity` disables it.                  |
+| `sandbox_timeout`        | `60_000`             | Milliseconds one evaluation may run before it is killed. `:infinity` disables it, leaving `sandbox_max_reductions` as the only stop for a runaway eval. |
+| `sandbox_max_heap`       | `256_000_000`        | Memory budget in bytes for the eval process. `:infinity` disables it.                                   |
+| `sandbox_max_reductions` | `:infinity`          | CPU budget in reductions, polled every ~50ms, so a hot loop dies before the clock runs out.              |
+| `sandbox_priority`       | `:low`               | Scheduler priority of the eval process. Raise to `:normal` if evals hit `sandbox_timeout` under load.    |
+| `eval_guard`             | `nil`                | `Legion.EvalGuard` module vetting generated code before it runs, for policy the sandbox cannot express.  |
 
-Agents override global config by defining `config/0`:
+Agents override global config by defining `config/0` ([`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) documents each key in full):
 
 ```elixir
 defmodule MyApp.DataAgent do
@@ -346,7 +311,7 @@ defmodule MyApp.DataAgent do
   use Legion.Agent
 
   def tools, do: [MyApp.HTTPTool]
-  def config, do: %{model: "anthropic:claude-sonnet-4-20250514", max_iterations: 5}
+  def config, do: %{model: "google:gemini-3.5-flash", max_iterations: 5}
 end
 ```
 

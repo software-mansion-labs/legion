@@ -1265,6 +1265,45 @@ defmodule Legion.AgentServerTest do
       )
     end
 
+    test "recover/2 finishes an interrupted turn with the bindings its checkpoint saved" do
+      agent_id = "recover-bindings-#{System.unique_integer([:positive])}"
+      test_pid = self()
+      request_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(request_count, 1, 1)
+
+        case :counters.get(request_count, 1) do
+          1 ->
+            llm_eval_continue_response("x = 6 * 7")
+
+          2 ->
+            # Kill the agent mid-turn, after the first eval has been checkpointed.
+            send(test_pid, {:checkpointed, StepMemoryStore.get(agent_id)})
+            Process.exit(self(), :kill)
+            llm_response("unreachable")
+
+          _ ->
+            llm_eval_response("return x")
+        end
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: agent_id)
+      Process.unlink(pid)
+      reference = Process.monitor(pid)
+      Legion.cast(pid, "compute")
+
+      assert_receive {:checkpointed, {:ok, %Payload{conversation_state: checkpoint}}}, 5_000
+      assert checkpoint.bindings != []
+      assert_receive {:DOWN, ^reference, :process, ^pid, _reason}, 5_000
+
+      assert :ok = Legion.recover(agent_id, store: StepMemoryStore)
+
+      {:ok, %Payload{conversation_state: final}} = StepMemoryStore.get(agent_id)
+      results = Enum.map(final.messages, &inspect(&1.content))
+      assert Enum.any?(results, &(&1 =~ "42")), "recovered eval lost x: #{inspect(results)}"
+    end
+
     test "recover/2 returns error when agent is running" do
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "recover-running")
 

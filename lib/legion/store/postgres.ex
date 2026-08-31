@@ -3,9 +3,9 @@ defmodule Legion.Store.Postgres do
   A ready-made `Legion.Store` backed by Postgres, through your existing Ecto repo.
 
   The generated store uses Ecto for its schema, reads, and partial upserts.
-  Legion declares `ecto_sql` as an optional dependency; applications using
-  this adapter must provide an `Ecto.Repo` backed by `Ecto.Adapters.Postgres`
-  and include Postgrex.
+  Legion depends on `ecto_sql` and `postgrex`, so this adapter needs nothing
+  extra in your `mix.exs` - only an `Ecto.Repo` backed by
+  `Ecto.Adapters.Postgres`.
 
   ## Usage
 

@@ -129,7 +129,7 @@ defmodule Legion.Executor do
   `bindings` seeds the code-evaluation binding. `executor_state` resumes a step
   checkpoint when present: `:awaiting_llm` continues from its saved iteration
   and retry counters, while `:completing` finishes without another LLM request.
-  Pass `nil` to start a new loop. `:turn_usage` is the complete, ordered list
+  Pass `:nonexistent` (the default) to start a new loop. `:turn_usage` is the complete, ordered list
   of usage maps returned by LLM requests in the current turn.
 
   Returns `{:ok, result, messages, bindings, turn_usage}` or

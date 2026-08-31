@@ -293,7 +293,10 @@ defmodule Legion.AgentServer do
           messages = state.messages
           prev_count = Enum.count(messages, &(&1[:role] == "assistant"))
 
-          initial_bindings = if conversation_scope?, do: state.bindings, else: []
+          # A resumed turn keeps the bindings its checkpoint saved, whatever the scope -
+          # they belong to the turn being finished, not to a new one.
+          resuming? = executor_state != :nonexistent
+          initial_bindings = if conversation_scope? or resuming?, do: state.bindings, else: []
 
           {status, value, messages, bindings, _turn_usage} =
             result =

@@ -23,7 +23,7 @@ defmodule Legion.Store do
   errors. Each step save contains the complete conversation and executor state
   at that checkpoint.
 
-  For Postgres users there is a ready-made adapter - see `Legion.Store.Postgres`:
+  For Postgres users there is a built-in adapter - see `Legion.Store.Postgres`:
 
       defmodule MyApp.AgentStore do
         use Legion.Store.Postgres, repo: MyApp.Repo
