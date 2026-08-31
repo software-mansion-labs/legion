@@ -345,15 +345,21 @@ defmodule Legion.AgentServerTest do
       assert_received {:user_content, "hello"}
     end
 
-    test "does not touch multipart content even when parts are large" do
+    test "truncates text parts of multipart content individually" do
       capture_user_content(self())
 
-      parts = [ContentPart.text(String.duplicate("a", 5_000))]
+      parts = [
+        ContentPart.text(String.duplicate("a", 5_000)),
+        ContentPart.image_url("https://example.com/image.png")
+      ]
 
       {:ok, pid} = Legion.start_link(MathAgent, max_message_length: 100)
       {:ok, _} = Legion.call(pid, {:multipart, parts})
 
-      assert_received {:user_content, ^parts}
+      assert_received {:user_content, [text_part, image_part]}
+      assert String.starts_with?(text_part.text, String.duplicate("a", 100))
+      assert text_part.text =~ "[... truncated 4900 bytes ...]"
+      assert image_part == ContentPart.image_url("https://example.com/image.png")
     end
 
     test ":infinity disables truncation" do

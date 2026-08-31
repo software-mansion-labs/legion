@@ -60,6 +60,9 @@ defmodule Legion do
   persist a conversation by passing `:store` and `:agent_id`. Passing `:store`
   overrides the globally configured store for this agent; see `Legion.Store`.
 
+  When a live process already owns the given `:agent_id`, the task is sent to
+  that process instead and it is left running afterwards.
+
   ## Examples
 
       {:ok, summary} = Legion.execute(ResearchAgent, "Summarize the Elixir getting started guide")
@@ -67,10 +70,18 @@ defmodule Legion do
       {:ok, reply} = Legion.execute(ChatAgent, "next question", store: MyApp.AgentStore, agent_id: "user_42:chat_7")
   """
   def execute(agent_module, task, opts \\ []) do
-    {:ok, pid} = AgentServer.start_link(agent_module, opts)
-    result = AgentServer.call(pid, task)
-    GenServer.stop(pid)
-    result
+    case AgentServer.start_link(agent_module, opts) do
+      {:ok, pid} ->
+        result = AgentServer.call(pid, task)
+        GenServer.stop(pid)
+        result
+
+      {:error, {:already_started, pid}} ->
+        AgentServer.call(pid, task)
+
+      {:error, reason} ->
+        raise "could not start #{inspect(agent_module)}: #{inspect(reason)}"
+    end
   end
 
   @doc """

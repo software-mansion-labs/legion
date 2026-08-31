@@ -11,8 +11,8 @@ config :legion, :config, %{sandbox: Legion.Sandbox.Lua}
 def config, do: %{sandbox: Legion.Sandbox.Lua}
 ```
 
-Two implementations ship with Legion: `Legion.Sandbox.Elixir` (the default)
-and `Legion.Sandbox.Lua`. Custom sandboxes implement the `Legion.Sandbox`
+Two implementations ship with Legion: `Legion.Sandbox.Lua` (the default)
+and `Legion.Sandbox.Elixir`. Custom sandboxes implement the `Legion.Sandbox`
 behaviour. Both built-ins run under `Legion.Sandbox.Runner`, so the
 operational limits (`sandbox_timeout`, `sandbox_max_heap`,
 `sandbox_max_reductions`, `sandbox_priority`) behave identically.

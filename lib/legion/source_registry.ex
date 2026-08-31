@@ -1,14 +1,14 @@
 defmodule Legion.SourceRegistry do
-  @moduledoc """
-  Compile-time registry of source code for external modules.
+  @moduledoc false
 
-  Tools expose their source via `description/0` (injected by `use Legion.Tool`)
-  and agents expose theirs via the auto-generated `moduledoc/0` (injected by
-  `use Legion.Agent`). This registry is only needed for external modules
-  (e.g. `Req`) configured via:
-
-      config :legion, extra_source_modules: [Req]
-  """
+  # Compile-time registry of source code for external modules.
+  #
+  # Tools expose their source via `description/0` (injected by `use Legion.Tool`)
+  # and agents expose theirs via the auto-generated `moduledoc/0` (injected by
+  # `use Legion.Agent`). This registry is only needed for external modules
+  # (e.g. `Req`) configured via:
+  #
+  #     config :legion, extra_source_modules: [Req]
 
   @extra_modules Application.compile_env(:legion, :extra_source_modules, [])
 

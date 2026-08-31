@@ -81,9 +81,9 @@ end
 
 Two evaluations, with variables, loops, and conditionals available at every step.
 
-Agents write Lua by default, since it's much easier to sandbox securely. Prefer Elixir? Switch to `Legion.Sandbox.Elixir` (see [Generated code runs in a sandbox](#3-generated-code-runs-in-a-sandbox)).
+Agents write Lua by default, since it's much easier to sandbox securely. Prefer Elixir? Switch to `Legion.Sandbox.Elixir` - see [Generated code runs in a sandbox](#3-generated-code-runs-in-a-sandbox).
 
-See the [installation guide](https://hexdocs.pm/legion/installation.html) for more details.
+See the [Installation guide](https://hexdocs.pm/legion/installation.html) for more details.
 
 ## Features
 
@@ -277,10 +277,9 @@ See [`Legion.RateLimiter`](https://hexdocs.pm/legion/Legion.RateLimiter.html) fo
 
 ### **8. Structured output when you need it**
 
-Define `output_schema/0` on the agent to get typed, validated responses instead of prose. Skip it and you get plain text.
+Define `output_schema/0` on the agent to get typed, validated responses.
 
 See [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) for this and the other agent callbacks (`system_prompt/0`, `config/0`, `action_types/0`) - all optional with sensible defaults.
-
 
 ## Configuration
 
@@ -289,19 +288,19 @@ config :legion, :store, MyApp.AgentStore
 config :legion, :config, %{model: "openai:gpt-5.4", max_iterations: 10}
 ```
 
-| Option                   | Default              | Description                                                                                             |
-| ------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------- |
-| `model`                  | `"openai:gpt-5.4"`   | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm).                                         |
-| `sandbox`                | `Legion.Sandbox.Lua` | Module validating and evaluating generated code. See [Generated code runs in a sandbox](#3-generated-code-runs-in-a-sandbox). |
-| `max_iterations`         | `10`                 | Successful execution steps before the turn is stopped.                                                  |
-| `max_retries`            | `3`                  | Consecutive failures (bad code, tool errors) before giving up. Resets after each success.               |
-| `binding_scope`          | `:turn`              | How long variables live: `:iteration`, `:turn`, or `:conversation`.                                     |
-| `max_message_length`     | `20_000`             | Byte limit for a single message; longer content is truncated. `:infinity` disables it.                  |
+| Option                   | Default              | Description                                                                                                                                             |
+| ------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model`                  | `"openai:gpt-5.4"`   | LLM model string passed to [ReqLLM](https://hexdocs.pm/req_llm).                                                                                        |
+| `sandbox`                | `Legion.Sandbox.Lua` | Module validating and evaluating generated code. See [Generated code runs in a sandbox](#3-generated-code-runs-in-a-sandbox).                           |
+| `max_iterations`         | `10`                 | Successful execution steps before the turn is stopped.                                                                                                  |
+| `max_retries`            | `3`                  | Consecutive failures (bad code, tool errors) before giving up. Resets after each success.                                                               |
+| `binding_scope`          | `:turn`              | How long variables live: `:iteration`, `:turn`, or `:conversation`.                                                                                     |
+| `max_message_length`     | `20_000`             | Byte limit for a single message; longer content is truncated. `:infinity` disables it.                                                                  |
 | `sandbox_timeout`        | `60_000`             | Milliseconds one evaluation may run before it is killed. `:infinity` disables it, leaving `sandbox_max_reductions` as the only stop for a runaway eval. |
-| `sandbox_max_heap`       | `256_000_000`        | Memory budget in bytes for the eval process. `:infinity` disables it.                                   |
-| `sandbox_max_reductions` | `:infinity`          | CPU budget in reductions, polled every ~50ms, so a hot loop dies before the clock runs out.              |
-| `sandbox_priority`       | `:low`               | Scheduler priority of the eval process. Raise to `:normal` if evals hit `sandbox_timeout` under load.    |
-| `eval_guard`             | `nil`                | `Legion.EvalGuard` module vetting generated code before it runs, for policy the sandbox cannot express.  |
+| `sandbox_max_heap`       | `256_000_000`        | Memory budget in bytes for the eval process. `:infinity` disables it.                                                                                   |
+| `sandbox_max_reductions` | `:infinity`          | CPU budget in reductions, polled every ~50ms, so a hot loop dies before the clock runs out.                                                             |
+| `sandbox_priority`       | `:low`               | Scheduler priority of the eval process. Raise to `:normal` if evals hit `sandbox_timeout` under load.                                                   |
+| `eval_guard`             | `nil`                | `Legion.EvalGuard` module vetting generated code before it runs, for policy the sandbox cannot express.                                                 |
 
 Agents override global config by defining `config/0` ([`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) documents each key in full):
 
@@ -335,7 +334,7 @@ Events emitted at every level:
 
 [`legion_web`](https://github.com/software-mansion-labs/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
 
-![Legion Web Dashboard](https://raw.githubusercontent.com/software-mansion-labs/legion_web/main/img/preview.png)
+[![Legion Web Dashboard](https://raw.githubusercontent.com/software-mansion-labs/legion_web/main/img/preview.png)](https://github.com/software-mansion-labs/legion_web)
 
 <!-- MDOC -->
 

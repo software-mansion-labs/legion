@@ -1,7 +1,8 @@
 defmodule Legion.AgentPrompt do
-  @moduledoc """
-  This module is responsible for generating prompts for agents based on their definitions and the tools they have access to.
-  """
+  @moduledoc false
+
+  # Generates system prompts for agents based on their definitions and the
+  # tools they have access to.
 
   @template_path Path.join(__DIR__, "prompts/system_prompt.eex")
   @external_resource @template_path

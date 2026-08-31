@@ -100,8 +100,9 @@ defmodule Legion.Store do
   Each message carries a `:type` (`:user`, `:assistant`, `:eval_result`, or
   `:error`) and an `:at` timestamp in milliseconds, so consumers can classify
   and order messages without parsing content. Bindings are arbitrary Elixir
-  terms - values like pids, references, or functions will not survive
-  serialization, so keep conversation-scoped variables to plain data if you
+  terms - a pid or reference stops meaning anything after a restart, and a
+  captured function raises when called after its defining module has been
+  recompiled - so keep conversation-scoped variables to plain data if you
   persist agents.
 
   Payload fields other than `:agent_id` may be nil. A store can therefore

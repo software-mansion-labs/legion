@@ -49,7 +49,7 @@ defmodule Legion.EvalGuard do
     itself a denial - a safety boundary that stops working has to stop the code
     with it. The `[:legion, :eval_guard, :denied]` event carries the failure as
     its reason, so a broken guard shows up as every eval being refused. It is
-    also logged as a warning - nothing the agent does can fix it, so it needs a
+    also logged as an error - nothing the agent does can fix it, so it needs a
     reader who can.
   """
 

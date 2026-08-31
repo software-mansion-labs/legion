@@ -390,13 +390,24 @@ defmodule Legion.AgentServer do
     [ContentPart.image_url(url)]
   end
 
-  defp stringify({:multipart, parts}, _max_length) when is_list(parts), do: parts
+  defp stringify({:multipart, parts}, max_length) when is_list(parts) do
+    Enum.map(parts, &truncate_text_part(&1, max_length))
+  end
 
   defp stringify(message, max_length) do
     message
     |> inspect(limit: :infinity)
     |> Executor.truncate_content(max_length)
   end
+
+  # Only text parts can be truncated safely - cutting image bytes or a URL
+  # corrupts them.
+  defp truncate_text_part(%ContentPart{type: :text, text: text} = part, max_length)
+       when is_binary(text) do
+    %{part | text: Executor.truncate_content(text, max_length)}
+  end
+
+  defp truncate_text_part(part, _max_length), do: part
 
   @known_config_keys ~w(binding_scope eval_guard max_iterations max_message_length max_retries model sandbox sandbox_max_heap sandbox_max_reductions sandbox_priority sandbox_timeout start_mode)a
 

@@ -56,25 +56,18 @@ defmodule Legion.MixProject do
       Core: [
         Legion,
         Legion.Agent,
-        Legion.Tool,
-        Legion.Store,
-        Legion.Store.Payload,
-        Legion.Store.Postgres,
-        Legion.Store.Migration.Postgres
+        Legion.Tool
       ],
-      "Rate Limiting": [
-        Legion.RateLimiter,
-        Legion.RateLimiter.Policy,
-        Legion.RateLimiter.Postgres
-      ],
-      Runtime: [Legion.AgentServer, Legion.Executor, Legion.Recovery, ~r/^Legion\.Sandbox/],
-      Tools: [~r/^Legion\.Tools\./],
-      Internals: [
-        Legion.AgentIndex,
-        Legion.AgentPrompt,
-        Legion.SourceRegistry,
+      Store: [~r/^Legion\.Store/],
+      "Rate Limiting": [~r/^Legion\.RateLimiter/],
+      Sandbox: [~r/^Legion\.Sandbox/, ~r/^Legion\.EvalGuard/],
+      Runtime: [
+        Legion.AgentServer,
+        Legion.Executor,
+        Legion.Recovery,
         Legion.Telemetry
-      ]
+      ],
+      Tools: [~r/^Legion\.Tools\./]
     ]
   end
 
@@ -90,6 +83,7 @@ defmodule Legion.MixProject do
 
       # Test and Dev
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
+      {:makeup_syntect, "~> 0.1", only: :dev, runtime: false},
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:mimic, "~> 1.7", only: :test}
