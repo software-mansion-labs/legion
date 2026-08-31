@@ -5,7 +5,7 @@
 ```elixir
 def deps do
   [
-    {:legion, "~> 0.4"}
+    {:legion, "~> 0.5"}
   ]
 end
 ```

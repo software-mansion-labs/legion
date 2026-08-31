@@ -138,7 +138,7 @@ Every evaluation runs in a monitored process with timeout, memory, and CPU budge
 
 - [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html) (default) - agents write Lua, evaluated by [lua](https://hexdocs.pm/lua), a Lua 5.3 VM in pure Elixir. Lua code cannot reach the host BEAM at all - the only bridges out are the tool functions Legion registers - making it the safer choice for less trusted generation. Tool arguments and results are converted at the boundary (Lua tables to maps/lists and back; Elixir tuples become arrays, atoms become strings).
 - [`Legion.Sandbox.Elixir`](https://hexdocs.pm/legion/Legion.Sandbox.Elixir.html) - agents write Elixir. Dangerous constructs (`defmodule`, `import`, `spawn`, `send`, `apply`, ...) are blocked at the AST level and module access is allowlisted (stdlib + your tools). Powerful, but the allowlist guards an enormous language surface - use it for your own LLM-backed agents with controlled tool access, not arbitrary code from unknown sources.
-- **Popcorn (work in progress)** - agents write Elixir that runs in the user's browser on [popcorn](https://github.com/software-mansion/popcorn/), an AtomVM-based BEAM in WebAssembly, so generated code never touches your server at all. Not released yet.
+- **Popcorn (coming soon)** - agents write Elixir that runs in the user's browser on [popcorn](https://github.com/software-mansion/popcorn/), an AtomVM-based BEAM in WebAssembly, so generated code never touches your server at all.
 
 You could add custom sandbox by implementing [`Legion.Sandbox`](https://hexdocs.pm/legion/Legion.Sandbox.html) behaviour.
 
@@ -335,6 +335,12 @@ Events emitted at every level:
 [`legion_web`](https://github.com/software-mansion-labs/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
 
 [![Legion Web Dashboard](https://raw.githubusercontent.com/software-mansion-labs/legion_web/main/img/preview.png)](https://github.com/software-mansion-labs/legion_web)
+
+## What's next
+
+- **[Braintrust](https://www.braintrust.dev) integration** - trace and evaluate agent runs
+- **[Datadog](https://www.datadoghq.com) integration** - agent and LLM telemetry in your existing dashboards
+- **Popcorn sandbox** - agents write Elixir that runs in the user's browser on [popcorn](https://github.com/software-mansion/popcorn/), an AtomVM-based BEAM in WebAssembly, so generated code never touches your server
 
 <!-- MDOC -->
 
