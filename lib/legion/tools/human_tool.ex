@@ -17,6 +17,10 @@ defmodule Legion.Tools.HumanTool do
       `{:human_response, ref, answer}` back to `from_pid`.
     - `:timeout` — milliseconds to wait for a response. Defaults to `:infinity`.
 
+  `ask/1` blocks inside the code evaluation, so the agent's `sandbox_timeout`
+  (60 seconds by default) still applies and kills the eval regardless of this
+  setting. Raise it, or set it to `:infinity`, for agents that wait on humans.
+
   ## Usage (for LLM agent)
 
       Legion.Tools.HumanTool.ask("What format do you prefer?")

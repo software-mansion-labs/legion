@@ -20,8 +20,8 @@ defmodule Legion.RateLimiter.Postgres do
       defmodule MyApp.Repo.Migrations.AddLegionAgents do
         use Ecto.Migration
 
-        def up, do: Legion.Store.Migration.Postgres.up()
-        def down, do: Legion.Store.Migration.Postgres.down()
+        def up, do: Legion.Store.Postgres.Migration.up()
+        def down, do: Legion.Store.Postgres.Migration.down()
       end
 
   Call the generated limiter before running work, passing every rule that

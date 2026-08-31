@@ -116,7 +116,7 @@ defmodule Legion.Sandbox.Lua do
   end
 
   defp eval(code, tools, bindings, max_heap_bytes) do
-    lua = if bindings == [], do: init(tools, max_heap_bytes), else: bindings
+    lua = if bindings == [], do: init(tools, max_heap_bytes), else: refresh(bindings, tools)
     module_refs = module_refs(tools)
 
     {results, lua} = Lua.eval!(lua, code)
@@ -150,6 +150,31 @@ defmodule Legion.Sandbox.Lua do
       |> register_tools(tools)
 
     Lua.put_private(lua, @baseline_globals_key, global_names(lua))
+  end
+
+  # The guards and tool bridges installed above are closures over module code.
+  # A state restored from before a deploy still carries the old ones - calling
+  # them raises :badfun once the defining module changed - and a tool added to
+  # the agent since the state was created was never bridged at all. Reinstall
+  # them on every reused state so long-lived conversations survive code
+  # changes, and fold the tool names into the baseline so a newly bridged tool
+  # is not reported to the model as a user-defined variable.
+  defp refresh(lua, tools) do
+    lua =
+      lua
+      |> Lua.sandbox([:print])
+      |> Lua.sandbox([:debug])
+      |> register_tools(tools)
+
+    short_names = for tool <- tools, do: tool |> Module.split() |> List.last()
+
+    case Lua.get_private(lua, @baseline_globals_key) do
+      {:ok, baseline} ->
+        Lua.put_private(lua, @baseline_globals_key, Enum.uniq(baseline ++ short_names))
+
+      :error ->
+        Lua.put_private(lua, @baseline_globals_key, global_names(lua))
+    end
   end
 
   # A single string is capped below the heap budget so a string bomb is

@@ -1,11 +1,11 @@
 defmodule Legion.AgentIndex do
-  @moduledoc """
-  Cluster-wide process index used by Legion's agent servers.
+  @moduledoc false
 
-  Implements the `:via` registration callbacks over `:global`. Starting an
-  agent atomically claims its agent ID across connected nodes. The name is
-  released automatically when the process stops.
-  """
+  # Cluster-wide process index used by Legion's agent servers.
+  #
+  # Implements the `:via` registration callbacks over `:global`. Starting an
+  # agent atomically claims its agent ID across connected nodes. The name is
+  # released automatically when the process stops.
 
   @doc false
   def name(agent_id) do

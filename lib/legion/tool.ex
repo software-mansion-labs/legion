@@ -33,6 +33,14 @@ defmodule Legion.Tool do
           Req.get!("https://wttr.in/\#{city}?format=j1").body
         end
       end
+
+  ## External modules as tools
+
+  A module that does not `use Legion.Tool` (e.g. `Req`) can still be listed as
+  a tool if its source code is registered at compile time, so the LLM can read
+  what it offers:
+
+      config :legion, extra_source_modules: [Req]
   """
 
   @callback description() :: String.t()

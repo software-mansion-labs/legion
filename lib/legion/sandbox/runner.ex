@@ -48,16 +48,11 @@ defmodule Legion.Sandbox.Runner do
 
     {pid, ref} =
       spawn_monitor(fn ->
-        # Generated code must not starve the node (hence the default :low
-        # priority) or OOM it (max_heap_size makes the VM kill this process once
-        # its heap and stack pass the budget; binaries are the parent's job, see
-        # await_result/5). Both flags also cover tool code called inline.
+        kill_eval_when_parent_dies(parent)
+
         Process.flag(:priority, priority)
 
         if is_integer(max_heap_bytes) do
-          # The VM rejects a max_heap_size under its own minimum heap, so a
-          # small budget floors at that minimum - left alone, it would fail
-          # to set the flag at all.
           {:min_heap_size, min_words} = :erlang.system_info(:min_heap_size)
           heap_words = max(div(max_heap_bytes, :erlang.system_info(:wordsize)), min_words)
           Process.flag(:max_heap_size, %{size: heap_words, kill: true, error_logger: false})
@@ -119,6 +114,20 @@ defmodule Legion.Sandbox.Runner do
   end
 
   defp memory_limit_error, do: "evaluation exceeded the memory limit and was killed"
+
+  defp kill_eval_when_parent_dies(parent) do
+    eval = self()
+
+    spawn(fn ->
+      parent_ref = Process.monitor(parent)
+      eval_ref = Process.monitor(eval)
+
+      receive do
+        {:DOWN, ^parent_ref, :process, _pid, _reason} -> Process.exit(eval, :kill)
+        {:DOWN, ^eval_ref, :process, _pid, _reason} -> :ok
+      end
+    end)
+  end
 
   defp polling?(max_reductions, max_heap_bytes),
     do: is_integer(max_reductions) or is_integer(max_heap_bytes)

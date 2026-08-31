@@ -5,13 +5,13 @@ Legion.Telemetry.attach_default_logger()
 defmodule Legion.Test.Support.LegionAgentsMigration do
   use Ecto.Migration
 
-  alias Legion.Store.Migration.Postgres
+  alias Legion.Store.Postgres.Migration
 
   @version 20_260_820_000_001
 
   def version, do: @version
-  def up, do: Postgres.up()
-  def down, do: Postgres.down()
+  def up, do: Migration.up()
+  def down, do: Migration.down()
 end
 
 # Shared connection and schema for the Legion.Store.Postgres database tests.

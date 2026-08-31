@@ -1,4 +1,4 @@
-defmodule Legion.Store.Migration.Postgres do
+defmodule Legion.Store.Postgres.Migration do
   @moduledoc """
   Runs versioned PostgreSQL migrations for `Legion.Store.Postgres`.
 
@@ -7,8 +7,8 @@ defmodule Legion.Store.Migration.Postgres do
       defmodule MyApp.Repo.Migrations.AddLegionAgents do
         use Ecto.Migration
 
-        def up, do: Legion.Store.Migration.Postgres.up()
-        def down, do: Legion.Store.Migration.Postgres.down()
+        def up, do: Legion.Store.Postgres.Migration.up()
+        def down, do: Legion.Store.Postgres.Migration.down()
       end
 
   Migrations are versioned and idempotent. `up/1` applies only versions that
@@ -20,8 +20,8 @@ defmodule Legion.Store.Migration.Postgres do
       defmodule MyApp.Repo.Migrations.AddLegionAgentsV01 do
         use Ecto.Migration
 
-        def up, do: Legion.Store.Migration.Postgres.up(version: 1)
-        def down, do: Legion.Store.Migration.Postgres.down(version: 1)
+        def up, do: Legion.Store.Postgres.Migration.up(version: 1)
+        def down, do: Legion.Store.Postgres.Migration.down(version: 1)
       end
 
   Rolling back the example above removes version 1.

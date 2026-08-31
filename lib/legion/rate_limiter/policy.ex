@@ -21,8 +21,9 @@ defmodule Legion.RateLimiter.Policy do
       limit.
     * `:max_tokens` - maximum recorded token total for matching agents during
       the window. Limits are checked when a turn starts and never interrupt
-      a running turn, so `0` denies every turn after the first one that
-      records usage; `nil` disables this limit.
+      a running turn, so one turn can carry the recorded total past the
+      maximum before the next one is denied. `0` accepts no tokens and so
+      denies every turn; `nil` disables this limit.
 
   A policy with both optional limits set to `nil` is unrestricted. See
   `Legion.RateLimiter` for the adapter interface and

@@ -77,26 +77,28 @@ defmodule Legion.Sandbox.Elixir do
       when is_binary(code_string) and is_list(allowed_modules) and is_list(limits) and
              (is_integer(timeout_ms) or timeout_ms == :infinity) do
     with :ok <- check(code_string, allowed_modules) do
-      code_string = append_aliases(code_string, allowed_modules)
-      Runner.run(fn -> eval(code_string, bindings) end, timeout_ms, limits)
+      env = env_with_aliases(allowed_modules)
+      Runner.run(fn -> eval(code_string, bindings, env) end, timeout_ms, limits)
     end
   end
 
-  defp append_aliases(code_string, allowed_modules) do
+  # Aliases go into the evaluation env rather than being prepended as `alias`
+  # lines, so error positions in diagnostics match the code the model wrote.
+  defp env_with_aliases(allowed_modules) do
     aliases =
-      for module <- allowed_modules, into: "" do
-        "alias #{module}\n"
+      for module <- allowed_modules, String.starts_with?(Atom.to_string(module), "Elixir.") do
+        {Module.concat([module |> Module.split() |> List.last()]), module}
       end
 
-    aliases <> code_string
+    %{Code.env_for_eval([]) | aliases: aliases}
   end
 
   # sobelow_skip ["RCE.CodeModule"]
-  defp eval(code_string, bindings) do
+  defp eval(code_string, bindings, env) do
     {result, diagnostics} =
       Code.with_diagnostics(fn ->
         try do
-          {value, new_bindings} = Code.eval_string(code_string, bindings)
+          {value, new_bindings} = Code.eval_string(code_string, bindings, env)
           {:ok, {value, new_bindings}}
         rescue
           e -> {:error, e}

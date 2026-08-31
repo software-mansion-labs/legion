@@ -45,7 +45,9 @@ defmodule Legion.Agent do
         (default: `Legion.Sandbox.Lua`)
       - `max_iterations` — max successful execution steps per turn (default: `10`)
       - `max_retries` — max consecutive failures before giving up (default: `3`)
-      - `sandbox_timeout` — timeout in ms for code execution (default: `60_000`)
+      - `sandbox_timeout` — timeout in ms for code execution. Set `:infinity` to
+        disable it, leaving `sandbox_max_reductions` as the only limit that stops
+        an eval that never returns (default: `60_000`)
       - `sandbox_max_heap` — memory budget in bytes for the process evaluating
         generated code. The VM kills the eval when its heap and stack exceed the
         budget; the binaries it references are polled separately (~50ms granularity)
@@ -72,6 +74,8 @@ defmodule Legion.Agent do
       - `max_message_length` — max byte size of a single message added to the
         conversation (user input, code execution result, or error text). Longer
         content is truncated with a `[... truncated N bytes ...]` marker.
+        Applies to text content only: each text part of a multipart message is
+        truncated individually, while image data and URLs pass through untouched.
         Defaults to `20_000`. Set to `:infinity` to disable truncation.
 
     - `action_types/0` — list of action strings the LLM is allowed to respond with.
@@ -97,13 +101,6 @@ defmodule Legion.Agent do
     quote do
       @behaviour Legion.Agent
       @before_compile Legion.Agent
-
-      def moduledoc do
-        case @moduledoc do
-          doc when is_binary(doc) and doc != "" -> doc
-          _ -> raise "#{inspect(__MODULE__)} must define a @moduledoc"
-        end
-      end
 
       def tools, do: []
       def output_schema, do: %{"type" => "string"}
@@ -142,6 +139,8 @@ defmodule Legion.Agent do
     end
 
     quote do
+      def moduledoc, do: unquote(doc)
+
       def tool_config(_tool), do: []
     end
   end

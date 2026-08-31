@@ -14,6 +14,19 @@ defmodule Legion.AgentTest do
     def tool_config(Legion.Tools.AgentTool), do: [agents: [MinimalAgent]]
   end
 
+  defmodule NoopStore do
+    @behaviour Legion.Store
+
+    @impl Legion.Store
+    def get(_agent_id), do: :error
+
+    @impl Legion.Store
+    def list(_limit), do: []
+
+    @impl Legion.Store
+    def save(_payload), do: :ok
+  end
+
   describe "tool_config/1" do
     test "returns [] for any argument without explicit override" do
       assert MinimalAgent.tool_config(:anything) == []
@@ -74,6 +87,21 @@ defmodule Legion.AgentTest do
 
       assert spec.start ==
                {Legion, :start_link, [MinimalAgent, [model: "openai:gpt-4o", max_iterations: 5]]}
+    end
+
+    test "starts under a DynamicSupervisor, unlinked from the caller" do
+      {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+      agent_id = "supervised:#{System.unique_integer([:positive])}"
+
+      {:ok, pid} =
+        DynamicSupervisor.start_child(
+          supervisor,
+          {MinimalAgent, agent_id: agent_id, store: NoopStore}
+        )
+
+      {:links, links} = Process.info(self(), :links)
+      refute pid in links
+      assert Legion.lookup(agent_id) == {:ok, pid}
     end
   end
 

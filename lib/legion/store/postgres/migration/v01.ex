@@ -1,4 +1,4 @@
-defmodule Legion.Store.Migration.Postgres.V01 do
+defmodule Legion.Store.Postgres.Migration.V01 do
   @moduledoc false
 
   use Ecto.Migration
