@@ -25,7 +25,7 @@ defmodule Legion do
         def start(_type, _args) do
           children = [
             MyApp.Repo,
-            {Legion, []}
+            Legion
           ]
 
           Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
