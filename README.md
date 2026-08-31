@@ -39,7 +39,7 @@ end
 
 children = [
   MyApp.Repo,
-  {Legion, []}
+  Legion
 ]
 ```
 
