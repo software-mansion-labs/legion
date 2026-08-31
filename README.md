@@ -269,23 +269,40 @@ See [Vault](https://github.com/dimamik/vault) for more details.
 
 ### **7. Rate limiting baked in**
 
-Set a limiter with a policy and a key. Every turn passes through the limiter, and agents that share a key share the policy's rolling-window limits.
+Configure a limiter and a default policy once.
 
 ```elixir
 # config/config.exs
 config :legion, :rate_limit,
   limiter: MyApp.RateLimiter,
-  policy: %Legion.RateLimiter.Policy{
-    interval_ms: :timer.minutes(1),
+  default_policy: %Legion.RateLimiter.Policy{
+    window_ms: :timer.minutes(1),
     max_agents: 10,
     max_tokens: 100_000
-  },
-  key: %{"ip" => "203.0.113.42"}
+  }
 ```
 
-The key can be a user, an IP, or anything else - a map, so it can combine several fields - and no single group can drain your token budget. The check runs once per turn, before any LLM request - a refused turn costs nothing and leaves the conversation untouched.
+Then name the groups an agent belongs to when it starts - a turn runs only if every rule allows it.
 
-Configure it once and every agent uses it. `Legion.start_link/2` can override any single field - for example, keep the global limiter and policy but pass a per-user key. Sub-agents inherit their parent's settings unless given their own. To store limit state somewhere else, implement the `Legion.RateLimiter` behaviour.
+```elixir
+Legion.start_link(ChatAgent,
+  rate_limit: [
+    rules: [
+      # default policy
+      %Legion.RateLimiter.Rule{identity: %{"ip" => "203.0.113.42"}},
+      # own policy
+      %Legion.RateLimiter.Rule{
+        identity: %{"email" => "someone@example.com"},
+        policy: %Legion.RateLimiter.Policy{window_ms: :timer.hours(24), max_agents: 5}
+      }
+    ]
+  ]
+)
+```
+
+Agents that share an identity share the policy's rolling-window limits. The identity can be a user, an IP, or anything else - a map, so it can combine several fields - and no single group can drain your token budget. The check runs once per turn, before any LLM request - a denied turn costs nothing and leaves the conversation untouched.
+
+A rule without a policy takes the default one - give it a policy, or pass a limiter, to override the config for that agent. Sub-agents inherit their parent's settings. `Legion.RateLimiter.Postgres` ships ready-made and extends the Postgres store from [Conversations survive restarts](#5-conversations-survive-restarts); to keep limit state anywhere else, implement the `Legion.RateLimiter` behaviour.
 
 See [`Legion.RateLimiter`](https://hexdocs.pm/legion/Legion.RateLimiter.html) for more details.
 
