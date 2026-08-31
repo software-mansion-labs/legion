@@ -4,14 +4,11 @@
 
 # Legion
 
-<div align="center">
-
 [![CI](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml/badge.svg)](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml)
 [![License](https://img.shields.io/hexpm/l/legion.svg)](https://github.com/software-mansion-labs/legion/blob/main/LICENSE)
 [![Version](https://img.shields.io/hexpm/v/legion.svg)](https://hex.pm/packages/legion)
 [![Hex Docs](https://img.shields.io/badge/documentation-gray.svg)](https://hexdocs.pm/legion)
 
-</div>
 <!-- MDOC -->
 
 Legion is an Elixir runtime for AI agents that live inside your application and get things done by writing code.
@@ -112,7 +109,7 @@ defmodule MyApp.WeatherAgent do
 end
 ```
 
-Use it to hand agents your existing app logic directly - no schemas to write, nothing to keep in sync. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (see [Credentials never reach the LLM](#6-credentials-never-reach-the-llm)). For large modules you could write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source. If for any reason the source isn't what the LLM should see, define `description/0` on the tool and it is sent verbatim instead.
+Use it to hand agents your existing app logic directly. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (see [Credentials never reach the LLM](#6-credentials-never-reach-the-llm)). For large modules you could write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source. If for any reason the source isn't what the LLM should see, define `description/0` on the tool and it is sent verbatim instead.
 
 See [`Legion.Tool`](https://hexdocs.pm/legion/Legion.Tool.html) for more details.
 
