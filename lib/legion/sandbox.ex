@@ -25,8 +25,8 @@ defmodule Legion.Sandbox do
   Both built-ins evaluate inside `Legion.Sandbox.Runner`, which enforces the
   timeout, memory, and CPU limits regardless of language. Nothing above
   `c:execute/5` enforces them, so a custom sandbox should wrap its evaluation
-  in `Runner.run/3` too - otherwise the `timeout_ms` and `limits` it is handed
-  have no effect.
+  in `Legion.Sandbox.Runner.run/3` too - otherwise the `timeout_ms` and
+  `limits` it is handed have no effect.
 
   ## Bindings
 

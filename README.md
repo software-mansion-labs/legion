@@ -139,7 +139,7 @@ Every evaluation runs in a monitored process with timeout, memory, and CPU budge
 - [`Legion.Sandbox.Elixir`](https://hexdocs.pm/legion/Legion.Sandbox.Elixir.html) - agents write Elixir. Dangerous constructs (`defmodule`, `import`, `spawn`, `send`, `apply`, ...) are blocked at the AST level and module access is allowlisted (stdlib + your tools). Powerful, but the allowlist guards an enormous language surface - use it for your own LLM-backed agents with controlled tool access, not arbitrary code from unknown sources.
 - **Popcorn (coming soon)** - agents write Elixir that runs in the user's browser on [popcorn](https://github.com/software-mansion/popcorn/), an AtomVM-based BEAM in WebAssembly, so generated code never touches your server at all.
 
-You could add custom sandbox by implementing [`Legion.Sandbox`](https://hexdocs.pm/legion/Legion.Sandbox.html) behaviour.
+You could add a custom sandbox by implementing the [`Legion.Sandbox`](https://hexdocs.pm/legion/Legion.Sandbox.html) behaviour.
 
 ### **4. Agents orchestrate agents**
 
@@ -263,7 +263,7 @@ Legion.start_link(ChatAgent,
     rules: [
       # This rule uses the default policy from `config.exs`
       %Legion.RateLimiter.Rule{identity: %{"ip" => "203.0.113.42"}},
-      # This rule uses custom policy
+      # This rule uses a custom policy
       %Legion.RateLimiter.Rule{
         identity: %{"email" => "someone@example.com", "tenant" => "acme"},
         policy: %Legion.RateLimiter.Policy{window_ms: :timer.hours(24), max_agents: 5}

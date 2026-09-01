@@ -71,8 +71,8 @@ defmodule Legion.Sandbox.Elixir.ASTChecker do
     many unique identifiers will inflate the atom table even when every call
     site is denied.
   - Most denial-of-service vectors (CPU, memory, message queue depth,
-    long-running comprehensions, ...). Wallclock timeouts in
-    `Legion.Sandbox.Elixir.execute/5` are the only mitigation.
+    long-running comprehensions, ...). `Legion.Sandbox.Runner`'s timeout,
+    memory, and reduction budgets are the only mitigation.
   """
 
   # Bare forms: every non-prefixed call/identifier in user code must resolve

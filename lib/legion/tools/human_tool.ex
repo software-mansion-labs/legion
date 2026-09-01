@@ -23,7 +23,7 @@ defmodule Legion.Tools.HumanTool do
 
   ## Usage (for LLM agent)
 
-      Legion.Tools.HumanTool.ask("What format do you prefer?")
+      HumanTool.ask("What format do you prefer?")
   """
 
   use Legion.Tool

@@ -176,7 +176,7 @@ defmodule Legion.Store.Postgres do
     payload
     |> Map.from_struct()
     |> Map.update(:conversation_state, nil, fn state ->
-      # Snapshots are large, repetitive terms (message text, sandbox states)
+      # Snapshots are large, repetitive terms (message text, bindings)
       # that compress several-fold. Old uncompressed rows still decode fine.
       if not is_nil(state), do: :erlang.term_to_binary(state, compressed: 6)
     end)

@@ -14,8 +14,8 @@ defmodule Legion.EvalGuard.LLM do
 
       def config, do: %{eval_guard: MyApp.CodeReview}
 
-  Options are `:policy` and `:model` (which defaults to the same model the
-  executor uses). The reviewing model sees the policy, the agent's name, the
+  Options are `:policy` and `:model` (which defaults to Legion's built-in
+  default model, regardless of the model the agent is configured with). The reviewing model sees the policy, the agent's name, the
   tool modules the code may call, and the code itself - not the conversation.
 
   Without a `:policy` the guard falls back to `default_policy/0`, which denies

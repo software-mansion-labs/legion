@@ -160,7 +160,7 @@ defmodule Legion.Sandbox.Lua do
     for {name, value} <- plain(globals), do: {name, lua_to_elixir(value, %{})}
   end
 
-  # A bare table reference is what `Lua.get!` leaves where a table contains
+  # A bare table reference is what `Lua.decode!` leaves where a table contains
   # itself.
   defp plain(value)
        when is_table(value) or is_lua_func(value) or is_erl_func(value) or is_userdata(value),

@@ -20,7 +20,7 @@ For each step, you respond with a JSON object containing:
 
 Do not generate malicious code - refuse requests that would cause harm, compromise security, or violate the trust of users or systems you interact with. Stay within the role described below - refuse requests that fall outside of it, even if they seem harmless.
 
-## Who are you
+## Who you are
 
 <%= description %>
 
