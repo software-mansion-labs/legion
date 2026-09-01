@@ -8,6 +8,7 @@ defmodule Legion.Sandbox.LuaTest.EchoTool do
   def shape(value), do: %{received: value, tag: :ok}
   def module_check(module), do: %{is_atom: is_atom(module), name: inspect(module)}
   def pair, do: {:ok, 42}
+  def host_fun, do: %{name: "reader", read: fn path -> {:host_called, path} end}
   def boom, do: raise(ArgumentError, "tool exploded")
   def throw_it, do: throw(:tool_escaped)
   def exit_it, do: exit(:tool_exited)
@@ -84,10 +85,13 @@ defmodule Legion.Sandbox.LuaTest do
     assert Lua.binding_names([]) == []
   end
 
-  test "bindings are plain data: functions and dead tables are not carried" do
+  test "bindings are plain data: functions, cycles, and dead tables are not carried" do
     code = """
     count = 1
+    flag = false
     items = {1, {x = 2}}
+    cyclic = {}
+    cyclic.self = cyclic
     local dead = {1, 2, 3}
     function helper() return 1 end
     saved = EchoTool.add
@@ -95,8 +99,15 @@ defmodule Legion.Sandbox.LuaTest do
 
     {:ok, {nil, bindings}} = Lua.execute(code, 15_000, [EchoTool])
 
-    assert Enum.sort(bindings) == [{"count", 1}, {"items", [1, %{"x" => 2}]}]
+    assert Enum.sort(bindings) ==
+             [{"count", 1}, {"cyclic", []}, {"flag", false}, {"items", [1, %{"x" => 2}]}]
+
     assert {:ok, {2, _}} = Lua.execute("return items[2].x", 15_000, [EchoTool], bindings)
+  end
+
+  test "rebinding _G does not affect which globals are exported" do
+    assert {:ok, {nil, [{"x", 1}]}} = Lua.execute("_G = nil\nx = 1", 15_000)
+    assert {:ok, {nil, [{"y", 2}]}} = Lua.execute("_G = {evil = 1}\ny = 2", 15_000)
   end
 
   test "a tool removed from the agent is unreachable from restored bindings" do
@@ -205,6 +216,18 @@ defmodule Legion.Sandbox.LuaTest do
 
   test "tuple results become arrays" do
     assert {:ok, {["ok", 42], _}} = Lua.execute("return EchoTool.pair()", 15_000, [EchoTool])
+  end
+
+  test "elixir functions in tool results and bindings are dropped, not bridged" do
+    assert {:ok, {%{"name" => "reader"}, _}} =
+             Lua.execute("return EchoTool.host_fun()", 15_000, [EchoTool])
+
+    assert {:error, message} =
+             Lua.execute("return EchoTool.host_fun().read('/etc/hosts')", 15_000, [EchoTool])
+
+    assert message =~ "attempt to call a nil value"
+
+    assert {:ok, {nil, _}} = Lua.execute("return p", 15_000, [], [{"p", fn _ -> :host end}])
   end
 
   test "tool exceptions surface with the tool name" do
