@@ -8,7 +8,7 @@
 - [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html), now the default sandbox
 - Sandbox resource limits - timeout, memory, and CPU budgets in [`Legion.Sandbox.Runner`](https://hexdocs.pm/legion/Legion.Sandbox.Runner.html)
 - Sandbox-specific [`Legion.Tool.description/1`](https://hexdocs.pm/legion/Legion.Tool.html#c:description/1)
-- Persistence - [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html), [`Legion.Store.Postgres`](https://hexdocs.pm/legion/Legion.Store.Postgres.html), versioned [migrations](https://hexdocs.pm/legion/Legion.Store.Postgres.Migration.html), `persistence_frequency/0`
+- Persistence - [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) saves conversation state (messages, bindings, executor checkpoints), status, and LLM usage across restarts, with a [Postgres adapter](https://hexdocs.pm/legion/Legion.Store.Postgres.html), versioned [migrations](https://hexdocs.pm/legion/Legion.Store.Postgres.Migration.html), and `persistence_frequency/0`
 - Agent identity - string agent ids, [`Legion.get_agent_id/1`](https://hexdocs.pm/legion/Legion.html#get_agent_id/1), [`Legion.lookup/1`](https://hexdocs.pm/legion/Legion.html#lookup/1), cluster-wide `:global` registration; `:name` option removed
 - Recovery - [`Legion.resume/2`](https://hexdocs.pm/legion/Legion.html#resume/2), [`Legion.recover/2`](https://hexdocs.pm/legion/Legion.html#recover/2), `:recovery` startup config
 - Rate limiting - [`Legion.RateLimiter`](https://hexdocs.pm/legion/Legion.RateLimiter.html) with [rules](https://hexdocs.pm/legion/Legion.RateLimiter.Rule.html), [policies](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html), and a [Postgres adapter](https://hexdocs.pm/legion/Legion.RateLimiter.Postgres.html)
