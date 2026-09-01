@@ -122,11 +122,10 @@ build any single string larger than half the `max_heap` budget, so a string
 bomb comes back as a catchable "resulting string too large" error instead of
 racing the heap kill mid-allocation.
 
-Bindings are also heavier: persisting them means serialising the whole Lua
-VM state, not a small keyword list - worth remembering with
-`binding_scope: :conversation` and a database-backed store. The VM has no
-state garbage collector yet, so dead tables from each evaluation stay in
-that state for the life of the conversation.
+Bindings are the user's globals exported as plain data - strings, numbers,
+booleans, and tables as maps or lists. Each evaluation starts a fresh VM and
+restores them, so functions and metatables do not survive between
+executions: a helper must be redefined in every chunk that uses it.
 
 ## What neither sandbox gives you
 
