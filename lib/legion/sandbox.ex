@@ -31,7 +31,8 @@ defmodule Legion.Sandbox do
   ## Bindings
 
   `bindings` is an opaque, serialisable term owned by the sandbox: a keyword
-  list for `Legion.Sandbox.Elixir`, a `Lua` state for `Legion.Sandbox.Lua`.
+  list for `Legion.Sandbox.Elixir`, a list of `{name, value}` pairs of user
+  globals for `Legion.Sandbox.Lua`.
   `[]` always means "fresh state". The executor threads it between
   executions and persists it in checkpoints without inspecting it beyond
   `c:binding_names/1`.

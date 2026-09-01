@@ -16,8 +16,10 @@ defmodule Legion.Sandbox.Lua do
     become maps, or lists when array-shaped) and results are encoded back
     (tuples become arrays, structs become tables of fields, atoms become
     strings).
-  - **Bindings** - the opaque `Lua` state. Lua globals persist across
-    executions that share bindings; `local` variables do not.
+  - **Bindings** - the user-defined globals, as a list of `{name, value}`
+    pairs of plain Elixir data (tables become maps, or lists when
+    array-shaped). Globals persist across executions that share bindings;
+    `local` variables, functions, and metatables do not.
   - **Blocked** - `io`, `file`, `os.execute/exit/getenv/...`, `require`,
     `load`, `print`, and `debug` are sandboxed and raise when called.
   - **Timeout and resource limits** - evaluation runs through
@@ -29,8 +31,8 @@ defmodule Legion.Sandbox.Lua do
 
       iex> {:ok, {4, _}} = Legion.Sandbox.Lua.execute("return 2 + 2", 5_000)
 
-      iex> {:ok, {nil, bindings}} = Legion.Sandbox.Lua.execute("x = 40", 5_000)
-      iex> {:ok, {42, _}} = Legion.Sandbox.Lua.execute("return x + 2", 5_000, [], bindings)
+      iex> {:ok, {nil, [{"x", 40}]}} = Legion.Sandbox.Lua.execute("x = 40", 5_000)
+      iex> {:ok, {42, _}} = Legion.Sandbox.Lua.execute("return x + 2", 5_000, [], [{"x", 40}])
 
       iex> {:error, message} = Legion.Sandbox.Lua.execute("os.getenv('HOME')", 5_000)
       iex> message =~ "sandboxed"
@@ -51,7 +53,39 @@ defmodule Legion.Sandbox.Lua do
   # Defined by `use Legion.Tool`, not part of a tool's callable surface.
   @tool_meta_functions [description: 0, extra_allowed_modules: 0]
 
-  @baseline_globals_key :legion_baseline_globals
+  # Copies the user's globals out of the VM as plain data. Done in Lua, where
+  # `type` tells data from functions, userdata, and threads - those are
+  # dropped, as are cycles. Names the fresh VM already defines (stdlib, tools)
+  # arrive in `__legion_baseline`, set right before this runs and never
+  # visible to the evaluated code.
+  @export_globals """
+  local skip = {__legion_baseline = true}
+  for _, name in ipairs(__legion_baseline) do skip[name] = true end
+
+  local function copy(value, seen)
+    local kind = type(value)
+    if kind == "table" then
+      if seen[value] then return nil end
+      seen[value] = true
+      local result = {}
+      for key, item in pairs(value) do
+        local copied_key, copied_item = copy(key, seen), copy(item, seen)
+        if copied_key ~= nil and copied_item ~= nil then result[copied_key] = copied_item end
+      end
+      seen[value] = nil
+      return result
+    elseif kind == "function" or kind == "userdata" or kind == "thread" then
+      return nil
+    end
+    return value
+  end
+
+  local globals = {}
+  for name, value in pairs(_G) do
+    if not skip[name] then globals[name] = copy(value, {}) end
+  end
+  return globals
+  """
 
   # Field stamped on every bridged tool table so the table itself can stand in
   # for its Elixir module when passed back through a bridge.
@@ -78,12 +112,7 @@ defmodule Legion.Sandbox.Lua do
   end
 
   @impl Legion.Sandbox
-  def binding_names(%Lua{} = lua) do
-    baseline = Lua.get_private!(lua, @baseline_globals_key)
-    global_names(lua) -- baseline
-  end
-
-  def binding_names(_fresh), do: []
+  def binding_names(bindings), do: for({name, _value} <- bindings, do: name)
 
   @impl Legion.Sandbox
   def prompt_info do
@@ -103,8 +132,8 @@ defmodule Legion.Sandbox.Lua do
   the evaluating process - see `Legion.Sandbox.Runner.run/3`.
 
   Returns `{:ok, {result, bindings}}` where `result` is the chunk's `return`
-  value (`nil` when it returns nothing) and `bindings` is the Lua state to
-  pass to subsequent calls, or `{:error, reason}`.
+  value (`nil` when it returns nothing) and `bindings` holds the user-defined
+  globals to pass to subsequent calls, or `{:error, reason}`.
   """
   @impl Legion.Sandbox
   def execute(code, timeout_ms, tools \\ [], bindings \\ [], limits \\ [])
@@ -116,16 +145,12 @@ defmodule Legion.Sandbox.Lua do
   end
 
   defp eval(code, tools, bindings, max_heap_bytes) do
-    lua = if bindings == [], do: init(tools, max_heap_bytes), else: refresh(bindings, tools)
+    lua = init(tools, max_heap_bytes)
+    baseline = global_names(lua)
+    lua = restore(lua, bindings, baseline)
     module_refs = module_refs(tools)
 
     {results, lua} = Lua.eval!(lua, code)
-
-    # The VM has no state garbage collector, so dead tables from every
-    # evaluation accumulate in the state - and in every persisted snapshot of
-    # it - for the life of the conversation. luerl's :luerl.gc/1 sweep covered
-    # this before the lua 1.0 backend switch; restore one when upstream ships
-    # a GC.
 
     value =
       case results do
@@ -134,7 +159,7 @@ defmodule Legion.Sandbox.Lua do
         many -> Enum.map(many, &lua_to_elixir(&1, module_refs))
       end
 
-    {:ok, {value, lua}}
+    {:ok, {value, export(lua, baseline)}}
   rescue
     e in [Lua.RuntimeException, Lua.CompilerException] -> {:error, Exception.message(e)}
   catch
@@ -143,46 +168,41 @@ defmodule Legion.Sandbox.Lua do
   end
 
   defp init(tools, max_heap_bytes) do
-    lua =
-      new_vm(max_heap_bytes)
-      |> Lua.sandbox([:print])
-      |> Lua.sandbox([:debug])
-      |> register_tools(tools)
-
-    Lua.put_private(lua, @baseline_globals_key, global_names(lua))
+    new_vm(max_heap_bytes)
+    |> Lua.sandbox([:print])
+    |> Lua.sandbox([:debug])
+    |> register_tools(tools)
   end
 
-  # The guards and tool bridges installed above are closures over module code.
-  # A state restored from before a deploy still carries the old ones - calling
-  # them raises :badfun once the defining module changed - and a tool added to
-  # the agent since the state was created was never bridged at all. Reinstall
-  # them on every reused state so long-lived conversations survive code
-  # changes, and fold the tool names into the baseline so a newly bridged tool
-  # is not reported to the model as a user-defined variable.
-  defp refresh(lua, tools) do
-    lua =
-      lua
-      |> Lua.sandbox([:print])
-      |> Lua.sandbox([:debug])
-      |> register_tools(tools)
-
-    short_names = for tool <- tools, do: tool |> Module.split() |> List.last()
-
-    case Lua.get_private(lua, @baseline_globals_key) do
-      {:ok, baseline} ->
-        Lua.put_private(lua, @baseline_globals_key, Enum.uniq(baseline ++ short_names))
-
-      :error ->
-        Lua.put_private(lua, @baseline_globals_key, global_names(lua))
+  # Bindings never carry the VM. Its state is a bag of closures over module
+  # code (every stdlib function included) that go stale on redeploy, it keeps
+  # every table ever allocated because the VM has no GC, and it would keep a
+  # tool callable after the tool was removed from the agent. So every
+  # evaluation builds a fresh VM with the current tools and copies the user's
+  # globals in as plain data. Names the fresh VM already defines are skipped,
+  # so a tool added since the bindings were written wins over a stale global.
+  defp restore(lua, bindings, baseline) do
+    for {name, value} <- bindings, name not in baseline, reduce: lua do
+      lua -> Lua.set!(lua, [name], elixir_to_lua(value))
     end
+  end
+
+  # `__module` tables are kept as tables (no `module_refs`), so a stored tool
+  # reference resolves against the tools of whichever run reads it back.
+  defp export(lua, baseline) do
+    {[globals], _lua} =
+      lua
+      |> Lua.set!(["__legion_baseline"], baseline)
+      |> Lua.eval!(@export_globals)
+
+    for {name, value} <- globals, do: {name, lua_to_elixir(value, %{})}
   end
 
   # A single string is capped below the heap budget so a string bomb is
   # refused by the VM before allocating - a catchable "resulting string too
   # large" error the model can react to - instead of racing the heap kill
   # mid-allocation. Half the budget leaves room for the eval's other live
-  # data. Baked into the state at init, so a conversation revived under a
-  # changed `max_heap` keeps the ceiling it started with.
+  # data.
   defp new_vm(:infinity), do: Lua.new()
 
   defp new_vm(max_heap_bytes),

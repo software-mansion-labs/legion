@@ -84,6 +84,43 @@ defmodule Legion.Sandbox.LuaTest do
     assert Lua.binding_names([]) == []
   end
 
+  test "bindings are plain data: functions and dead tables are not carried" do
+    code = """
+    count = 1
+    items = {1, {x = 2}}
+    local dead = {1, 2, 3}
+    function helper() return 1 end
+    saved = EchoTool.add
+    """
+
+    {:ok, {nil, bindings}} = Lua.execute(code, 15_000, [EchoTool])
+
+    assert Enum.sort(bindings) == [{"count", 1}, {"items", [1, %{"x" => 2}]}]
+    assert {:ok, {2, _}} = Lua.execute("return items[2].x", 15_000, [EchoTool], bindings)
+  end
+
+  test "a tool removed from the agent is unreachable from restored bindings" do
+    {:ok, {nil, bindings}} = Lua.execute("saved = EchoTool.add", 15_000, [EchoTool])
+
+    assert {:ok, {nil, _}} = Lua.execute("return saved", 15_000, [], bindings)
+    assert {:error, message} = Lua.execute("return EchoTool.add(1, 2)", 15_000, [], bindings)
+    assert message =~ "attempt to index a nil value"
+  end
+
+  test "a stored tool reference resolves against the tools of the run that reads it" do
+    {:ok, {nil, bindings}} = Lua.execute("planner = EchoTool", 15_000, [EchoTool])
+
+    assert {:ok, {%{"is_atom" => true}, _}} =
+             Lua.execute("return EchoTool.module_check(planner)", 15_000, [EchoTool], bindings)
+  end
+
+  test "a global named after a tool does not break later evaluations" do
+    {:ok, {nil, bindings}} = Lua.execute("EchoTool = 1", 15_000, [EchoTool])
+
+    assert {:ok, {3, _}} =
+             Lua.execute("return EchoTool.add(1, 2)", 15_000, [EchoTool], bindings)
+  end
+
   test "parse errors are caught by check" do
     assert {:error, message} = Lua.execute("local x =;", 15_000)
     assert message =~ "Failed to compile Lua!"
