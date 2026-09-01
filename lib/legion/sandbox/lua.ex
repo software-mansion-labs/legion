@@ -16,8 +16,10 @@ defmodule Legion.Sandbox.Lua do
     become maps, or lists when array-shaped) and results are encoded back
     (tuples become arrays, structs become tables of fields, atoms become
     strings).
-  - **Bindings** - the opaque `Lua` state. Lua globals persist across
-    executions that share bindings; `local` variables do not.
+  - **Bindings** - the user-defined globals, as a list of `{name, value}`
+    pairs of plain Elixir data (tables become maps, or lists when
+    array-shaped). Globals persist across executions that share bindings;
+    `local` variables, functions, and metatables do not.
   - **Blocked** - `io`, `file`, `os.execute/exit/getenv/...`, `require`,
     `load`, `print`, and `debug` are sandboxed and raise when called.
   - **Timeout and resource limits** - evaluation runs through
@@ -29,8 +31,8 @@ defmodule Legion.Sandbox.Lua do
 
       iex> {:ok, {4, _}} = Legion.Sandbox.Lua.execute("return 2 + 2", 5_000)
 
-      iex> {:ok, {nil, bindings}} = Legion.Sandbox.Lua.execute("x = 40", 5_000)
-      iex> {:ok, {42, _}} = Legion.Sandbox.Lua.execute("return x + 2", 5_000, [], bindings)
+      iex> {:ok, {nil, [{"x", 40}]}} = Legion.Sandbox.Lua.execute("x = 40", 5_000)
+      iex> {:ok, {42, _}} = Legion.Sandbox.Lua.execute("return x + 2", 5_000, [], [{"x", 40}])
 
       iex> {:error, message} = Legion.Sandbox.Lua.execute("os.getenv('HOME')", 5_000)
       iex> message =~ "sandboxed"
@@ -41,6 +43,9 @@ defmodule Legion.Sandbox.Lua do
 
   alias Legion.Sandbox.Runner
   alias Lua.VM.Limits
+  alias Lua.VM.State
+
+  import Lua.API, only: [is_table: 1, is_lua_func: 1, is_erl_func: 1, is_userdata: 1]
 
   require EEx
 
@@ -51,10 +56,6 @@ defmodule Legion.Sandbox.Lua do
   # Defined by `use Legion.Tool`, not part of a tool's callable surface.
   @tool_meta_functions [description: 0, extra_allowed_modules: 0]
 
-  @baseline_globals_key :legion_baseline_globals
-
-  # Field stamped on every bridged tool table so the table itself can stand in
-  # for its Elixir module when passed back through a bridge.
   @module_key "__module"
 
   @impl Legion.Sandbox
@@ -78,12 +79,7 @@ defmodule Legion.Sandbox.Lua do
   end
 
   @impl Legion.Sandbox
-  def binding_names(%Lua{} = lua) do
-    baseline = Lua.get_private!(lua, @baseline_globals_key)
-    global_names(lua) -- baseline
-  end
-
-  def binding_names(_fresh), do: []
+  def binding_names(bindings), do: for({name, _value} <- bindings, do: name)
 
   @impl Legion.Sandbox
   def prompt_info do
@@ -96,15 +92,15 @@ defmodule Legion.Sandbox.Lua do
   end
 
   @doc """
-  Evaluates Lua `code` in a sandboxed process.
+  Evaluates Lua code in a sandboxed process.
 
   `timeout_ms` controls the maximum execution time (`:infinity` to disable).
   `tools` are Elixir modules bridged in as global Lua tables. `limits` bound
   the evaluating process - see `Legion.Sandbox.Runner.run/3`.
 
   Returns `{:ok, {result, bindings}}` where `result` is the chunk's `return`
-  value (`nil` when it returns nothing) and `bindings` is the Lua state to
-  pass to subsequent calls, or `{:error, reason}`.
+  value (`nil` when it returns nothing) and `bindings` holds the user-defined
+  globals to pass to subsequent calls, or `{:error, reason}`.
   """
   @impl Legion.Sandbox
   def execute(code, timeout_ms, tools \\ [], bindings \\ [], limits \\ [])
@@ -116,16 +112,12 @@ defmodule Legion.Sandbox.Lua do
   end
 
   defp eval(code, tools, bindings, max_heap_bytes) do
-    lua = if bindings == [], do: init(tools, max_heap_bytes), else: refresh(bindings, tools)
+    lua = init(tools, max_heap_bytes)
+    baseline = global_names(lua)
+    lua = restore(lua, bindings, baseline)
     module_refs = module_refs(tools)
 
     {results, lua} = Lua.eval!(lua, code)
-
-    # The VM has no state garbage collector, so dead tables from every
-    # evaluation accumulate in the state - and in every persisted snapshot of
-    # it - for the life of the conversation. luerl's :luerl.gc/1 sweep covered
-    # this before the lua 1.0 backend switch; restore one when upstream ships
-    # a GC.
 
     value =
       case results do
@@ -134,7 +126,7 @@ defmodule Legion.Sandbox.Lua do
         many -> Enum.map(many, &lua_to_elixir(&1, module_refs))
       end
 
-    {:ok, {value, lua}}
+    {:ok, {value, export(lua, baseline)}}
   rescue
     e in [Lua.RuntimeException, Lua.CompilerException] -> {:error, Exception.message(e)}
   catch
@@ -143,46 +135,49 @@ defmodule Legion.Sandbox.Lua do
   end
 
   defp init(tools, max_heap_bytes) do
-    lua =
-      new_vm(max_heap_bytes)
-      |> Lua.sandbox([:print])
-      |> Lua.sandbox([:debug])
-      |> register_tools(tools)
-
-    Lua.put_private(lua, @baseline_globals_key, global_names(lua))
+    new_vm(max_heap_bytes)
+    |> Lua.sandbox([:print])
+    |> Lua.sandbox([:debug])
+    |> register_tools(tools)
   end
 
-  # The guards and tool bridges installed above are closures over module code.
-  # A state restored from before a deploy still carries the old ones - calling
-  # them raises :badfun once the defining module changed - and a tool added to
-  # the agent since the state was created was never bridged at all. Reinstall
-  # them on every reused state so long-lived conversations survive code
-  # changes, and fold the tool names into the baseline so a newly bridged tool
-  # is not reported to the model as a user-defined variable.
-  defp refresh(lua, tools) do
-    lua =
-      lua
-      |> Lua.sandbox([:print])
-      |> Lua.sandbox([:debug])
-      |> register_tools(tools)
-
-    short_names = for tool <- tools, do: tool |> Module.split() |> List.last()
-
-    case Lua.get_private(lua, @baseline_globals_key) do
-      {:ok, baseline} ->
-        Lua.put_private(lua, @baseline_globals_key, Enum.uniq(baseline ++ short_names))
-
-      :error ->
-        Lua.put_private(lua, @baseline_globals_key, global_names(lua))
+  defp restore(lua, bindings, baseline) do
+    for {name, value} <- bindings, name not in baseline, reduce: lua do
+      lua -> Lua.set!(lua, [name], elixir_to_lua(value))
     end
   end
 
-  # A single string is capped below the heap budget so a string bomb is
-  # refused by the VM before allocating - a catchable "resulting string too
-  # large" error the model can react to - instead of racing the heap kill
-  # mid-allocation. Half the budget leaves room for the eval's other live
-  # data. Baked into the state at init, so a conversation revived under a
-  # changed `max_heap` keeps the ceiling it started with.
+  # Copies the user's globals out of the VM as plain data - functions,
+  # userdata, and cycles are dropped. `__module` tables are kept as tables (no
+  # `module_refs`), so a stored tool reference resolves against the tools of
+  # whichever run reads it back.
+  defp export(lua, baseline) do
+    globals =
+      for {name, value} <- State.globals(lua.state),
+          name not in baseline,
+          do: {name, Lua.decode!(lua, value)}
+
+    for {name, value} <- plain(globals), do: {name, lua_to_elixir(value, %{})}
+  end
+
+  # A bare table reference is what `Lua.get!` leaves where a table contains
+  # itself.
+  defp plain(value)
+       when is_table(value) or is_lua_func(value) or is_erl_func(value) or is_userdata(value),
+       do: nil
+
+  defp plain(table) when is_list(table) do
+    Enum.flat_map(table, fn {key, item} ->
+      case {plain(key), plain(item)} do
+        {nil, _item} -> []
+        {_key, nil} -> []
+        pair -> [pair]
+      end
+    end)
+  end
+
+  defp plain(other), do: other
+
   defp new_vm(:infinity), do: Lua.new()
 
   defp new_vm(max_heap_bytes),
@@ -259,16 +254,7 @@ defmodule Legion.Sandbox.Lua do
     end
   end
 
-  defp global_names(lua) do
-    {[names], _lua} =
-      Lua.eval!(lua, """
-      local names = {}
-      for name in pairs(_G) do names[#names + 1] = name end
-      return names
-      """)
-
-    for {_index, name} <- names, do: name
-  end
+  defp global_names(lua), do: Map.keys(State.globals(lua.state))
 
   # Decoded Lua values -> Elixir. Tables carrying the bridge's module marker
   # resolve to their module atom; array-shaped tables (keys exactly 1..n)
@@ -300,8 +286,12 @@ defmodule Legion.Sandbox.Lua do
     end
   end
 
-  # Elixir values -> something the VM can encode. Tuples and structs have no
+  # Elixir values -> value the VM can encode. Tuples and structs have no
   # Lua counterpart: tuples become arrays, structs lose their module.
+  # Functions are dropped: the VM would bridge any 1- or 2-arity fun as a
+  # callable, handing sandboxed code whatever a tool result happens to carry
+  defp elixir_to_lua(fun) when is_function(fun), do: nil
+
   defp elixir_to_lua(%_{} = struct), do: struct |> Map.from_struct() |> elixir_to_lua()
 
   defp elixir_to_lua(map) when is_map(map),
