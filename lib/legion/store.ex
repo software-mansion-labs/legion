@@ -86,7 +86,7 @@ defmodule Legion.Store do
   `:bindings` from evaluated code, and `:executor_state`. `:executor_state` is
   `:nonexistent` for ordinary snapshots and is a map with `:phase`, `:iteration`,
   and `:retries` for step checkpoints. `:status` records whether the agent is
-  mid-turn. The payload also carries the agent  module, parent conversation,
+  mid-turn. The payload also carries the agent module, parent conversation,
   and start time when those values are known. Its `:usage` field is the ordered
   list of string-keyed LLM usage maps when tracking is enabled. Each map's
   `"at"` value is the Unix timestamp in milliseconds when Legion received the

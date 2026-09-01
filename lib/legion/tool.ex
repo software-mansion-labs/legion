@@ -9,6 +9,9 @@ defmodule Legion.Tool do
 
     - `description/0` — override to return a hand-written summary **instead of**
       the source code. Defaults to the module's source code.
+    - `description/1` — like `description/0`, but receives the active sandbox
+      module, for tools whose usage differs by generated language. Preferred
+      over `description/0` when defined.
     - `extra_allowed_modules/0` — override to return additional modules that the
       sandbox should alias and permit when this tool is available. Defaults to `[]`.
       Useful for tools like `Legion.Tools.AgentTool` that dispatch to other modules
@@ -43,7 +46,14 @@ defmodule Legion.Tool do
       config :legion, extra_source_modules: [Req]
   """
 
+  @doc "Description of the tool shown to the LLM. Defaults to the module's source code."
   @callback description() :: String.t()
+
+  @doc """
+  Description of the tool for the given sandbox, shown to the LLM. Preferred
+  over `c:description/0` when defined, so a tool can tailor its usage notes
+  to the generated language.
+  """
   @callback description(sandbox :: module()) :: String.t()
   @callback extra_allowed_modules() :: [module()]
 

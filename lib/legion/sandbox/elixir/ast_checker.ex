@@ -54,7 +54,7 @@ defmodule Legion.Sandbox.Elixir.ASTChecker do
   facade module that wraps only the operations you actually want available.
 
   Tail-alias collisions are not rejected. A tool named `MyApp.Date` shadows
-  stdlib `Date` after the host prepends `alias MyApp.Date`: source-level
+  stdlib `Date` once the host aliases it in the evaluation env: source-level
   `Date.utc_today()` then routes to the tool, and `raise ArgumentError, "x"`
   with a tool named `MyApp.ArgumentError` routes to the tool's `exception/1`
   instead of stdlib. This is not an RCE escalation (the tool's functions
@@ -71,8 +71,8 @@ defmodule Legion.Sandbox.Elixir.ASTChecker do
     many unique identifiers will inflate the atom table even when every call
     site is denied.
   - Most denial-of-service vectors (CPU, memory, message queue depth,
-    long-running comprehensions, ...). Wallclock timeouts in
-    `Legion.Sandbox.Elixir.execute/5` are the only mitigation.
+    long-running comprehensions, ...). `Legion.Sandbox.Runner`'s timeout,
+    memory, and reduction budgets are the only mitigation.
   """
 
   # Bare forms: every non-prefixed call/identifier in user code must resolve
@@ -486,10 +486,9 @@ defmodule Legion.Sandbox.Elixir.ASTChecker do
 
   `allowed_modules` are caller-supplied tool modules. They are trusted: any
   function on them may be called. Both fully-qualified names (`MyApp.Helper`)
-  and their tail aliases (`Helper`) are recognised, so code written without
-  aliases will still pass validation before `Legion.Sandbox` prepends them.
-
-  Must be called **before** alias prepending - `alias` itself is rejected.
+  and their tail aliases (`Helper`) are recognised - the same tail mapping
+  `Legion.Sandbox.Elixir` puts into the evaluation env's aliases, so both
+  spellings validate and resolve to the tool.
 
   Returns `:ok` or `{:error, reason}` on the first violation (or parse error).
   """

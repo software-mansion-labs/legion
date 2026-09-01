@@ -4,14 +4,11 @@
 
 # Legion
 
-<div align="center">
-
 [![CI](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml/badge.svg)](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml)
 [![License](https://img.shields.io/hexpm/l/legion.svg)](https://github.com/software-mansion-labs/legion/blob/main/LICENSE)
 [![Version](https://img.shields.io/hexpm/v/legion.svg)](https://hex.pm/packages/legion)
 [![Hex Docs](https://img.shields.io/badge/documentation-gray.svg)](https://hexdocs.pm/legion)
 
-</div>
 <!-- MDOC -->
 
 Legion is an Elixir runtime for AI agents that live inside your application and get things done by writing code.
@@ -112,7 +109,7 @@ defmodule MyApp.WeatherAgent do
 end
 ```
 
-Use it to hand agents your existing app logic directly - no schemas to write, nothing to keep in sync. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (see [Credentials never reach the LLM](#6-credentials-never-reach-the-llm)). For large modules you could write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source. If for any reason the source isn't what the LLM should see, define `description/0` on the tool and it is sent verbatim instead.
+Use it to hand agents your existing app logic directly. With great power comes great responsibility (and authorization): the agent can call any public function of a tool, so scope tools to what it should touch and gate the sensitive parts with [Vault](https://github.com/dimamik/vault) (see [Credentials never reach the LLM](#6-credentials-never-reach-the-llm)). For large modules you could write a thin facade with `defdelegate` and a `description/0` instead of exposing the full source. If for any reason the source isn't what the LLM should see, define `description/0` on the tool and it is sent verbatim instead.
 
 See [`Legion.Tool`](https://hexdocs.pm/legion/Legion.Tool.html) for more details.
 
@@ -132,15 +129,17 @@ Use it when a conversation spans multiple messages - variables can persist betwe
 
 See [`start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2), [`call/3`](https://hexdocs.pm/legion/Legion.html#call/3), and [`cast/2`](https://hexdocs.pm/legion/Legion.html#cast/2) for more details.
 
+<a id="3-generated-code-runs-in-a-sandbox"></a>
+
 ### **3. Generated code runs in a sandbox**
 
 Every evaluation runs in a monitored process with timeout, memory, and CPU budgets. Two sandboxes ship with Legion today, differing in language and trust model, with a third on the way:
 
 - [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html) (default) - agents write Lua, evaluated by [lua](https://hexdocs.pm/lua), a Lua 5.3 VM in pure Elixir. Lua code cannot reach the host BEAM at all - the only bridges out are the tool functions Legion registers - making it the safer choice for less trusted generation. Tool arguments and results are converted at the boundary (Lua tables to maps/lists and back; Elixir tuples become arrays, atoms become strings).
 - [`Legion.Sandbox.Elixir`](https://hexdocs.pm/legion/Legion.Sandbox.Elixir.html) - agents write Elixir. Dangerous constructs (`defmodule`, `import`, `spawn`, `send`, `apply`, ...) are blocked at the AST level and module access is allowlisted (stdlib + your tools). Powerful, but the allowlist guards an enormous language surface - use it for your own LLM-backed agents with controlled tool access, not arbitrary code from unknown sources.
-- **Popcorn (work in progress)** - agents write Elixir that runs in the user's browser on [popcorn](https://github.com/software-mansion/popcorn/), an AtomVM-based BEAM in WebAssembly, so generated code never touches your server at all. Not released yet.
+- **Popcorn (coming soon)** - agents write Elixir that runs in the user's browser on [popcorn](https://github.com/software-mansion/popcorn/), an AtomVM-based BEAM in WebAssembly, so generated code never touches your server at all.
 
-You could add custom sandbox by implementing [`Legion.Sandbox`](https://hexdocs.pm/legion/Legion.Sandbox.html) behaviour.
+You could add a custom sandbox by implementing the [`Legion.Sandbox`](https://hexdocs.pm/legion/Legion.Sandbox.html) behaviour.
 
 ### **4. Agents orchestrate agents**
 
@@ -181,6 +180,8 @@ Sub-agents are linked processes - when a parent dies, its children stop too. Fro
 
 See [`Legion.Tools.AgentTool`](https://hexdocs.pm/legion/Legion.Tools.AgentTool.html) for more details.
 
+<a id="5-conversations-survive-restarts"></a>
+
 ### **5. Conversations survive restarts**
 
 Plug in the Postgres store (it can reuse your Ecto repo) and resume any conversation by id, even after a deploy.
@@ -209,7 +210,9 @@ GenServer.stop(pid)
 DynamicSupervisor.start_child(MyApp.AgentSupervisor, {MyApp.AssistantAgent, agent_id: "user_42:chat_7"})
 ```
 
-See [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) and [`Legion.AgentIndex`](https://hexdocs.pm/legion/Legion.AgentIndex.html) for more details.
+See [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html), [`Legion.resume/2`](https://hexdocs.pm/legion/Legion.html#resume/2), and [`Legion.lookup/1`](https://hexdocs.pm/legion/Legion.html#lookup/1) for more details.
+
+<a id="6-credentials-never-reach-the-llm"></a>
 
 ### **6. Credentials never reach the LLM**
 
@@ -238,7 +241,6 @@ See [Vault](https://github.com/dimamik/vault) for more details.
 Configure a limiter and a default policy:
 
 ```elixir
-# reuses the store's table from above - no extra migration
 defmodule MyApp.RateLimiter do
   use Legion.RateLimiter.Postgres, repo: MyApp.Repo
 end
@@ -261,7 +263,7 @@ Legion.start_link(ChatAgent,
     rules: [
       # This rule uses the default policy from `config.exs`
       %Legion.RateLimiter.Rule{identity: %{"ip" => "203.0.113.42"}},
-      # This rule uses custom policy
+      # This rule uses a custom policy
       %Legion.RateLimiter.Rule{
         identity: %{"email" => "someone@example.com", "tenant" => "acme"},
         policy: %Legion.RateLimiter.Policy{window_ms: :timer.hours(24), max_agents: 5}
@@ -329,12 +331,20 @@ Events emitted at every level:
 - `[:legion, :iteration, :start | :stop | :exception]` - each execution step
 - `[:legion, :llm, :request, :start | :stop | :exception]` - LLM API calls
 - `[:legion, :sandbox, :eval, :start | :stop | :exception]` - code evaluation
+- `[:legion, :eval_guard, :denied]` - generated code refused by an eval guard
+- `[:legion, :rate_limit, :exceeded]` - turn denied by a rate limiter
 
 ## Web Dashboard
 
 [`legion_web`](https://github.com/software-mansion-labs/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
 
 [![Legion Web Dashboard](https://raw.githubusercontent.com/software-mansion-labs/legion_web/main/img/preview.png)](https://github.com/software-mansion-labs/legion_web)
+
+## What's next
+
+- **[Braintrust](https://www.braintrust.dev) integration** - trace and evaluate agent runs
+- **[Datadog](https://www.datadoghq.com) integration** - agent and LLM telemetry in your existing dashboards
+- **Popcorn sandbox** - agents write Elixir that runs in the user's browser on [popcorn](https://github.com/software-mansion/popcorn/), an AtomVM-based BEAM in WebAssembly, so generated code never touches your server
 
 <!-- MDOC -->
 

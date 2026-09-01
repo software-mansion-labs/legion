@@ -5,7 +5,7 @@
 ```elixir
 def deps do
   [
-    {:legion, "~> 0.4"}
+    {:legion, "~> 0.5"}
   ]
 end
 ```
@@ -43,7 +43,7 @@ Legion.execute(PingAgent, "Return the sum of 2 and 2")
 
 ## Next steps
 
-- Give agents tools and run them: [Usage](https://hexdocs.pm/legion/readme.html#usage)
+- Give agents tools and run them: [Usage](https://hexdocs.pm/legion/Legion.html#module-usage)
 - Pick a language and trust model for generated code: [Sandboxes](sandboxes.md)
 - Persist conversations across restarts with `Legion.Store.Postgres`, whose
   table is created by `Legion.Store.Postgres.Migration.up()` in a migration

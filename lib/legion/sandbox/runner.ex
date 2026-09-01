@@ -9,7 +9,7 @@ defmodule Legion.Sandbox.Runner do
     - `:max_heap` — memory budget in bytes, applied twice: the VM kills the
       eval when its heap and stack exceed it, and the parent kills it when the
       binaries it references do (those live off-heap, so the VM flag misses
-      them). Set `:infinity` to disable (default: `#{256_000_000}`)
+      them). Set `:infinity` to disable (default: `256_000_000`)
     - `:max_reductions` — CPU budget in reductions, enforced by polling. Set
       `:infinity` to disable (default: `:infinity`)
     - `:priority` — scheduler priority for the eval, any value `Process.flag/2`

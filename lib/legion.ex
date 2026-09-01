@@ -243,7 +243,8 @@ defmodule Legion do
 
   `agent_id` must be a valid UTF-8 string. Raises `ArgumentError` otherwise.
 
-  Loads the persisted conversation with `get/1` to determine its agent module,
+  Loads the persisted conversation with the store's `c:Legion.Store.get/1` to
+  determine its agent module,
   then atomically starts it under the same `agent_id`. If a live process already
   owns that ID, returns the existing pid instead. A new process restores the
   conversation and continues execution in the background. It resumes from a

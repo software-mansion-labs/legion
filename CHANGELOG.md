@@ -1,28 +1,21 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 - 2026-09-01
 
 ### Changes
 
-- Add `Legion.RateLimiter` for applying rolling agent and token limits, with a Postgres adapter that extends `Legion.Store.Postgres`; the Store migration creates the rate-limit metadata column and index. Configure `:rate_limit` with a limiter and a list of `Legion.RateLimiter.Rule`s, each pairing an identity - the group whose agents share the rolling-window limits, e.g. per IP or per email - with a `Legion.RateLimiter.Policy`; the limiter and a default policy can be set globally. Legion checks every turn against all rules, in order and atomically, before appending the message or calling the LLM; the first denying rule returns `{:cancel, {:rate_limited, violations}}` and emits `[:legion, :rate_limit, :exceeded]`. Sub-agents inherit their parent's resolved rate-limit configuration; resumed and recovered runs are not checked again
-- Make sandboxes pluggable: `Legion.Sandbox` is now a behaviour selected per agent (or globally) with the `sandbox` config key, opening the door to sandboxes such as [popcorn](https://github.com/software-mansion/popcorn/) in the user's browser. The Elixir implementation moved to `Legion.Sandbox.Elixir`, and the process isolation with timeout / memory / CPU budgets was extracted to `Legion.Sandbox.Runner`, shared by all sandboxes
-- Add `Legion.Sandbox.Lua` - agents write Lua evaluated by [lua](https://hexdocs.pm/lua), a Lua 5.3 VM in pure Elixir. Generated code cannot reach the host BEAM at all (no AST allowlist to escape); tools are bridged in as global Lua tables with values converted at the boundary
-- Make `Legion.Sandbox.Lua` the default sandbox. Agents now write Lua unless configured otherwise; set `sandbox: Legion.Sandbox.Elixir` (per agent or globally) to keep agents writing Elixir. Note that only `Legion.Tool` modules are callable from Lua - plain modules passed as tools (e.g. `Jason`) are reference-only there
-- Add sandbox-specific `description/1` support for `Legion.Tool`. `AgentTool` and `HumanTool` now show Lua examples to Lua agents and Elixir examples to Elixir agents.
-- Add `Legion.Store` for persisting conversations across process and application restarts; stores exchange partial `Legion.Store.Payload` values containing conversation state and metadata through `get/1` and `save/1`
-- Persist the user message with `status: :running` before execution and the final conversation with `status: :idle` before replying, so a reply is a commit receipt for the completed turn
-- Add optional `persistence_frequency/0`; stores default to `:turn`, while `:step` also checkpoints intermediate eval results, recoverable errors, bindings, and executor progress
-- Add configurable, generated UTF-8 string agent ids, `Legion.get_agent_id/1`, `Legion.lookup/1`, and `Legion.resume/2` for identifying, finding, and restarting persisted conversations
-- Register live agents cluster-wide by agent id through `:global`, preventing duplicate ownership across connected nodes
-- Remove the `:name` option from `Legion.start_link/2`; use `:agent_id` for identity and `Legion.lookup/1` to resolve a live process
-- Add `Legion.recover/2` and opt-in `:recovery` startup configuration to automatically drive interrupted root-agent runs (`status: :running`) to completion after an application restart. Recovery skips sub-agents to avoid replaying delegated work.
-- Add `Legion.resume/2` to restore a persisted conversation under its original agent ID. When the saved conversation ends in a user message, it continues the interrupted executor loop in the background, resuming from a step checkpoint when available; it returns the existing process if that ID is already live.
-- Propagate stores to sub-agents and persist `parent_agent_id`, `agent_module`, and `started_at` metadata for reconstructing conversation trees
-- Add `Legion.Store.Postgres`, backed by an existing PostgreSQL Ecto repo, with partial upserts, `get/1`, `list/1`, configurable table names, and configurable persistence frequency
-- Add versioned, idempotent `Legion.Store.Postgres.Migration` migrations with configurable table names and `pg_notify` notifications for inserts and updates; migration versions are tracked in the agents table comment; generated stores expose `__repo__/0` and `__table__/0` for database-backed consumers such as LegionWeb
-- Add configurable per-request LLM usage persistence, enabled by default and disabled globally with `config :legion, :track_usage, false`.; each usage map is recursively string-keyed and `Legion.Store.Postgres` stores them as jsonb[].
-- Bump the default model from `openai:gpt-4o-mini` to `openai:gpt-5.4`
-- `Legion.Tools.HumanTool.ask/1` now raises when called under `eval_and_complete` - the turn would end as soon as the code returns, silently discarding the human's answer; the error feeds back to the model, which retries under `eval_and_continue`
+- Pluggable sandboxes - the [`Legion.Sandbox`](https://hexdocs.pm/legion/Legion.Sandbox.html) behaviour, [`Legion.Sandbox.Elixir`](https://hexdocs.pm/legion/Legion.Sandbox.Elixir.html), shared [`Legion.Sandbox.Runner`](https://hexdocs.pm/legion/Legion.Sandbox.Runner.html)
+- [`Legion.Sandbox.Lua`](https://hexdocs.pm/legion/Legion.Sandbox.Lua.html), now the default sandbox
+- Sandbox resource limits - timeout, memory, and CPU budgets in [`Legion.Sandbox.Runner`](https://hexdocs.pm/legion/Legion.Sandbox.Runner.html)
+- Sandbox-specific [`Legion.Tool.description/1`](https://hexdocs.pm/legion/Legion.Tool.html#c:description/1)
+- Persistence - [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) saves conversation state (messages, bindings, executor checkpoints), status, and LLM usage across restarts, with a [Postgres adapter](https://hexdocs.pm/legion/Legion.Store.Postgres.html), versioned [migrations](https://hexdocs.pm/legion/Legion.Store.Postgres.Migration.html), and `persistence_frequency/0`
+- Agent identity - string agent ids, [`Legion.get_agent_id/1`](https://hexdocs.pm/legion/Legion.html#get_agent_id/1), [`Legion.lookup/1`](https://hexdocs.pm/legion/Legion.html#lookup/1), cluster-wide `:global` registration; `:name` option removed
+- Recovery - [`Legion.resume/2`](https://hexdocs.pm/legion/Legion.html#resume/2), [`Legion.recover/2`](https://hexdocs.pm/legion/Legion.html#recover/2), `:recovery` startup config
+- Rate limiting - [`Legion.RateLimiter`](https://hexdocs.pm/legion/Legion.RateLimiter.html) with [rules](https://hexdocs.pm/legion/Legion.RateLimiter.Rule.html), [policies](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html), and a [Postgres adapter](https://hexdocs.pm/legion/Legion.RateLimiter.Postgres.html)
+- LLM usage tracking - persisted per request (`:track_usage`), `usage` in `[:legion, :llm, :request, :stop]` [telemetry](https://hexdocs.pm/legion/Legion.Telemetry.html)
+- Default model bumped to `openai:gpt-5.4`
+- [`Legion.Tools.HumanTool.ask/1`](https://hexdocs.pm/legion/Legion.Tools.HumanTool.html#ask/1) raises under `eval_and_complete`
+- Bump [ReqLLM](https://hexdocs.pm/req_llm)
 
 ## v0.4.0 - 2026-05-17
 

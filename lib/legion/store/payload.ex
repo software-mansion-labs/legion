@@ -32,7 +32,7 @@ defmodule Legion.Store.Payload do
 
   @type state :: %{
           messages: [map()],
-          bindings: keyword(),
+          bindings: term(),
           executor_state: executor_state() | :nonexistent
         }
 

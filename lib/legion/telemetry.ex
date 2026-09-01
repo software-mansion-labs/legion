@@ -6,15 +6,16 @@ defmodule Legion.Telemetry do
 
   ## Agent Lifecycle Events
 
-  - `[:legion, :agent, :started]` — agent process finished `init/1`
+  - `[:legion, :agent, :started]` — emitted during `init/1`, before any
+    persisted conversation is restored
     - Measurements: `%{system_time: NaiveDateTime.t()}`
     - Metadata: `%{agent: module, agent_id: String.t()}` (plus `parent_agent_id: String.t()`
       when the agent was started inside another agent's run)
     - `agent_id` names the conversation — stable across restarts, so a resumed
       conversation emits under the same id.
-    - Not emitted if `init/1` itself crashes (e.g. while building the system prompt) —
-    in that case `:stopped` is not emitted either, since GenServer does not call `terminate/2`
-    on init failure.
+    - Not emitted if `init/1` crashes before the event fires (e.g. while building
+    the system prompt) — in that case `:stopped` is not emitted either, since
+    GenServer does not call `terminate/2` on init failure.
 
   - `[:legion, :agent, :stopped]` — agent process terminated via `terminate/2`
     - Measurements: `%{system_time: NaiveDateTime.t()}`

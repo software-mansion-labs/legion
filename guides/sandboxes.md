@@ -19,7 +19,7 @@ operational limits (`sandbox_timeout`, `sandbox_max_heap`,
 
 ## The core difference: where the security boundary sits
 
-**`Legion.Sandbox.Elixir`** - generated code *is* host code. `Code.eval_string/2`
+**`Legion.Sandbox.Elixir`** - generated code *is* host code. `Code.eval_string/3`
 runs it on the BEAM with full language power, and safety comes from the AST
 checker rejecting dangerous forms before evaluation. The boundary is a
 deny-by-default allowlist over the entire Elixir surface - every module,
@@ -67,11 +67,10 @@ directions:
 - **Atoms become strings, structs become plain field tables** (module
   identity dropped - and the flattening is `Map.from_struct/1`, so internal
   fields like a `Date`'s `calendar` cross too; project the fields the model
-  needs in the tool if that matters), and anything the VM cannot encode -
-  pids, refs, or a function value that is not `fun(args)` /
-  `fun(args, state)` - is a runtime error fed back to the model. (That arity
-  limit is on the Elixir closure itself; `args` is one list, so Lua-side
-  argument count is unbounded.)
+  needs in the tool if that matters). Function values are silently dropped -
+  they encode as `nil` rather than crossing into Lua as callables - and
+  anything else the VM cannot encode, such as pids and refs, is a runtime
+  error fed back to the model.
 - **The empty table is ambiguous**: it decodes as `[]`, so a tool cannot
   tell "empty list" from "empty map".
 - **Module references** work only for bridged tools: passing a tool's global
@@ -122,11 +121,10 @@ build any single string larger than half the `max_heap` budget, so a string
 bomb comes back as a catchable "resulting string too large" error instead of
 racing the heap kill mid-allocation.
 
-Bindings are also heavier: persisting them means serialising the whole Lua
-VM state, not a small keyword list - worth remembering with
-`binding_scope: :conversation` and a database-backed store. The VM has no
-state garbage collector yet, so dead tables from each evaluation stay in
-that state for the life of the conversation.
+Bindings are the user's globals exported as plain data - strings, numbers,
+booleans, and tables as maps or lists. Each evaluation starts a fresh VM and
+restores them, so functions and metatables do not survive between
+executions: a helper must be redefined in every chunk that uses it.
 
 ## What neither sandbox gives you
 
