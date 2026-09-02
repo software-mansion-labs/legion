@@ -193,7 +193,12 @@ defmodule Legion.ExecutorTest do
       :telemetry.attach(
         handler_id,
         [:legion, :llm, :request, :stop],
-        fn event, _measurements, metadata, pid -> send(pid, {:telemetry, event, metadata}) end,
+        # The handler is global and runs in the emitting process - agents leaked
+        # by other tests also emit this event, so forward only events emitted
+        # from this test's own Executor.run call.
+        fn event, _measurements, metadata, pid ->
+          if self() == pid, do: send(pid, {:telemetry, event, metadata})
+        end,
         self()
       )
 
@@ -231,7 +236,12 @@ defmodule Legion.ExecutorTest do
       :telemetry.attach(
         handler_id,
         [:legion, :llm, :request, :stop],
-        fn event, _measurements, metadata, pid -> send(pid, {:telemetry, event, metadata}) end,
+        # The handler is global and runs in the emitting process - agents leaked
+        # by other tests also emit this event, so forward only events emitted
+        # from this test's own Executor.run call.
+        fn event, _measurements, metadata, pid ->
+          if self() == pid, do: send(pid, {:telemetry, event, metadata})
+        end,
         self()
       )
 
