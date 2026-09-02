@@ -38,6 +38,7 @@ defmodule Legion.Store.PostgresTest do
         started_at: nil,
         conversation_state: nil,
         usage: [],
+        ratelimit_metadata: nil,
         inserted_at: nil,
         updated_at: nil
       }
@@ -76,7 +77,8 @@ defmodule Legion.Store.PostgresTest do
         bindings: [x: 42],
         executor_state: :nonexistent
       },
-      usage: [%{turn_usage: 100}]
+      usage: [%{turn_usage: 100}],
+      ratelimit_metadata: %{"ip" => "203.0.113.42"}
     }
 
     assert :ok = Store.save(payload)
@@ -129,7 +131,8 @@ defmodule Legion.Store.PostgresTest do
         bindings: [x: 42],
         executor_state: :nonexistent
       },
-      usage: [%{turn_usage: 100}]
+      usage: [%{turn_usage: 100}],
+      ratelimit_metadata: %{"ip" => "203.0.113.42"}
     }
 
     assert :ok = Store.save(initial)
@@ -148,7 +151,8 @@ defmodule Legion.Store.PostgresTest do
                 bindings: [x: 42],
                 executor_state: :nonexistent
               },
-              usage: [%{turn_usage: 100}]
+              usage: [%{turn_usage: 100}],
+              ratelimit_metadata: %{"ip" => "203.0.113.42"}
             }} = Store.get("user_42")
 
     assert NaiveDateTime.compare(FakeRepo.run("user_42").updated_at, previous_updated_at) == :gt

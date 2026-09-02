@@ -2,11 +2,17 @@ defmodule Legion.Store.PostgresDbTest do
   @moduledoc "Exercises the generated Postgres store against a real database."
   use ExUnit.Case, async: false
 
+  alias Legion.RateLimiter.Policy
+  alias Legion.RateLimiter.Rule
   alias Legion.Store.Payload
   alias Legion.Test.Support.PostgresRepo, as: Repo
 
   defmodule Store do
     use Legion.Store.Postgres, repo: Legion.Test.Support.PostgresRepo
+  end
+
+  defmodule RateLimiter do
+    use Legion.RateLimiter.Postgres, repo: Legion.Test.Support.PostgresRepo
   end
 
   setup do
@@ -51,6 +57,20 @@ defmodule Legion.Store.PostgresDbTest do
              ])
   end
 
+  test "exposes the rate limiter's metadata and keeps it across partial saves" do
+    identity = %{"ip" => "203.0.113.42", "tenant" => "acme"}
+    policy = %Policy{window_ms: 60_000, max_agents: 10}
+
+    assert :ok = RateLimiter.enforce!("limited", [%Rule{identity: identity, policy: policy}])
+    assert {:ok, %Payload{ratelimit_metadata: ^identity}} = Store.get("limited")
+
+    assert :ok = Store.save(%Payload{agent_id: "limited", status: :running})
+    assert {:ok, %Payload{status: :running, ratelimit_metadata: ^identity}} = Store.get("limited")
+
+    assert :ok = Store.save(%Payload{agent_id: "unlimited", status: :idle})
+    assert {:ok, %Payload{ratelimit_metadata: nil}} = Store.get("unlimited")
+  end
+
   test "save/1 fully inserts every payload field" do
     payload = %Payload{
       agent_id: "user_42",
@@ -63,7 +83,8 @@ defmodule Legion.Store.PostgresDbTest do
         bindings: [x: 42],
         executor_state: :nonexistent
       },
-      usage: [%{turn_usage: 100}]
+      usage: [%{turn_usage: 100}],
+      ratelimit_metadata: %{"ip" => "203.0.113.42", "tenant" => "acme"}
     }
 
     expected_payload = %{payload | usage: [%{"turn_usage" => 100}]}
@@ -99,7 +120,8 @@ defmodule Legion.Store.PostgresDbTest do
         bindings: [x: 42],
         executor_state: :nonexistent
       },
-      usage: [%{turn_usage: 100}]
+      usage: [%{turn_usage: 100}],
+      ratelimit_metadata: %{"ip" => "203.0.113.42"}
     }
 
     assert :ok = Store.save(initial)
@@ -121,7 +143,8 @@ defmodule Legion.Store.PostgresDbTest do
                 bindings: [x: 42],
                 executor_state: :nonexistent
               },
-              usage: [%{"turn_usage" => 100}]
+              usage: [%{"turn_usage" => 100}],
+              ratelimit_metadata: %{"ip" => "203.0.113.42"}
             }} = Store.get("user_42")
 
     %{rows: [[updated_at]]} =
