@@ -98,7 +98,8 @@ defmodule Legion do
       `Legion.RateLimiter.Rule`s pairing an identity (for example,
       `%{"ip" => "203.0.113.42"}`) with a policy, checked for every turn by a
       `Legion.RateLimiter`. Both are required for a limit to apply; the limiter
-      and a default policy can be set globally. A denied turn returns
+      and a default policy can be set globally. Sub-agents inherit the parent's
+      rate limit. A denied turn returns
       `{:cancel, {:rate_limited, violations}}`; see `Legion.RateLimiter`.
     - Any config overrides (`:model`, `:max_iterations`, etc.)
 

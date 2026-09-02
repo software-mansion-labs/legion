@@ -52,10 +52,16 @@ defmodule Legion.RateLimiterTest do
     end
 
     test "fills a rule's missing policy from the application policy" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter, default_policy: @policy)
+      Application.put_env(:legion, :rate_limit,
+        limiter: Limiter,
+        default_policy: @policy,
+        rules: [%Rule{identity: %{}}]
+      )
 
-      assert %{limiter: Limiter, rules: [rule(@ip, @policy), rule(@email, @narrow)]} ==
-               RateLimiter.resolve!(rules: [%Rule{identity: @ip}, rule(@email, @narrow)])
+      assert RateLimiter.resolve!(nil) == %{limiter: Limiter, rules: [rule(%{}, @policy)]}
+
+      assert RateLimiter.resolve!(rules: [%Rule{identity: @ip}, rule(@email, @narrow)]) ==
+               %{limiter: Limiter, rules: [rule(@ip, @policy), rule(@email, @narrow)]}
     end
 
     test "raises when a rule has no policy and no application policy is set" do
@@ -66,15 +72,46 @@ defmodule Legion.RateLimiterTest do
       end
     end
 
-    test "resolves to no limit with rules but no limiter" do
+    test "resolves to no limit with rules but no limiter, or a limiter but no rules" do
       assert RateLimiter.resolve!(rules: [rule(@ip, @policy)]) == @off
-    end
 
-    test "resolves to no limit with a limiter but no rules" do
       Application.put_env(:legion, :rate_limit, limiter: Limiter)
 
       assert RateLimiter.resolve!(nil) == @off
       assert RateLimiter.resolve!(rules: []) == @off
+    end
+
+    test "applies the application rules to an agent started without any" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, rules: [rule(%{}, @policy)])
+
+      assert RateLimiter.resolve!(nil) == %{limiter: Limiter, rules: [rule(%{}, @policy)]}
+    end
+
+    test "inherits the parent's rate limit over the application config" do
+      Application.put_env(:legion, :rate_limit,
+        limiter: OtherLimiter,
+        rules: [rule(%{}, @policy)]
+      )
+
+      Vault.unsafe_put(:rate_limit, %{limiter: Limiter, rules: [rule(@ip, @policy)]})
+
+      assert RateLimiter.resolve!(nil) == %{limiter: Limiter, rules: [rule(@ip, @policy)]}
+    end
+
+    test "a sub-agent of a parent that opted out stays unlimited" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, rules: [rule(%{}, @policy)])
+      Vault.unsafe_put(:rate_limit, @off)
+
+      assert RateLimiter.resolve!(nil) == @off
+    end
+
+    test "a rate limit given at start replaces the parent's as a whole" do
+      Vault.unsafe_put(:rate_limit, %{limiter: Limiter, rules: [rule(@ip, @policy)]})
+
+      assert RateLimiter.resolve!(limiter: OtherLimiter, rules: [rule(@email, @narrow)]) ==
+               %{limiter: OtherLimiter, rules: [rule(@email, @narrow)]}
+
+      assert RateLimiter.resolve!(limiter: OtherLimiter) == @off
     end
 
     test "validates rules even when no limiter is configured" do
@@ -83,55 +120,7 @@ defmodule Legion.RateLimiterTest do
       end
     end
 
-    test "rejects an invalid policy" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter)
-
-      assert_raise ArgumentError, ~r/:window_ms/, fn ->
-        RateLimiter.resolve!(rules: [rule(@ip, %Policy{window_ms: 0})])
-      end
-    end
-
-    test "rejects :rules that is not a list" do
-      assert_raise ArgumentError, ~r/expected :rules to be a list/, fn ->
-        RateLimiter.resolve!(rules: rule(@ip, @policy))
-      end
-    end
-
-    test "rejects overrides with keys other than :limiter and :rules" do
-      assert_raise ArgumentError,
-                   ~r/unknown keys \[:policy, :identity\].*allowed keys are: \[:limiter, :rules\]/,
-                   fn ->
-                     RateLimiter.resolve!(identity: @ip, policy: @policy)
-                   end
-    end
-
-    test "rejects overrides that are not a keyword list" do
-      assert_raise ArgumentError, ~r/expected a keyword list/, fn ->
-        RateLimiter.resolve!([rule(@ip, @policy)])
-      end
-
-      assert_raise ArgumentError, ~r/expected :rate_limit to be a keyword list or nil/, fn ->
-        RateLimiter.resolve!(%{rules: [rule(@ip, @policy)]})
-      end
-    end
-
-    test "rejects application config with unknown keys" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter, policy: @policy)
-
-      assert_raise ArgumentError, ~r/unknown keys \[:policy\]/, fn ->
-        RateLimiter.resolve!(rules: [rule(@ip, @policy)])
-      end
-    end
-
-    test "rejects a rule that is not a Rule struct" do
-      assert_raise ArgumentError, ~r/expected a Legion\.RateLimiter\.Rule/, fn ->
-        RateLimiter.resolve!(rules: [%{identity: @ip, policy: @policy}])
-      end
-    end
-
     test "rejects rules that disagree on an identity value" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter)
-
       assert_raise ArgumentError, ~r/disagree on "ip"/, fn ->
         RateLimiter.resolve!(rules: [rule(@ip, @policy), rule(@other_ip, @narrow)])
       end
@@ -144,59 +133,28 @@ defmodule Legion.RateLimiterTest do
                RateLimiter.resolve!(rules: [rule(@ip, @policy), rule(@ip, @narrow)])
     end
 
-    test "inherits the parent's resolved configuration without overrides" do
-      inherited = %{limiter: Limiter, rules: [rule(@ip, @policy), rule(@email, @narrow)]}
-      Vault.unsafe_put(:rate_limit, inherited)
+    test "rejects malformed options and config" do
+      assert_raise ArgumentError, ~r/expected a keyword list/, fn ->
+        RateLimiter.resolve!([rule(@ip, @policy)])
+      end
 
-      assert RateLimiter.resolve!(nil) == inherited
-    end
+      assert_raise ArgumentError, ~r/unknown keys \[:policy\]/, fn ->
+        RateLimiter.resolve!(policy: @policy)
+      end
 
-    test "a sub-agent of a parent that opted out stays unlimited" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter, rules: [rule(%{}, @policy)])
+      assert_raise ArgumentError, ~r/expected :rules to be a list/, fn ->
+        RateLimiter.resolve!(rules: rule(@ip, @policy))
+      end
 
-      parent = RateLimiter.resolve!(rules: [])
-      assert parent == @off
+      assert_raise ArgumentError, ~r/expected a Legion\.RateLimiter\.Rule/, fn ->
+        RateLimiter.resolve!(rules: [%{identity: @ip, policy: @policy}])
+      end
 
-      # AgentServer.init stores the parent's verdict for sub-agents to inherit.
-      Vault.unsafe_put(:rate_limit, parent)
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, policy: @policy)
 
-      assert RateLimiter.resolve!(nil) == @off
-    end
-
-    test "a sub-agent of a parent that opted out cannot re-enable the application rules" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter, rules: [rule(%{}, @policy)])
-      Vault.unsafe_put(:rate_limit, @off)
-
-      assert RateLimiter.resolve!(limiter: OtherLimiter) == @off
-    end
-
-    test "the parent's resolved configuration wins over the application environment" do
-      Application.put_env(:legion, :rate_limit, limiter: OtherLimiter)
-      Vault.unsafe_put(:rate_limit, %{limiter: Limiter, rules: [rule(@ip, @policy)]})
-
-      assert %{limiter: Limiter} = RateLimiter.resolve!(nil)
-    end
-
-    test "rules given at start replace the inherited rules as a whole" do
-      Vault.unsafe_put(:rate_limit, %{limiter: Limiter, rules: [rule(@ip, @policy)]})
-
-      assert %{limiter: Limiter, rules: [rule(@email, @narrow)]} ==
-               RateLimiter.resolve!(rules: [rule(@email, @narrow)])
-    end
-
-    test "a limiter given at start keeps the inherited rules" do
-      Vault.unsafe_put(:rate_limit, %{limiter: Limiter, rules: [rule(@ip, @policy)]})
-
-      assert %{limiter: OtherLimiter, rules: [rule(@ip, @policy)]} ==
-               RateLimiter.resolve!(limiter: OtherLimiter)
-    end
-
-    test "carries only the limiter and rules" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter, default_policy: @policy)
-
-      resolved = RateLimiter.resolve!(rules: [%Rule{identity: @ip}])
-
-      assert Enum.sort(Map.keys(resolved)) == [:limiter, :rules]
+      assert_raise ArgumentError, ~r/unknown keys \[:policy\]/, fn ->
+        RateLimiter.resolve!(nil)
+      end
     end
   end
 

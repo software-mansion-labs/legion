@@ -273,7 +273,7 @@ Legion.start_link(ChatAgent,
 )
 ```
 
-A rule without a policy takes the default one - give it a policy, or pass a limiter, to override the config for that agent. Sub-agents inherit their parent's settings. `Legion.RateLimiter.Postgres` comes with Legion and extends the Postgres store from [Conversations survive restarts](#5-conversations-survive-restarts). Implement the `Legion.RateLimiter` behaviour to keep limit state anywhere else.
+A rule without a policy takes the default one. Sub-agents inherit their parent's rate limit; `rules: []` runs an agent and its subtree without one. `Legion.RateLimiter.Postgres` comes with Legion and extends the Postgres store from [Conversations survive restarts](#5-conversations-survive-restarts). Implement the `Legion.RateLimiter` behaviour to keep limit state anywhere else.
 
 See [`Legion.RateLimiter`](https://hexdocs.pm/legion/Legion.RateLimiter.html) for more details.
 

@@ -15,9 +15,9 @@ defmodule Legion.RateLimiter.Rule do
       containment, so a broader identity also covers agents recorded with extra
       fields). `%{}` matches every agent.
     * `:policy` - the `Legion.RateLimiter.Policy` to enforce. May be left `nil`
-      in `Legion.start_link/2` options, where it is filled from
-      `config :legion, :rate_limit, default_policy: ...`; adapters always receive a
-      complete rule.
+      in `Legion.start_link/2` options and in `config :legion, :rate_limit`,
+      where it is filled from the configured `default_policy`; adapters always
+      receive a complete rule.
 
   See `Legion.RateLimiter` for how rules are configured and combined.
   """

@@ -43,8 +43,8 @@ defmodule Legion.RateLimiter do
 
   ## Configuration
 
-  The limiter and a default policy can be set globally, leaving only the
-  identities to the call site:
+  The limiter and a default policy are usually set once, globally, leaving
+  only the identities to the call site:
 
       config :legion, :rate_limit,
         limiter: MyApp.RateLimiter,
@@ -54,14 +54,25 @@ defmodule Legion.RateLimiter do
         rate_limit: [rules: [%Legion.RateLimiter.Rule{identity: %{"ip" => "203.0.113.42"}}]]
       )
 
-  A rule given without a `:policy` takes the default one. Rate limiting applies
-  only when a limiter and at least one rule resolve; a limiter without rules,
-  or rules without a limiter, disables it. Sub-agents inherit whatever their
-  parent resolved and cannot override it - a parent started without rate
-  limiting runs its whole subtree without it, even when the application
-  configures rules globally. Each sub-agent is a separate agent ID in every
-  group, so it counts towards `:max_agents` and its usage towards
-  `:max_tokens`.
+  A rule given without a `:policy` takes the default one. Rules can be
+  configured globally too, as a cap on every agent started without a
+  `:rate_limit` of its own:
+
+      config :legion, :rate_limit,
+        limiter: MyApp.RateLimiter,
+        rules: [%Legion.RateLimiter.Rule{identity: %{}, policy: policy}]
+
+  An agent's rate limit is resolved once, when it starts: its `:rate_limit`
+  option if given, else the parent agent's rate limit, else the application
+  config. Whichever applies is taken as a whole - rules are never merged
+  across the three - with only a missing `:limiter` or rule `:policy` filled
+  from the application config. Rate limiting applies only when a limiter and at
+  least one rule resolve; a limiter without rules, or rules without a limiter,
+  disables it. A sub-agent inherits its parent's rate limit, so a parent
+  started with `rate_limit: [rules: []]` runs its whole subtree without one,
+  even when the application configures rules globally. Each sub-agent is a
+  separate agent ID in every group, so it counts towards `:max_agents` and its
+  usage towards `:max_tokens`.
 
   Rules must agree on their identities: two rules may share a field only with
   the same value, since the adapter records one group membership per agent.
@@ -148,28 +159,25 @@ defmodule Legion.RateLimiter do
   @off %{limiter: nil, rules: []}
 
   @doc """
-  Resolves the limiter and rules to enforce.
+  Resolves the rate limit to enforce.
 
-  Reads the application's `:rate_limit` config and applies `overrides`, a
-  keyword list with `:limiter` and `:rules`, on top. Each key given in
-  `overrides` replaces the configured value wholesale - rules are never
-  merged one by one. When called inside an agent, the rate limit that agent
-  resolved sits between the two, so overrides win over it and it wins over
-  the application config.
-
-  Rules given without a `:policy` take the configured `:default_policy`. A
-  policy that is present is used as is; missing fields are not filled in.
+  `overrides` is an agent's `:rate_limit` option: a keyword list with
+  `:limiter` and `:rules`, or `nil` for none. Given `nil`, the calling agent's
+  rate limit is returned when called inside an agent, and one resolved from
+  the application's `:rate_limit` config otherwise. Given a keyword list, it
+  is used as a whole; a missing `:limiter` is taken from the application
+  config, and rules without a `:policy` take its `:default_policy`.
 
   Returns `%{limiter: module | nil, rules: [Legion.RateLimiter.Rule.t()]}`.
   A `nil` limiter or an empty rule list means rate limiting is off; both keys
   are then reset, so the result is always a complete map.
 
-  Raises `ArgumentError` when `overrides` is not `nil` or a keyword list,
-  carries keys other than `:limiter` and `:rules`, `:rules` is not a list of
+  Raises `ArgumentError` when a keyword list carries keys other than
+  `:limiter` and `:rules`, `:rules` is not a list of
   `Legion.RateLimiter.Rule` structs, a rule fails
   `Legion.RateLimiter.Rule.validate!/1`, or two rules give one identity key
-  different values. The application's `:rate_limit` config is held to the
-  same keys plus `:default_policy`.
+  different values. The application config is held to the same keys plus
+  `:default_policy`.
 
   ## Examples
 
@@ -180,68 +188,53 @@ defmodule Legion.RateLimiter do
       Legion.RateLimiter.resolve!(nil)
       #=> %{limiter: nil, rules: []}
   """
-  def resolve!(nil), do: resolve!([])
+  def resolve!(nil) do
+    Vault.get(:rate_limit) || resolve!(Keyword.take(app_config(), [:limiter, :rules]))
+  end
 
   def resolve!(overrides) when is_list(overrides) do
     overrides = Keyword.validate!(overrides, [:limiter, :rules])
+    config = app_config()
+    limiter = overrides[:limiter] || config[:limiter]
+    rules = overrides |> Keyword.get(:rules, []) |> validate_rules!(config[:default_policy])
 
-    app_config =
-      Keyword.validate!(
-        Application.get_env(:legion, :rate_limit, []),
-        [:limiter, :rules, :default_policy]
-      )
-
-    overrides = fill_policies(overrides, Keyword.get(app_config, :default_policy))
-
-    @off
-    |> Map.merge(layer(app_config))
-    |> Map.merge(layer(Vault.get(:rate_limit) || %{}))
-    |> Map.merge(layer(overrides))
-    |> finish!()
+    if limiter && rules != [], do: %{limiter: limiter, rules: rules}, else: @off
   end
 
-  def resolve!(other) do
-    raise ArgumentError,
-          "expected :rate_limit to be a keyword list or nil, got: #{inspect(other)}"
+  defp app_config do
+    Keyword.validate!(
+      Application.get_env(:legion, :rate_limit, []),
+      [:limiter, :rules, :default_policy]
+    )
   end
 
-  defp fill_policies(overrides, default_policy) do
-    case Keyword.fetch(overrides, :rules) do
-      {:ok, rules} when is_list(rules) ->
-        Keyword.put(overrides, :rules, Enum.map(rules, &fill(&1, default_policy)))
+  # The adapter merges an agent's identities into one document, so two rules
+  # may share a key only with one value.
+  defp validate_rules!(rules, default_policy) when is_list(rules) do
+    rules = Enum.map(rules, &fill_policy(&1, default_policy))
 
-      {:ok, other} ->
-        raise ArgumentError, "expected :rules to be a list, got: #{inspect(other)}"
-
-      :error ->
-        overrides
-    end
-  end
-
-  defp fill(%Rule{policy: nil} = rule, default_policy), do: %{rule | policy: default_policy}
-  defp fill(%Rule{} = rule, _default_policy), do: rule
-
-  defp fill(other, _default_policy),
-    do: raise(ArgumentError, "expected a #{inspect(Rule)} in :rules, got: #{inspect(other)}")
-
-  defp layer(config), do: config |> Map.new() |> Map.take([:limiter, :rules])
-
-  defp finish!(%{limiter: limiter, rules: rules}) do
-    Enum.each(rules, &Rule.validate!/1)
-    validate_identities!(rules)
-
-    if is_nil(limiter) or rules == [], do: @off, else: %{limiter: limiter, rules: rules}
-  end
-
-  defp validate_identities!(rules) do
     Enum.reduce(rules, %{}, fn rule, seen ->
-      Map.merge(seen, rule.identity, fn key, a, b ->
-        a == b ||
-          raise ArgumentError,
-                "rate-limit rules disagree on #{inspect(key)}: #{inspect(a)} vs #{inspect(b)}"
+      Rule.validate!(rule)
 
-        a
+      Map.merge(seen, rule.identity, fn key, first, second ->
+        first == second ||
+          raise ArgumentError,
+                "rate-limit rules disagree on #{inspect(key)}: #{inspect(first)} vs #{inspect(second)}"
+
+        first
       end)
     end)
+
+    rules
   end
+
+  defp validate_rules!(other, _default_policy) do
+    raise ArgumentError,
+          "expected :rules to be a list of #{inspect(Rule)}, got: #{inspect(other)}"
+  end
+
+  defp fill_policy(%Rule{policy: nil} = rule, default_policy),
+    do: %{rule | policy: default_policy}
+
+  defp fill_policy(rule, _default_policy), do: rule
 end

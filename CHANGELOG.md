@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changes
+
+- Rate limiting - an agent's `:rate_limit` option replaces the inherited rate limit as a whole; `:default_policy` also fills globally configured rules
+
 ## v0.5.0 - 2026-09-01
 
 ### Changes
