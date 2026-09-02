@@ -164,10 +164,12 @@ defmodule Legion.RateLimiter do
   A `nil` limiter or an empty rule list means rate limiting is off; both keys
   are then reset, so the result is always a complete map.
 
-  Raises `ArgumentError` when `:rules` is not a list of
+  Raises `ArgumentError` when `overrides` is not `nil` or a keyword list,
+  carries keys other than `:limiter` and `:rules`, `:rules` is not a list of
   `Legion.RateLimiter.Rule` structs, a rule fails
   `Legion.RateLimiter.Rule.validate!/1`, or two rules give one identity key
-  different values.
+  different values. The application's `:rate_limit` config is held to the
+  same keys plus `:default_policy`.
 
   ## Examples
 
@@ -181,7 +183,14 @@ defmodule Legion.RateLimiter do
   def resolve!(nil), do: resolve!([])
 
   def resolve!(overrides) when is_list(overrides) do
-    app_config = Application.get_env(:legion, :rate_limit, [])
+    overrides = Keyword.validate!(overrides, [:limiter, :rules])
+
+    app_config =
+      Keyword.validate!(
+        Application.get_env(:legion, :rate_limit, []),
+        [:limiter, :rules, :default_policy]
+      )
+
     overrides = fill_policies(overrides, Keyword.get(app_config, :default_policy))
 
     @off
@@ -189,6 +198,11 @@ defmodule Legion.RateLimiter do
     |> Map.merge(layer(Vault.get(:rate_limit) || %{}))
     |> Map.merge(layer(overrides))
     |> finish!()
+  end
+
+  def resolve!(other) do
+    raise ArgumentError,
+          "expected :rate_limit to be a keyword list or nil, got: #{inspect(other)}"
   end
 
   defp fill_policies(overrides, default_policy) do

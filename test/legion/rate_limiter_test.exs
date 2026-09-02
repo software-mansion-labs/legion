@@ -97,6 +97,32 @@ defmodule Legion.RateLimiterTest do
       end
     end
 
+    test "rejects overrides with keys other than :limiter and :rules" do
+      assert_raise ArgumentError,
+                   ~r/unknown keys \[:policy, :identity\].*allowed keys are: \[:limiter, :rules\]/,
+                   fn ->
+                     RateLimiter.resolve!(identity: @ip, policy: @policy)
+                   end
+    end
+
+    test "rejects overrides that are not a keyword list" do
+      assert_raise ArgumentError, ~r/expected a keyword list/, fn ->
+        RateLimiter.resolve!([rule(@ip, @policy)])
+      end
+
+      assert_raise ArgumentError, ~r/expected :rate_limit to be a keyword list or nil/, fn ->
+        RateLimiter.resolve!(%{rules: [rule(@ip, @policy)]})
+      end
+    end
+
+    test "rejects application config with unknown keys" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, policy: @policy)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:policy\]/, fn ->
+        RateLimiter.resolve!(rules: [rule(@ip, @policy)])
+      end
+    end
+
     test "rejects a rule that is not a Rule struct" do
       assert_raise ArgumentError, ~r/expected a Legion\.RateLimiter\.Rule/, fn ->
         RateLimiter.resolve!(rules: [%{identity: @ip, policy: @policy}])
