@@ -98,6 +98,7 @@ defmodule Legion.Store.Postgres do
           field :usage, {:array, :map}
           field :inserted_at, :naive_datetime_usec
           field :updated_at, :naive_datetime_usec
+          field :ratelimit_metadata, :map
         end
       end
 
@@ -197,7 +198,8 @@ defmodule Legion.Store.Postgres do
       status: decode_status(record.status),
       started_at: record.started_at,
       conversation_state: decode_conversation_state(record.conversation_state),
-      usage: record.usage
+      usage: record.usage,
+      ratelimit_metadata: record.ratelimit_metadata
     }
   end
 
