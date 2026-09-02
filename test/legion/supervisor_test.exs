@@ -31,6 +31,14 @@ defmodule Legion.SupervisorTest do
     Process.register(self(), :legion_supervisor_test)
 
     on_exit(fn ->
+      # The name is otherwise released only once the dead test process is fully
+      # cleaned up, which ExUnit does not wait for - the next setup would race.
+      try do
+        Process.unregister(:legion_supervisor_test)
+      rescue
+        ArgumentError -> :ok
+      end
+
       case previous do
         {:ok, config} -> Application.put_env(:legion, :recovery, config)
         :error -> Application.delete_env(:legion, :recovery)

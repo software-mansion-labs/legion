@@ -34,6 +34,7 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
   use ExUnit.Case, async: false
   use Mimic
 
+  alias Legion.AgentIndex
   alias Legion.Sandbox.LuaBindingsEndToEndTest.AdminTool
   alias Legion.Sandbox.LuaBindingsEndToEndTest.CatalogTool
   alias Legion.Store.Payload
@@ -66,6 +67,17 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
   setup do
     Repo.query!("TRUNCATE legion_agents", [])
     Process.register(self(), :lua_bindings_end_to_end_test)
+
+    on_exit(fn ->
+      # The name is otherwise released only once the dead test process is fully
+      # cleaned up, which ExUnit does not wait for - the next setup would race.
+      try do
+        Process.unregister(:lua_bindings_end_to_end_test)
+      rescue
+        ArgumentError -> :ok
+      end
+    end)
+
     :ok
   end
 
@@ -109,7 +121,7 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
 
     refute holds_function?(state)
 
-    GenServer.stop(pid)
+    stop_agent(pid, "curator-restart")
     {:ok, revived} = Legion.start_link(CuratorAgent, store: Store, agent_id: "curator-restart")
 
     assert {:ok, %{"count" => 100, "first" => "Talk 3", "summarize" => "nil"}} =
@@ -140,7 +152,7 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
              {"catalog", %{"__module" => Atom.to_string(CatalogTool)}}
            ]
 
-    GenServer.stop(pid)
+    stop_agent(pid, "curator-revoked")
 
     {:ok, restricted} =
       Legion.start_link(RestrictedCuratorAgent, store: Store, agent_id: "curator-revoked")
@@ -175,7 +187,7 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
     assert {:ok, %Payload{conversation_state: %{bindings: []}}} = Store.get("curator-shadow")
     assert {:ok, 300} = evaluate(pid, "return #CatalogTool.talks()")
 
-    GenServer.stop(pid)
+    stop_agent(pid, "curator-shadow")
     {:ok, revived} = Legion.start_link(CuratorAgent, store: Store, agent_id: "curator-shadow")
 
     assert {:ok, 300} = evaluate(revived, "return #CatalogTool.talks()")
@@ -189,6 +201,15 @@ defmodule Legion.Sandbox.LuaBindingsEndToEndTest do
                "function helper() return 1 end\ncount = 1",
                "return {helper = type(helper), count = count}"
              ])
+  end
+
+  # :global releases an agent id only when its name server processes the DOWN,
+  # which can be after GenServer.stop/1 returns - restarting under the same id
+  # would then race. Unregistering goes through the same serialized server, so
+  # after this returns the id is free for sure. A late DOWN is a no-op.
+  defp stop_agent(pid, agent_id) do
+    GenServer.stop(pid)
+    AgentIndex.unregister_name(agent_id)
   end
 
   # One turn: the scripted LLM answers the n-th request with the n-th chunk -
