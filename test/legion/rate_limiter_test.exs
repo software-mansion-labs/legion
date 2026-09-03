@@ -1,6 +1,8 @@
 defmodule Legion.RateLimiterTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Legion.RateLimiter
   alias Legion.RateLimiter.Policy
   alias Legion.RateLimiter.Rule
@@ -66,15 +68,39 @@ defmodule Legion.RateLimiterTest do
       end
     end
 
-    test "resolves to no limit with rules but no limiter" do
-      assert RateLimiter.resolve!(rules: [rule(@ip, @policy)]) == @off
+    test "raises with rules but no limiter" do
+      assert_raise ArgumentError, ~r/rules need a limiter/, fn ->
+        RateLimiter.resolve!(rules: [rule(@ip, @policy)])
+      end
     end
 
-    test "resolves to no limit with a limiter but no rules" do
+    test "raises when a limiter given at start is nil next to rules" do
       Application.put_env(:legion, :rate_limit, limiter: Limiter)
 
-      assert RateLimiter.resolve!(nil) == @off
-      assert RateLimiter.resolve!(rules: []) == @off
+      assert_raise ArgumentError, ~r/rules need a limiter/, fn ->
+        RateLimiter.resolve!(limiter: nil, rules: [rule(@ip, @policy)])
+      end
+    end
+
+    test "resolves to no limit and warns with a limiter but no rules given" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter)
+
+      log =
+        capture_log(fn ->
+          assert RateLimiter.resolve!(nil) == @off
+          assert RateLimiter.resolve!([]) == @off
+          assert RateLimiter.resolve!(limiter: OtherLimiter) == @off
+        end)
+
+      assert log =~ "Legion.RateLimiterTest.Limiter is configured but no rules were given"
+      assert log =~ "Legion.RateLimiterTest.OtherLimiter is configured but no rules were given"
+      assert log =~ "runs without rate limiting"
+    end
+
+    test "resolves to no limit silently when opting out with empty rules" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter)
+
+      assert capture_log(fn -> assert RateLimiter.resolve!(rules: []) == @off end) == ""
     end
 
     test "validates rules even when no limiter is configured" do
@@ -95,6 +121,67 @@ defmodule Legion.RateLimiterTest do
       assert_raise ArgumentError, ~r/expected :rules to be a list/, fn ->
         RateLimiter.resolve!(rules: rule(@ip, @policy))
       end
+    end
+
+    test "warns about and ignores overrides keys other than :limiter and :rules" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter)
+
+      log =
+        capture_log(fn ->
+          assert RateLimiter.resolve!(identity: @ip, policy: @policy) == @off
+        end)
+
+      assert log =~ ":rate_limit ignores unknown keys [:identity, :policy]"
+      assert log =~ "allowed keys are [:limiter, :rules]"
+      # Dropping the stale keys leaves no rules, which is worth a second warning.
+      assert log =~ "runs without rate limiting"
+    end
+
+    test "rejects overrides that are not a keyword list" do
+      assert_raise ArgumentError, ~r/expected :rate_limit to be a keyword list/, fn ->
+        RateLimiter.resolve!([rule(@ip, @policy)])
+      end
+
+      assert_raise ArgumentError, ~r/expected :rate_limit to be a keyword list or nil/, fn ->
+        RateLimiter.resolve!(%{rules: [rule(@ip, @policy)]})
+      end
+    end
+
+    test "warns about and ignores application config keys other than :limiter and :default_policy" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, policy: @policy)
+
+      log =
+        capture_log(fn ->
+          assert RateLimiter.resolve!(rules: [rule(@ip, @policy)]) ==
+                   %{limiter: Limiter, rules: [rule(@ip, @policy)]}
+        end)
+
+      assert log =~ "config :legion, :rate_limit ignores unknown keys [:policy]"
+      assert log =~ "allowed keys are [:limiter, :default_policy]"
+    end
+
+    test "does not take rules from the application config" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, rules: [rule(@ip, @policy)])
+
+      log =
+        capture_log(fn ->
+          assert RateLimiter.resolve!(rules: [rule(@email, @narrow)]) ==
+                   %{limiter: Limiter, rules: [rule(@email, @narrow)]}
+
+          assert RateLimiter.resolve!(rules: []) == @off
+        end)
+
+      assert log =~ "config :legion, :rate_limit ignores unknown keys [:rules]"
+    end
+
+    test "rejects application config that is not a keyword list" do
+      Application.put_env(:legion, :rate_limit, %{limiter: Limiter})
+
+      assert_raise ArgumentError,
+                   ~r/expected config :legion, :rate_limit to be a keyword list/,
+                   fn ->
+                     RateLimiter.resolve!(nil)
+                   end
     end
 
     test "rejects a rule that is not a Rule struct" do
@@ -125,8 +212,8 @@ defmodule Legion.RateLimiterTest do
       assert RateLimiter.resolve!(nil) == inherited
     end
 
-    test "a sub-agent of a parent that opted out stays unlimited" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter, rules: [rule(%{}, @policy)])
+    test "a sub-agent of a parent that opted out stays unlimited without a warning" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, default_policy: @policy)
 
       parent = RateLimiter.resolve!(rules: [])
       assert parent == @off
@@ -134,14 +221,24 @@ defmodule Legion.RateLimiterTest do
       # AgentServer.init stores the parent's verdict for sub-agents to inherit.
       Vault.unsafe_put(:rate_limit, parent)
 
-      assert RateLimiter.resolve!(nil) == @off
+      assert capture_log(fn -> assert RateLimiter.resolve!(nil) == @off end) == ""
     end
 
-    test "a sub-agent of a parent that opted out cannot re-enable the application rules" do
-      Application.put_env(:legion, :rate_limit, limiter: Limiter, rules: [rule(%{}, @policy)])
+    test "a limiter given below a parent that opted out does not re-enable rate limiting" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, default_policy: @policy)
       Vault.unsafe_put(:rate_limit, @off)
 
-      assert RateLimiter.resolve!(limiter: OtherLimiter) == @off
+      log = capture_log(fn -> assert RateLimiter.resolve!(limiter: OtherLimiter) == @off end)
+      assert log =~ "runs without rate limiting"
+    end
+
+    test "rules given below a parent that opted out raise" do
+      Application.put_env(:legion, :rate_limit, limiter: Limiter, default_policy: @policy)
+      Vault.unsafe_put(:rate_limit, @off)
+
+      assert_raise ArgumentError, ~r/parent agent runs without rate limiting/, fn ->
+        RateLimiter.resolve!(rules: [rule(@ip, @policy)])
+      end
     end
 
     test "the parent's resolved configuration wins over the application environment" do
