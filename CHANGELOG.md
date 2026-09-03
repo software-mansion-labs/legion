@@ -5,6 +5,7 @@
 ### Changes
 
 - Rate limiting - `:max_running_agents` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) caps matching agents mid-turn at once; the Postgres adapter counts live agents and marks the caller running inside its transaction
+- Usage is persisted after every LLM request instead of at the end of the turn, so rate limits see a running turn's spend and a crashed turn keeps it
 
 ## v0.5.0 - 2026-09-01
 

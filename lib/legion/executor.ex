@@ -236,7 +236,7 @@ defmodule Legion.Executor do
       fn ->
         case ReqLLM.generate_object(config.model, messages, action_schema(agent_module, config)) do
           {:ok, response} ->
-            handle_llm_response(response, messages, turn_usage)
+            handle_llm_response(response, messages, config, turn_usage)
 
           {:error, reason} ->
             {{:error, "LLM request failed: #{inspect(reason)}", turn_usage}, %{error: reason}}
@@ -245,13 +245,14 @@ defmodule Legion.Executor do
     )
   end
 
-  defp handle_llm_response(response, messages, turn_usage) do
+  defp handle_llm_response(response, messages, config, turn_usage) do
     usage =
       (response.usage || %{})
       |> normalize_usage()
       |> Map.put("at", System.system_time(:millisecond))
 
     turn_usage = turn_usage ++ [usage]
+    record_usage!(config, turn_usage)
 
     case extract_object(response) do
       {:ok, action} when is_map(action) ->
@@ -291,6 +292,24 @@ defmodule Legion.Executor do
             })
         rescue
           error -> exit({:checkpoint_persistence_failed, error})
+        end
+    end
+  end
+
+  # Hands the turn's usage so far to the caller after every LLM response, so
+  # it can be persisted while the turn is still running. A failure exits like
+  # a checkpoint failure: the rescue around call_llm would otherwise turn it
+  # into a retried LLM error.
+  defp record_usage!(config, turn_usage) do
+    case config[:record_usage] do
+      nil ->
+        :ok
+
+      callback ->
+        try do
+          :ok = callback.(turn_usage)
+        rescue
+          error -> exit({:usage_persistence_failed, error})
         end
     end
   end
