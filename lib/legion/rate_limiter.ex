@@ -54,13 +54,16 @@ defmodule Legion.RateLimiter do
         rate_limit: [rules: [%Legion.RateLimiter.Rule{identity: %{"ip" => "203.0.113.42"}}]]
       )
 
-  A rule given without a `:policy` takes the default one. Rate limiting applies
-  only when a limiter and at least one rule resolve; a limiter without rules,
-  or rules without a limiter, disables it. Sub-agents inherit whatever their
-  parent resolved and cannot override it - a parent started without rate
-  limiting runs its whole subtree without it, even when the application
-  configures rules globally. Each sub-agent is a separate agent ID in every
-  group, so it counts towards `:max_agents` and its usage towards
+  A rule given without a `:policy` takes the default one. Rules belong to the
+  call site: the application config accepts  `:limiter` and `:default_policy`.
+  Rate limiting applies only when a limiter and at least  one rule resolve.
+  Rules without a limiter raise. A limiter without rules runs  the agent without
+  rate limiting and logs a warning - pass `rules: []` to opt  out on purpose
+  and silence it. Unknown keys in either place are logged and ignored.
+  Sub-agents inherit whatever their parent resolved - a parent started
+  without rate limiting runs its whole subtree without it, and rules given
+  below it raise rather than re-enable it. Each sub-agent is a separate agent
+  ID in every group, so it counts towards `:max_agents` and its usage towards
   `:max_tokens`.
 
   Rules must agree on their identities: two rules may share a field only with
@@ -121,6 +124,8 @@ defmodule Legion.RateLimiter do
   deny the call as a unit. See `Legion.RateLimiter.Rule`,
   `Legion.RateLimiter.Policy`, and `Legion.RateLimiter.Postgres`.
   """
+  require Logger
+
   alias Legion.RateLimiter.Rule
   alias Legion.Store
 
@@ -146,6 +151,8 @@ defmodule Legion.RateLimiter do
               :ok | no_return()
 
   @off %{limiter: nil, rules: []}
+  @override_keys [:limiter, :rules]
+  @app_config_keys [:limiter, :default_policy]
 
   @doc """
   Resolves the limiter and rules to enforce.
@@ -161,15 +168,17 @@ defmodule Legion.RateLimiter do
   policy that is present is used as is; missing fields are not filled in.
 
   Returns `%{limiter: module | nil, rules: [Legion.RateLimiter.Rule.t()]}`.
-  A `nil` limiter or an empty rule list means rate limiting is off; both keys
-  are then reset, so the result is always a complete map.
+  With no limiter and no rules the result is `%{limiter: nil, rules: []}`,
+  meaning rate limiting is off. A limiter without rules resolves to the same
+  and logs a warning, unless `overrides` gives `rules: []` explicitly.
 
-  Raises `ArgumentError` when `overrides` is not `nil` or a keyword list,
-  carries keys other than `:limiter` and `:rules`, `:rules` is not a list of
-  `Legion.RateLimiter.Rule` structs, a rule fails
-  `Legion.RateLimiter.Rule.validate!/1`, or two rules give one identity key
-  different values. The application's `:rate_limit` config is held to the
-  same keys plus `:default_policy`.
+  Raises `ArgumentError` when `overrides` is not `nil` or a keyword list, when
+  rules are given without a limiter, when `:rules` is not a list of
+  `Legion.RateLimiter.Rule` structs, when a rule fails
+  `Legion.RateLimiter.Rule.validate!/1`, or when two rules give one identity
+  key different values. Keys other than `:limiter` and `:rules` in
+  `overrides`, or other than `:limiter` and `:default_policy` in the
+  application config, are logged and ignored.
 
   ## Examples
 
@@ -183,12 +192,13 @@ defmodule Legion.RateLimiter do
   def resolve!(nil), do: resolve!([])
 
   def resolve!(overrides) when is_list(overrides) do
-    overrides = Keyword.validate!(overrides, [:limiter, :rules])
+    overrides = known_keys!(overrides, @override_keys, ":rate_limit")
 
     app_config =
-      Keyword.validate!(
+      known_keys!(
         Application.get_env(:legion, :rate_limit, []),
-        [:limiter, :rules, :default_policy]
+        @app_config_keys,
+        "config :legion, :rate_limit"
       )
 
     overrides = fill_policies(overrides, Keyword.get(app_config, :default_policy))
@@ -197,7 +207,7 @@ defmodule Legion.RateLimiter do
     |> Map.merge(layer(app_config))
     |> Map.merge(layer(Vault.get(:rate_limit) || %{}))
     |> Map.merge(layer(overrides))
-    |> finish!()
+    |> finish!(Keyword.has_key?(overrides, :rules))
   end
 
   def resolve!(other) do
@@ -224,13 +234,53 @@ defmodule Legion.RateLimiter do
   defp fill(other, _default_policy),
     do: raise(ArgumentError, "expected a #{inspect(Rule)} in :rules, got: #{inspect(other)}")
 
-  defp layer(config), do: config |> Map.new() |> Map.take([:limiter, :rules])
+  defp known_keys!(config, allowed, source) do
+    unless Keyword.keyword?(config) do
+      raise ArgumentError, "expected #{source} to be a keyword list, got: #{inspect(config)}"
+    end
 
-  defp finish!(%{limiter: limiter, rules: rules}) do
+    {known, unknown} = Keyword.split(config, allowed)
+
+    if unknown != [] do
+      Logger.warning(
+        "#{source} ignores unknown keys #{inspect(Enum.uniq(Keyword.keys(unknown)))}; " <>
+          "allowed keys are #{inspect(allowed)}"
+      )
+    end
+
+    known
+  end
+
+  defp layer(config), do: config |> Map.new() |> Map.take(@override_keys)
+
+  defp finish!(%{limiter: limiter, rules: rules}, explicit_rules?) do
     Enum.each(rules, &Rule.validate!/1)
     validate_identities!(rules)
 
-    if is_nil(limiter) or rules == [], do: @off, else: %{limiter: limiter, rules: rules}
+    case {limiter, rules} do
+      {nil, []} ->
+        @off
+
+      {nil, _rules} ->
+        raise ArgumentError,
+              "rate-limit rules need a limiter - pass `limiter:`, set " <>
+                "`config :legion, :rate_limit, limiter: MyLimiter`, or drop the rules " <>
+                "when the parent agent runs without rate limiting"
+
+      {limiter, []} ->
+        unless explicit_rules? do
+          Logger.warning(
+            "#{inspect(limiter)} is configured but no rules were given, so this agent " <>
+              "runs without rate limiting; pass `rate_limit: [rules: [...]]`, or " <>
+              "`rate_limit: [rules: []]` to opt out on purpose"
+          )
+        end
+
+        @off
+
+      {limiter, rules} ->
+        %{limiter: limiter, rules: rules}
+    end
   end
 
   defp validate_identities!(rules) do

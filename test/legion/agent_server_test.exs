@@ -1568,21 +1568,22 @@ defmodule Legion.AgentServerTest do
       assert_receive {:enforced, _, ^rejecting, _}
     end
 
-    test "runs the turn when no limiter is configured" do
-      stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
-
-      {:ok, pid} =
+    test "refuses to start with rules but no limiter" do
+      assert_raise ArgumentError, ~r/rules need a limiter/, fn ->
         Legion.start_link(MathAgent, rate_limit: [rules: [rule(rejecting_identity(self()))]])
-
-      assert {:ok, "ok"} = Legion.call(pid, "hi")
-      refute_receive {:enforced, _, _, _}
+      end
     end
 
-    test "runs the turn when a limiter is configured without rules" do
+    test "runs the turn unlimited, with a warning, when a limiter is configured without rules" do
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
 
-      {:ok, pid} = Legion.start_link(MathAgent, rate_limit: [limiter: TestRateLimiter])
+      {pid, log} =
+        with_log(fn ->
+          {:ok, pid} = Legion.start_link(MathAgent, rate_limit: [limiter: TestRateLimiter])
+          pid
+        end)
 
+      assert log =~ "runs without rate limiting"
       assert {:ok, "ok"} = Legion.call(pid, "hi")
       refute_receive {:enforced, _, _, _}
     end
@@ -1660,7 +1661,7 @@ defmodule Legion.AgentServerTest do
     test "sub-agents of a parent that opted out are not rate limited" do
       Application.put_env(:legion, :rate_limit,
         limiter: TestRateLimiter,
-        rules: [rule(rejecting_identity(self()))]
+        default_policy: limit_policy()
       )
 
       on_exit(fn -> Application.delete_env(:legion, :rate_limit) end)
