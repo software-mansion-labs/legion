@@ -613,7 +613,7 @@ defmodule Legion.AgentServerTest do
       {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "payloads")
       {:ok, "Paris"} = Legion.call(pid, "What is the capital of France?")
 
-      [started, running, completed] = MemoryStore.writes("payloads")
+      [started, running, usage, completed] = MemoryStore.writes("payloads")
 
       assert %Payload{
                agent_id: "payloads",
@@ -626,6 +626,12 @@ defmodule Legion.AgentServerTest do
              } = started
 
       assert is_struct(started_at, NaiveDateTime)
+
+      assert %Payload{
+               status: nil,
+               conversation_state: nil,
+               usage: [%{"turn_usage" => 0, "at" => _}]
+             } = usage
 
       assert %Payload{
                agent_id: "payloads",
@@ -674,6 +680,33 @@ defmodule Legion.AgentServerTest do
              ] = Map.fetch!(payload, :usage)
 
       assert first_timestamp <= second_timestamp
+    end
+
+    test "persists usage after every LLM request, before the turn ends" do
+      test_pid = self()
+      call_count = :counters.new(1, [:atomics])
+
+      stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
+        :counters.add(call_count, 1, 1)
+
+        case :counters.get(call_count, 1) do
+          1 ->
+            llm_eval_continue_response("x = 1", 7)
+
+          2 ->
+            send(test_pid, {:stored_before_second_request, MemoryStore.get("usage-live")})
+            llm_response("done", 11)
+        end
+      end)
+
+      {:ok, pid} = Legion.start_link(MathAgent, store: MemoryStore, agent_id: "usage-live")
+      assert {:ok, "done"} = Legion.call(pid, "compute")
+
+      assert_receive {:stored_before_second_request,
+                      {:ok, %Payload{usage: [%{"turn_usage" => 7, "at" => _}]}}}
+
+      assert {:ok, %Payload{usage: [%{"turn_usage" => 7}, %{"turn_usage" => 11}]}} =
+               MemoryStore.get("usage-live")
     end
 
     test "restored conversations add only new invocation usage" do
@@ -826,7 +859,8 @@ defmodule Legion.AgentServerTest do
 
       assert {:ok, "done"} = Legion.call(pid, "compute")
 
-      [_started, running, checkpoint, completed] = MemoryStore.writes("step-continue")
+      [_started, running, _first_usage, checkpoint, _second_usage, completed] =
+        MemoryStore.writes("step-continue")
 
       assert %Payload{
                status: :running,
@@ -861,7 +895,7 @@ defmodule Legion.AgentServerTest do
 
       assert {:ok, 2} = Legion.call(pid, "compute")
 
-      [_started, _running, checkpoint, completed] = MemoryStore.writes("step-complete")
+      [_started, _running, _usage, checkpoint, completed] = MemoryStore.writes("step-complete")
 
       assert %Payload{
                status: nil,
@@ -889,7 +923,8 @@ defmodule Legion.AgentServerTest do
       {:ok, pid} = Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-retry")
       assert {:ok, "recovered"} = Legion.call(pid, "compute")
 
-      [_started, _running, checkpoint, _completed] = MemoryStore.writes("step-retry")
+      [_started, _running, _first_usage, checkpoint, _second_usage, _completed] =
+        MemoryStore.writes("step-retry")
 
       assert %Payload{
                status: nil,
@@ -917,7 +952,7 @@ defmodule Legion.AgentServerTest do
 
       assert {:ok, 42} = Legion.call(pid, "compute")
 
-      [_started, _running, checkpoint, completed] =
+      [_started, _running, _usage, checkpoint, completed] =
         MemoryStore.writes("step-conversation-bindings")
 
       assert checkpoint.conversation_state.bindings == [x: 42]
@@ -938,7 +973,7 @@ defmodule Legion.AgentServerTest do
 
       assert {:ok, 42} = Legion.call(pid, "compute")
 
-      [_started, _running, checkpoint, completed] =
+      [_started, _running, _usage, checkpoint, completed] =
         MemoryStore.writes("step-iteration-bindings")
 
       assert checkpoint.conversation_state.bindings == []
@@ -953,7 +988,7 @@ defmodule Legion.AgentServerTest do
       {:ok, pid} = Legion.start_link(MathAgent, store: StepMemoryStore, agent_id: "step-return")
       assert {:ok, "done"} = Legion.call(pid, "compute")
 
-      assert [_started, _running, _completed] = MemoryStore.writes("step-return")
+      assert [_started, _running, _usage, _completed] = MemoryStore.writes("step-return")
     end
 
     test "restores the conversation under a fresh system prompt after a restart" do
