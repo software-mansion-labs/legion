@@ -30,6 +30,7 @@ defmodule Legion.MixProject do
         extras: [
           "LICENSE",
           "guides/installation.md": [title: "Installation"],
+          "guides/integrating.md": [title: "Adding Legion to an existing app"],
           "guides/sandboxes.md": [title: "Sandboxes"],
           "CHANGELOG.md": [title: "Changelog"]
         ],
