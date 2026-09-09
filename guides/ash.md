@@ -1,14 +1,14 @@
 # Using Legion with Ash
 
-Ash applications already have the two things a Legion tool needs: actions
-that are the only way to touch data, and policies that decide who may call
-them. Legion adds an agent that calls those actions through a small tool
-module. No extension, no glue package - a `Legion.Tool` that calls your
-domain's code interface with the actor from
-[Vault](https://github.com/dimamik/vault).
+If your app is built on Ash you are most of the way there already. Actions
+are the only way in and out of your data, and policies decide who gets to
+call them, which is exactly what a Legion tool wants to sit on top of. You should write a `Legion.Tool` that calls
+your domain's code interface and passes along the actor it finds in
+[Vault](https://github.com/dimamik/vault), and that's the whole
+integration.
 
-This guide assumes the [integrating](integrating.md) guide's setup and a
-domain like:
+The examples below assume you have been through the
+[integrating](integrating.md) guide and have a domain roughly like this one:
 
 ```elixir
 defmodule MyApp.Blog do
@@ -23,7 +23,9 @@ defmodule MyApp.Blog do
 end
 ```
 
-## 1. One tool per domain, actor from Vault
+## The tool
+
+One tool per domain is usually enough. Here is one for the blog:
 
 ```elixir
 defmodule MyApp.Tools.PostsTool do
@@ -62,66 +64,80 @@ defmodule MyApp.Tools.PostsTool do
 end
 ```
 
-Three things carry the weight here:
+Not much to it, but a few of those lines matter more than they seem to.
 
-- **`actor: actor()` on every call.** Vault is visible inside the sandbox's
-  eval process, but the generated code is not a `Legion.Tool`, so it cannot
-  read Vault or pass an actor of its own. Policies run exactly as they do
-  for any other caller. With no Vault at all the actor is `nil`, and
-  policies decide what a nil actor may do - the safe way to fail.
-- **`Ash.Query.filter_input/2` for anything the model wrote.** Lua tables
-  arrive as string-keyed maps, which is the shape `filter_input`,
-  `sort_input` and `for_create` take. Private and non-filterable fields are
-  rejected with a readable error; field policies turn forbidden references
-  into `nil`. The generated code never needs the `Ash.Query.filter` macro.
-- **`public/1` on every result.** See the next section.
+Every call passes `actor: actor()`. The tool can read Vault because it runs
+in the sandbox's eval process, but the code the model wrote is not a
+`Legion.Tool` and has no way to reach Vault or to sneak in an actor of its
+own. So your policies run for the agent the same way they run for a
+controller. If nobody initialized Vault the actor is `nil`, and your
+policies already say what a `nil` actor may do (usually nothing), so a
+missing Vault fails closed without any extra code.
 
-Front door, same as for any Legion app:
+Anything the model wrote goes through `Ash.Query.filter_input/2`. Lua tables
+show up in Elixir as string-keyed maps, and that happens to be the shape
+`filter_input`, `sort_input` and `for_create` expect, so there is no
+conversion step. Private attributes and fields that aren't filterable get
+rejected with an error the model can read, and field policies turn forbidden
+references into `nil`. You never need the `Ash.Query.filter` macro on that
+path, which is convenient because the model couldn't use it anyway.
+
+Every result goes through `public/1`. More on that in a moment.
+
+Starting the agent looks the same as in any other Legion app:
 
 ```elixir
 Vault.init(current_user: socket.assigns.current_user)
 {:ok, pid} = Legion.start_link(MyApp.WriterAgent)
 ```
 
-If you already build an `Ash.Scope`, put that in Vault instead and pass
-`scope: Vault.get(:scope)` to the actions - actor, tenant and context travel
-together and both Ash and Legion see the same principal.
+If you already build an `Ash.Scope` for your LiveViews, put the scope in
+Vault instead of the bare user and pass `scope: Vault.get(:scope)` to the
+actions. Actor, tenant and context then travel together and Ash and Legion
+agree on who is asking.
 
-## 2. Return public attributes, not records
+## Don't hand records to the model
 
-The Lua sandbox converts structs with `Map.from_struct`, so an Ash record
-handed to the model as-is carries `__meta__`, `__metadata__`, empty
-`aggregates` and `calculations`, `Ash.NotLoaded` tables for every unloaded
-relationship - and **private and `sensitive?` attributes**. Ash's `Inspect`
-redacts sensitive fields; the Lua boundary does not, and in the Elixir sandbox
-generated code can read any field of the struct directly.
+The Lua sandbox turns structs into tables with `Map.from_struct`, so an Ash
+record passed through untouched drags along `__meta__`, `__metadata__`,
+empty `aggregates` and `calculations` maps, an `Ash.NotLoaded` table for
+every relationship you didn't load, and, more to the point, private and
+`sensitive?` attributes. Ash redacts sensitive fields in `inspect` output.
+The Lua boundary doesn't, and in the Elixir sandbox generated code can just
+read the field off the struct.
 
-`Map.take(record, public_attribute_names)` fixes both the token cost and the
-leak. Add loaded relationships and calculations explicitly when the agent
-needs them.
+`Map.take(record, @public_attributes)` takes care of both the token waste
+and the leak. When the agent actually needs a loaded relationship or a
+calculation, add it to the take list by hand.
 
-## 3. What not to do
+## A few things to avoid
 
-- **Never allowlist `Ash`, `Ash.Query` or a domain module** in the Elixir
-  sandbox. Generated code could pass its own `actor:` or
-  `authorize?: false`. In the Lua sandbox this cannot happen - modules that
-  are not a `Legion.Tool` expose no functions.
-- **Keep `show_policy_breakdowns?` off in production.** The breakdown text
-  reaches the model and, through it, the user.
-- **Limit reads inside the tool.** Legion truncates results at
-  `max_message_length` and the model then reasons over a cut-off table.
+Don't allowlist `Ash`, `Ash.Query` or your domain module in the Elixir
+sandbox. Once generated code can call `Ash.read!` itself it can pass whatever
+`actor:` it likes, or `authorize?: false`. The Lua sandbox doesn't have this
+problem, since a module that isn't a `Legion.Tool` exposes no functions
+there.
 
-## 4. Errors reach the model
+Keep `show_policy_breakdowns?` off in production. The breakdown ends up in
+the tool error, the tool error ends up in the conversation, and from there
+it's one step away from the user.
 
-Forbidden and Invalid errors are rescued and re-raised as sandbox errors with
-their message - `attribute title is required` is something the model can act
-on. Each one costs a retry (`max_retries`, three by default), so say the
-rules in the moduledoc, as above, rather than letting the model find them
-by failing.
+Put a limit on reads inside the tool. Legion truncates tool results at
+`max_message_length`, and a model reasoning over a table that was cut off
+halfway is worse off than one that got fifty rows and knows it.
 
-## 5. Agents inside actions
+## Errors
 
-The reverse direction is a generic action:
+Forbidden and Invalid errors are rescued and re-raised as sandbox errors
+with the message intact, so the model sees something like
+`attribute title is required` and can fix its call. Each retry costs a round
+trip though (`max_retries` defaults to three), so it's cheaper to spell the
+rules out in the moduledoc, as the example above does, than to let the model
+discover them by failing.
+
+## Calling an agent from an action
+
+It works in the other direction too. A generic action can run an agent:
 
 ```elixir
 action :summarize, :string do
@@ -136,16 +152,18 @@ action :summarize, :string do
 end
 ```
 
-Ash gets its actor from the action options, Legion's tools get theirs from
-Vault, so initialize Vault once at the front door from the same scope you
-hand to Ash. Do not `Vault.init` inside the action: it raises when an
-ancestor process already did.
+Ash takes its actor from the action options while Legion's tools take theirs
+from Vault, so initialize Vault once at the front door from the same scope
+you hand to Ash. Don't call `Vault.init` inside the action itself; it raises
+if an ancestor process already did.
 
-## 6. Shared infrastructure
+## Store, rate limiter, tenants
 
-- **Persistence and rate limiting** - `Legion.Store.Postgres` and
-  `Legion.RateLimiter.Postgres` need an `Ecto.Repo`; an `AshPostgres.Repo`
-  is one. The store migration is a plain `Ecto.Migration` and lives next to
-  `mix ash.codegen` output.
-- **Multitenancy** - `tenant:` is an Ash option like `actor:`; carry it in
-  Vault or inside the scope and pass it the same way.
+`Legion.Store.Postgres` and `Legion.RateLimiter.Postgres` want an
+`Ecto.Repo`, and an `AshPostgres.Repo` is one, so point them at the repo you
+already have. The store migration is an ordinary `Ecto.Migration` and can
+live next to whatever `mix ash.codegen` generates.
+
+Multitenancy needs nothing special. `tenant:` is an Ash option like
+`actor:`, so keep it in Vault or inside the scope and pass it along the same
+way.
