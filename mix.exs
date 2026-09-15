@@ -32,6 +32,7 @@ defmodule Legion.MixProject do
           "guides/installation.md": [title: "Installation"],
           "guides/integrating.md": [title: "Adding Legion to an existing app"],
           "guides/sandboxes.md": [title: "Sandboxes"],
+          "guides/ash.md": [title: "Using Legion with Ash"],
           "CHANGELOG.md": [title: "Changelog"]
         ],
         groups_for_modules: groups_for_modules()
