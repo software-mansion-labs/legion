@@ -179,23 +179,14 @@ defmodule Legion.AgentServerTest do
     test "emits stopped event when agent terminates" do
       stub(ReqLLM, :generate_object, fn _, _, _ -> llm_response("ok") end)
 
-      test_pid = self()
-      handler_id = "test-terminate-#{System.unique_integer()}"
-
-      :telemetry.attach(
-        handler_id,
-        [:legion, :agent, :stopped],
-        fn _event, _measurements, metadata, _ ->
-          send(test_pid, {:stopped, metadata.agent})
-        end,
-        nil
-      )
+      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :agent, :stopped]])
+      on_exit(fn -> :telemetry.detach(ref) end)
 
       {:ok, pid} = Legion.start_link(MathAgent)
       GenServer.stop(pid)
 
-      assert_receive {:stopped, Legion.Test.Support.MathAgent}
-      :telemetry.detach(handler_id)
+      assert_receive {[:legion, :agent, :stopped], ^ref, _measurements,
+                      %{agent: Legion.Test.Support.MathAgent}}
     end
   end
 
@@ -1589,19 +1580,8 @@ defmodule Legion.AgentServerTest do
     end
 
     test "emits telemetry for the rule that rejected the turn" do
-      handler = {__MODULE__, :rate_limit_telemetry, System.unique_integer()}
-      test_pid = self()
-
-      :telemetry.attach(
-        handler,
-        [:legion, :rate_limit, :exceeded],
-        fn event, measurements, metadata, _config ->
-          send(test_pid, {:telemetry, event, measurements, metadata})
-        end,
-        nil
-      )
-
-      on_exit(fn -> :telemetry.detach(handler) end)
+      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :rate_limit, :exceeded]])
+      on_exit(fn -> :telemetry.detach(ref) end)
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema -> llm_response("ok") end)
       rejecting = rejecting_identity(self())
@@ -1616,7 +1596,7 @@ defmodule Legion.AgentServerTest do
 
       {:cancel, _} = Legion.call(pid, "hi")
 
-      assert_receive {:telemetry, [:legion, :rate_limit, :exceeded], _measurements, metadata}
+      assert_receive {[:legion, :rate_limit, :exceeded], ^ref, _measurements, metadata}
       assert metadata.agent == MathAgent
       assert metadata.agent_id == agent_id
       assert metadata.identity == rejecting

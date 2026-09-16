@@ -44,20 +44,14 @@ defmodule Legion.EvalGuardTest do
 
   @tag capture_log: true
   test "a denial emits telemetry carrying the code and reason" do
-    :telemetry.attach(
-      "guard-denied-test",
-      [:legion, :eval_guard, :denied],
-      fn event, _measurements, metadata, pid -> send(pid, {:telemetry, event, metadata}) end,
-      self()
-    )
-
-    on_exit(fn -> :telemetry.detach("guard-denied-test") end)
+    ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :eval_guard, :denied]])
+    on_exit(fn -> :telemetry.detach(ref) end)
 
     Legion.EvalGuard.check(DenyEverything, "Shop.checkout()", @context)
 
     # The handler is global, so denials from concurrently running tests also
     # land in this mailbox - match on this test's own guard.
-    assert_receive {:telemetry, [:legion, :eval_guard, :denied],
+    assert_receive {[:legion, :eval_guard, :denied], ^ref, _measurements,
                     %{guard: DenyEverything} = metadata}
 
     assert metadata.code == "Shop.checkout()"

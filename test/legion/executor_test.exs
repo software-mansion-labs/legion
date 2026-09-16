@@ -188,16 +188,8 @@ defmodule Legion.ExecutorTest do
     end
 
     test "emits normalized usage in LLM request stop telemetry" do
-      handler_id = "executor-llm-stop-#{System.unique_integer()}"
-
-      :telemetry.attach(
-        handler_id,
-        [:legion, :llm, :request, :stop],
-        fn event, _measurements, metadata, pid -> send(pid, {:telemetry, event, metadata}) end,
-        self()
-      )
-
-      on_exit(fn -> :telemetry.detach(handler_id) end)
+      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :llm, :request, :stop]])
+      on_exit(fn -> :telemetry.detach(ref) end)
 
       stub(ReqLLM, :generate_object, fn _model, _messages, _schema ->
         {:ok,
@@ -215,7 +207,7 @@ defmodule Legion.ExecutorTest do
       assert {:ok, "42", _messages, [], [_usage]} =
                Legion.Executor.run(MathAgent, executor_messages("what is 42?"), %{})
 
-      assert_receive {:telemetry, [:legion, :llm, :request, :stop], metadata}
+      assert_receive {[:legion, :llm, :request, :stop], ^ref, _measurements, metadata}
 
       assert %{
                object: %{"action" => "return"},
@@ -226,16 +218,8 @@ defmodule Legion.ExecutorTest do
     end
 
     test "emits usage in LLM request stop telemetry for an invalid response" do
-      handler_id = "executor-llm-stop-invalid-#{System.unique_integer()}"
-
-      :telemetry.attach(
-        handler_id,
-        [:legion, :llm, :request, :stop],
-        fn event, _measurements, metadata, pid -> send(pid, {:telemetry, event, metadata}) end,
-        self()
-      )
-
-      on_exit(fn -> :telemetry.detach(handler_id) end)
+      ref = :telemetry_test.attach_event_handlers(self(), [[:legion, :llm, :request, :stop]])
+      on_exit(fn -> :telemetry.detach(ref) end)
 
       call_count = :counters.new(1, [:atomics])
 
@@ -251,11 +235,13 @@ defmodule Legion.ExecutorTest do
       assert {:ok, "recovered", _messages, [], [_first, _second]} =
                Legion.Executor.run(MathAgent, executor_messages("recover"), %{})
 
-      assert_receive {:telemetry, [:legion, :llm, :request, :stop], %{error: _, usage: usage}}
+      assert_receive {[:legion, :llm, :request, :stop], ^ref, _measurements,
+                      %{error: _, usage: usage}}
+
       assert %{"turn_usage" => 7, "at" => at} = usage
       assert is_integer(at)
 
-      assert_receive {:telemetry, [:legion, :llm, :request, :stop],
+      assert_receive {[:legion, :llm, :request, :stop], ^ref, _measurements,
                       %{object: %{"action" => "return"}, usage: %{"turn_usage" => 11}}}
     end
 
