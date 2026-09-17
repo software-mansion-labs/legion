@@ -4,6 +4,8 @@
 
 ### Changes
 
+- MCP server - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) exposes an agent's tools and sandbox to MCP hosts as a single `repl` tool (optional `:anubis_mcp` dependency); sessions are recorded in a [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html) under the id from `agent_id/1` and rate limited per call through `rate_limit_rules/1`, with `[:legion, :mcp, :session | :call]` [telemetry](https://hexdocs.pm/legion/Legion.Telemetry.html)
+- Rate limiting - `:max_evals` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) limits recorded code evaluations, counted by the [Postgres adapter](https://hexdocs.pm/legion/Legion.RateLimiter.Postgres.html) from `"evals"` usage
 - Rate limiting - [`Legion.RateLimiter.resolve!/1`](https://hexdocs.pm/legion/Legion.RateLimiter.html#resolve!/1) raises when rules are given without a limiter, logs a warning when a limiter has no rules unless `rules: []` opts out explicitly, logs and ignores unknown `:rate_limit` keys instead of dropping them silently, and no longer accepts `rules:` in `config :legion, :rate_limit`
 
 ## v0.5.0 - 2026-09-01
