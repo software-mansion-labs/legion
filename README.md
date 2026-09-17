@@ -4,8 +4,8 @@
 
 # Legion
 
-[![CI](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml/badge.svg)](https://github.com/software-mansion-labs/legion/actions/workflows/ci.yml)
-[![License](https://img.shields.io/hexpm/l/legion.svg)](https://github.com/software-mansion-labs/legion/blob/main/LICENSE)
+[![CI](https://github.com/software-mansion/legion/actions/workflows/ci.yml/badge.svg)](https://github.com/software-mansion/legion/actions/workflows/ci.yml)
+[![License](https://img.shields.io/hexpm/l/legion.svg)](https://github.com/software-mansion/legion/blob/main/LICENSE)
 [![Version](https://img.shields.io/hexpm/v/legion.svg)](https://hex.pm/packages/legion)
 [![Hex Docs](https://img.shields.io/badge/documentation-gray.svg)](https://hexdocs.pm/legion)
 
@@ -336,9 +336,9 @@ Events emitted at every level:
 
 ## Web Dashboard
 
-[`legion_web`](https://github.com/software-mansion-labs/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
+[`legion_web`](https://github.com/software-mansion/legion_web) provides a real-time Phoenix LiveView dashboard for monitoring agents, viewing conversation traces, and inspecting generated code.
 
-[![Legion Web Dashboard](https://raw.githubusercontent.com/software-mansion-labs/legion_web/main/img/preview.png)](https://github.com/software-mansion-labs/legion_web)
+[![Legion Web Dashboard](https://raw.githubusercontent.com/software-mansion/legion_web/main/img/preview.png)](https://github.com/software-mansion/legion_web)
 
 ## What's next
 

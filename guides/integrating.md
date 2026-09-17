@@ -136,7 +136,7 @@ DynamicSupervisor.start_child(MyShop.AgentSupervisor, {MyShop.SupportAgent, []})
   decides whose cart. Keep irreversible actions (charging a card, cancelling
   an order) out of the agent's reach or behind a confirmation step in your UI.
 - **Watching it work** - `Legion.Telemetry.attach_default_logger/0` for logs,
-  [legion_web](https://github.com/software-mansion-labs/legion_web) for a live
+  [legion_web](https://github.com/software-mansion/legion_web) for a live
   dashboard of every conversation and generated snippet.
 - **Trust model** - Lua is the default for a reason; [Sandboxes](sandboxes.md)
   explains when the Elixir sandbox is the better fit.
