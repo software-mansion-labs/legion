@@ -121,6 +121,12 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     `session/1`, `init/2`, `server_instructions/0` and `terminate/2` are
     overridable; call `super` to keep what Legion does in them.
+
+    ## Telemetry
+
+    Every `repl` call is a `[:legion, :mcp, :call]` span carrying the MCP
+    session id and the agent id it ran in; the agent's own events fire
+    inside it. See `Legion.Telemetry`.
     """
 
     alias Anubis.Server.Frame

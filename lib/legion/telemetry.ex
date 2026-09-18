@@ -65,9 +65,18 @@ defmodule Legion.Telemetry do
       Legion.RateLimiter.Policy.t(), usage: map, violations: [atom]}`
     - `violations` names the limits that were reached, e.g. `[:max_tokens]`.
 
-  An agent driven through `Legion.eval/3`, by an MCP host for instance, emits
-  the agent, sandbox and rate limit events above and nothing of its own: a
-  session starting is an agent starting, a call is a sandbox eval.
+  ## MCP Events
+
+  A session of a `Legion.MCP.Server` is an agent, so it emits the agent,
+  sandbox and rate limit events above. On top of those, every `repl` call is
+  a span that ties them to the MCP session:
+
+  - `[:legion, :mcp, :call, :start | :stop | :exception]` — one `repl` tool call
+    (wraps the `[:legion, :sandbox, :eval]` span of the same `agent_id`; a
+    denied call has no eval span)
+    - Metadata: `%{agent: module, agent_id: String.t(), session_id: String.t(), code: String.t()}`
+    - Stop adds: `success`, and `error` with the text the host's model was
+      given when the code failed or the call was rate limited.
 
   ## Default Logger
 

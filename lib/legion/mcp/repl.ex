@@ -11,6 +11,7 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
     alias Anubis.Server.Frame
     alias Anubis.Server.Response
     alias Legion.MCP.Server
+    alias Legion.Telemetry
 
     schema do
       field :code, :string, required: true, description: "Code to execute in the sandbox"
@@ -19,23 +20,33 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
     # The agent owns the variables, saves every step and enforces the rate
     # limit; this is one `Legion.eval/3` call dressed as a tool result.
     @impl true
-    def execute(%{code: code}, %Frame{assigns: %{legion_server: _server}} = frame) do
+    def execute(%{code: code}, %Frame{assigns: %{legion_server: server}} = frame) do
       {agent, frame} = Server.resolve_agent(frame)
 
-      reply =
+      metadata = %{
+        agent: server.__legion_agent__(),
+        agent_id: Legion.get_agent_id(agent),
+        session_id: frame.context.session_id,
+        code: code
+      }
+
+      Telemetry.span([:legion, :mcp, :call], metadata, fn ->
         case Legion.eval(agent, code) do
           {:ok, text} ->
-            Response.text(Response.tool(), text)
+            {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
 
           {:error, error} ->
-            Response.error(Response.tool(), error)
+            {{:reply, Response.error(Response.tool(), error), frame},
+             %{success: false, error: error}}
 
           {:cancel, {:rate_limited, violations}} ->
             limits = Enum.join(violations, ", ")
-            Response.error(Response.tool(), "Rate limit exceeded (#{limits}). Try again later.")
-        end
+            error = "Rate limit exceeded (#{limits}). Try again later."
 
-      {:reply, reply, frame}
+            {{:reply, Response.error(Response.tool(), error), frame},
+             %{success: false, error: error}}
+        end
+      end)
     end
 
     def execute(_params, %Frame{} = frame) do

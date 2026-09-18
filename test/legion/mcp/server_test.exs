@@ -200,6 +200,26 @@ defmodule Legion.MCP.ServerTest do
       refute Process.alive?(pid)
     end
 
+    test "every call is a span naming the session and the agent it ran in" do
+      ref = attach([[:legion, :mcp, :call, :start], [:legion, :mcp, :call, :stop]])
+      frame = initialized(MathMCP, frame("session-7"))
+
+      {false, _text, frame} = repl(MathMCP, frame, "return 1")
+      {true, error, _frame} = repl(MathMCP, frame, "return (")
+      agent_id = Legion.get_agent_id(frame.assigns.legion_agent)
+
+      assert_received {^ref, [:legion, :mcp, :call, :start],
+                       %{
+                         agent: MathAgent,
+                         agent_id: ^agent_id,
+                         session_id: "session-7",
+                         code: "return 1"
+                       }}
+
+      assert_received {^ref, [:legion, :mcp, :call, :stop], %{success: true, code: "return 1"}}
+      assert_received {^ref, [:legion, :mcp, :call, :stop], %{success: false, error: ^error}}
+    end
+
     test "a call before the handshake is a tool error" do
       assert {true, "Session is not initialized" <> _, _frame} =
                repl(MathMCP, frame(), "return 1")
@@ -267,6 +287,22 @@ defmodule Legion.MCP.ServerTest do
       assert :ok = UserMCP.terminate(:shutdown, frame)
       assert {:ok, _pid} = Legion.lookup("mcp:user:erin")
     end
+  end
+
+  defp attach(events) do
+    ref = make_ref()
+    test_pid = self()
+    id = "server-test-#{inspect(ref)}"
+
+    :telemetry.attach_many(
+      id,
+      events,
+      fn event, _measurements, metadata, _ -> send(test_pid, {ref, event, metadata}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(id) end)
+    ref
   end
 
   describe "agent/2" do
