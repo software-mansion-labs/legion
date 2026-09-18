@@ -83,12 +83,21 @@ if Code.ensure_loaded?(Anubis.Server) do
     `Legion.AgentSupervisor` and found again on every later call, whatever
     MCP session it comes from, so a user who comes back tomorrow, or from
     another host, continues the same conversation. `:agent_id` needs a store;
-    see `Legion.Store`. `:vault` is how tools learn who is calling, and
-    `:idle_timeout` is what stops the agent once nobody does.
+    see `Legion.Store`.
+
+    `:vault` is how tools learn who is calling. It is put in the agent before
+    every call, so it may change from request to request: a refreshed token,
+    a tenant switch. Every other option is read when the agent starts and
+    stays as it is until the agent stops, since the process outlives the
+    request. `:idle_timeout` is what stops it once nobody calls: thirty
+    minutes by default here, whatever `Legion.start_link/2` would default to,
+    after which the store holds the conversation and the next call starts
+    the agent again from it.
 
     The default, `[]`, gives every MCP session an anonymous agent of its own,
-    started on its first call and stopped with the session. Nothing of it is
-    persisted.
+    started on its first call and stopped with the session. With no store it
+    leaves nothing behind. With one configured for the application it is
+    saved like any agent, under the id Legion generated for it.
 
     ## Who is calling
 
@@ -132,6 +141,8 @@ if Code.ensure_loaded?(Anubis.Server) do
     alias Anubis.Server.Frame
     alias Legion.{Agent, AgentPrompt, AgentServer}
 
+    @idle_timeout :timer.minutes(30)
+
     defmacro __using__(opts) do
       {agent, anubis_opts} = Keyword.pop!(opts, :agent)
       anubis_opts = Keyword.put_new(anubis_opts, :capabilities, [:tools])
@@ -169,21 +180,29 @@ if Code.ensure_loaded?(Anubis.Server) do
       do: {:ok, Frame.assign(frame, :legion_server, server)}
 
     @doc false
-    # The agent a call runs in: the one `session/1` names, started if need be,
-    # or else the session's own anonymous agent, kept in the frame.
+    # The agent a call runs in, with the vault to seed it with: the one
+    # `session/1` names, started if need be, or else the session's own
+    # anonymous agent, kept in the frame.
     def resolve_agent(%Frame{assigns: %{legion_server: server} = assigns} = frame) do
       opts = server.session(frame)
+      vault = Keyword.get(opts, :vault, [])
 
       cond do
-        opts[:agent_id] ->
-          {agent(server.__legion_agent__(), opts), frame}
+        agent_id = opts[:agent_id] ->
+          pid =
+            case Legion.lookup(agent_id) do
+              {:ok, pid} -> pid
+              :error -> agent(server.__legion_agent__(), opts)
+            end
+
+          {pid, vault, frame}
 
         (pid = assigns[:legion_agent]) && Process.alive?(pid) ->
-          {pid, frame}
+          {pid, vault, frame}
 
         true ->
           pid = agent(server.__legion_agent__(), opts)
-          {pid, Frame.assign(frame, :legion_agent, pid)}
+          {pid, vault, Frame.assign(frame, :legion_agent, pid)}
       end
     end
 
@@ -198,6 +217,8 @@ if Code.ensure_loaded?(Anubis.Server) do
     # Starts `agent_module` under `Legion.AgentSupervisor` with `opts`, or
     # returns the live process that already owns the agent id.
     def agent(agent_module, opts) do
+      opts = Keyword.put_new(opts, :idle_timeout, @idle_timeout)
+
       child = %{
         id: AgentServer,
         start: {AgentServer, :start_link, [agent_module, opts]},

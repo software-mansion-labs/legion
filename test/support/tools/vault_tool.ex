@@ -7,6 +7,9 @@ defmodule Legion.Test.Support.VaultTool do
   @doc "The current user this code runs for."
   def current_user, do: Vault.get(:current_user)
 
+  @doc "The token the current call carried."
+  def token, do: Vault.get(:token)
+
   @doc "The agent id this code runs under."
   def agent_id, do: Vault.get(:agent_id)
 

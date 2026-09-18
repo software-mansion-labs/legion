@@ -94,8 +94,9 @@ defmodule Legion.AgentServer do
   # Runs `code` written by an outside model (an MCP host) as one step of this
   # conversation - rate-limited and persisted like a turn, with no LLM request.
   # Returns `{:ok, text}`, `{:error, text}` or `{:cancel, {:rate_limited, violations}}`.
-  def eval(agent, code, timeout \\ :infinity) do
-    GenServer.call(agent, {:eval, code}, timeout)
+  def eval(agent, code, opts \\ []) do
+    {timeout, opts} = Keyword.pop(opts, :timeout, :infinity)
+    GenServer.call(agent, {:eval, code, opts}, timeout)
   end
 
   def get_messages(agent) do
@@ -223,8 +224,8 @@ defmodule Legion.AgentServer do
   end
 
   @impl true
-  def handle_call({:eval, code}, _from, state) do
-    {reply, state} = handle_eval(code, state)
+  def handle_call({:eval, code, opts}, _from, state) do
+    {reply, state} = handle_eval(code, opts, state)
     {:reply, reply, state, idle_timeout(state)}
   end
 
@@ -237,6 +238,8 @@ defmodule Legion.AgentServer do
   # Nobody has called for `:idle_timeout` milliseconds.
   @impl true
   def handle_info(:timeout, state), do: {:stop, :normal, state}
+
+  def handle_info(_message, state), do: {:noreply, state, idle_timeout(state)}
 
   defp idle_timeout(state), do: Map.get(state.config, :idle_timeout, :infinity)
 
@@ -303,10 +306,14 @@ defmodule Legion.AgentServer do
   # `Legion.Recovery` would resume a running row through the LLM loop, which a
   # conversation driven by an outside model does not have. There are no turns
   # here either, so bindings live on unless the scope is `:iteration`. Usage
-  # records the evaluation, not tokens: that is what `:max_evals` counts.
-  defp handle_eval(code, state) do
+  # records the evaluation, not tokens: that is what `:max_evals` counts. A
+  # step that cannot be saved is answered as an error and forgotten, so the
+  # conversation on record and the one in memory stay the same.
+  defp handle_eval(code, opts, state) do
     case enforce_rate_limit(state) do
       :ok ->
+        for {key, value} <- Keyword.get(opts, :vault, []), do: Vault.unsafe_put(key, value)
+
         action = %{"action" => "eval_and_continue", "code" => code}
         action_message = Executor.message(:assistant, Jason.encode!(action))
 
@@ -319,9 +326,12 @@ defmodule Legion.AgentServer do
         {reply, result_message, bindings} = run_eval(code, state)
         messages = state.messages ++ [action_message, result_message]
         usage = if state.track_usage, do: state.usage ++ [entry]
-        state = %{state | messages: messages, bindings: bindings, usage: usage}
+        new_state = %{state | messages: messages, bindings: bindings, usage: usage}
 
-        {reply, persist(state, [:conversation_state, status: :idle, usage: usage])}
+        case save(new_state, [:conversation_state, status: :idle, usage: usage]) do
+          :ok -> {reply, new_state}
+          :error -> {{:error, "The code ran, but the step could not be saved. Try again."}, state}
+        end
 
       {:rate_limited, violations} ->
         {{:cancel, {:rate_limited, violations}}, state}
@@ -409,12 +419,13 @@ defmodule Legion.AgentServer do
     {{status, value}, state}
   end
 
-  defp persist(%{store: nil} = state, _fields), do: state
-
   defp persist(state, fields) do
-    :ok = state.store.save(payload(state, fields))
+    :ok = save(state, fields)
     state
   end
+
+  defp save(%{store: nil}, _fields), do: :ok
+  defp save(state, fields), do: state.store.save(payload(state, fields))
 
   defp payload(state, fields) do
     Enum.reduce(fields, %Payload{agent_id: state.agent_id}, fn

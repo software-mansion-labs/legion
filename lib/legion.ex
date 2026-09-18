@@ -166,9 +166,16 @@ defmodule Legion do
   between calls unless `:binding_scope` is `:iteration`.
 
   Returns `{:ok, text}` with the formatted result, `{:error, text}` when the
-  code failed to check, was refused or raised, and
-  `{:cancel, {:rate_limited, violations}}` when a rate limit denied the call
-  before it ran.
+  code failed to check, was refused or raised, or when the step could not be
+  saved to the store after it ran, and `{:cancel, {:rate_limited, violations}}`
+  when a rate limit denied the call before it ran.
+
+  ## Options
+
+    - `:vault` - a keyword list put in the agent process's `Vault` before the
+      code runs, for tools to read; the per-call form of the `:vault` option
+      of `start_link/2`
+    - `:timeout` - how long to wait for the call (default: `:infinity`)
 
   ## Examples
 
@@ -176,9 +183,10 @@ defmodule Legion do
       {:ok, text} = Legion.eval(pid, "x = MathTool.add(1, 2)")
       {:ok, text} = Legion.eval(pid, "return x * 2")
       {:error, text} = Legion.eval(pid, "return (")
+      {:ok, text} = Legion.eval(pid, "return Reports.mine()", vault: [current_user: user])
   """
-  def eval(pid, code, timeout \\ :infinity) when is_binary(code) do
-    AgentServer.eval(pid, code, timeout)
+  def eval(pid, code, opts \\ []) when is_binary(code) and is_list(opts) do
+    AgentServer.eval(pid, code, opts)
   end
 
   @doc """

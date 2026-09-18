@@ -3,10 +3,23 @@ defmodule Legion.MCP.HTTPTest do
   use ExUnit.Case, async: false
 
   alias Anubis.Client
-  alias Legion.Test.Support.MathAgent
+  alias Legion.Test.Support.{MathAgent, VaultTool}
 
   defmodule HTTPMCP do
     use Legion.MCP.Server, agent: MathAgent, name: "math-http", version: "1.0.0"
+  end
+
+  defmodule VaultAgent do
+    @moduledoc "Agent whose tool reports what its process was seeded with."
+    use Legion.Agent
+
+    def tools, do: [VaultTool]
+  end
+
+  defmodule VaultMCP do
+    use Legion.MCP.Server, agent: VaultAgent, name: "vault-http", version: "1.0.0"
+
+    def session(frame), do: [vault: [current_user: frame.context.headers["x-user"]]]
   end
 
   setup do
@@ -91,6 +104,37 @@ defmodule Legion.MCP.HTTPTest do
 
     assert error?
     assert text != ""
+  end
+
+  test "tools read what session/1 put in the vault, through the real transport" do
+    start_supervised!({VaultMCP, transport: :streamable_http})
+
+    bandit =
+      start_supervised!(
+        {Bandit,
+         plug: {Anubis.Server.Transport.StreamableHTTP.Plug, server: VaultMCP},
+         ip: :loopback,
+         port: 0},
+        id: :vault_bandit
+      )
+
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+
+    _client =
+      start_supervised!(
+        {Client,
+         name: :vault_client,
+         transport:
+           {:streamable_http,
+            base_url: "http://127.0.0.1:#{port}", mcp_path: "/", headers: %{"x-user" => "ivan"}},
+         client_info: %{"name" => "vault", "version" => "1"},
+         capabilities: %{}}
+      )
+
+    :ok = Client.await_ready(:vault_client, timeout: 5_000)
+
+    assert {false, text} = repl(:vault_client, "return VaultTool.current_user()")
+    assert text =~ "ivan"
   end
 
   test "sessions do not share variables", %{url: url} do

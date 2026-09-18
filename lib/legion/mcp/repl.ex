@@ -21,7 +21,7 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
     # limit; this is one `Legion.eval/3` call dressed as a tool result.
     @impl true
     def execute(%{code: code}, %Frame{assigns: %{legion_server: server}} = frame) do
-      {agent, frame} = Server.resolve_agent(frame)
+      {agent, vault, frame} = Server.resolve_agent(frame)
 
       metadata = %{
         agent: server.__legion_agent__(),
@@ -31,7 +31,7 @@ if Code.ensure_loaded?(Anubis.Server.Component) do
       }
 
       Telemetry.span([:legion, :mcp, :call], metadata, fn ->
-        case Legion.eval(agent, code) do
+        case Legion.eval(agent, code, vault: vault) do
           {:ok, text} ->
             {{:reply, Response.text(Response.tool(), text), frame}, %{success: true}}
 

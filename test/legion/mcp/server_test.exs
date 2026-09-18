@@ -70,10 +70,16 @@ defmodule Legion.MCP.ServerTest do
       [
         store: MemoryStore,
         agent_id: "mcp:user:" <> user,
-        vault: [current_user: user],
+        vault: [current_user: user, token: frame.context.auth[:token]],
         rate_limit: [limiter: DenyingLimiter, rules: [rule]]
       ]
     end
+  end
+
+  defmodule ShortLivedMCP do
+    use Legion.MCP.Server, agent: MathAgent, name: "short", version: "0.1.0"
+
+    def session(_frame), do: [store: MemoryStore, agent_id: "mcp:user:short", idle_timeout: 50]
   end
 
   setup do
@@ -278,6 +284,61 @@ defmodule Legion.MCP.ServerTest do
                repl(UserMCP, frame, "x = 1")
 
       assert {:ok, %Payload{conversation_state: nil}} = MemoryStore.get("mcp:user:denied")
+    end
+
+    test "the vault follows every call, the rest of session/1 is read once" do
+      first = initialized(UserMCP, frame("host", %{sub: "frank", token: "morning"}))
+      second = initialized(UserMCP, frame("host", %{sub: "frank", token: "evening"}))
+
+      assert {false, text, _frame} = repl(UserMCP, first, "return VaultTool.token()")
+      assert text =~ "morning"
+      assert {false, text, _frame} = repl(UserMCP, second, "return VaultTool.token()")
+      assert text =~ "evening"
+    end
+
+    test "concurrent sessions on one agent serialise, and every step is kept" do
+      frames = for host <- 1..4, do: initialized(UserMCP, frame("host-#{host}", %{sub: "grace"}))
+
+      results =
+        frames
+        |> Task.async_stream(fn frame -> repl(UserMCP, frame, "x = (x or 0) + 1 return x") end)
+        |> Enum.map(fn {:ok, {error?, text, _frame}} -> {error?, text} end)
+
+      assert Enum.all?(results, &match?({false, _text}, &1))
+
+      assert {:ok, %Payload{conversation_state: %{messages: messages, bindings: bindings}}} =
+               MemoryStore.get("mcp:user:grace")
+
+      assert length(messages) == 8
+      assert List.keyfind(bindings, "x", 0) == {"x", 4}
+    end
+
+    test "an agent stopped for idleness continues from the store on the next call" do
+      frame = initialized(ShortLivedMCP, frame())
+
+      assert {false, _text, _frame} = repl(ShortLivedMCP, frame, "x = 41")
+      {:ok, pid} = Legion.lookup("mcp:user:short")
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 500
+
+      assert {false, text, _frame} = repl(ShortLivedMCP, frame, "return x + 1")
+      assert text =~ "42"
+      assert {:ok, restarted} = Legion.lookup("mcp:user:short")
+      assert restarted != pid
+    end
+
+    test "a step that cannot be saved is a tool error and is forgotten" do
+      frame = initialized(UserMCP, frame("host", %{sub: "heidi"}))
+      {false, _text, _frame} = repl(UserMCP, frame, "x = 1")
+
+      MemoryStore.fail_saves(true)
+
+      assert {true, "The code ran, but the step could not be saved." <> _, _frame} =
+               repl(UserMCP, frame, "x = 2")
+
+      MemoryStore.fail_saves(false)
+      assert {false, text, _frame} = repl(UserMCP, frame, "return x")
+      assert text =~ "1"
     end
 
     test "nothing is left in the frame to stop with the session" do

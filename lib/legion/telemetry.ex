@@ -126,8 +126,6 @@ defmodule Legion.Telemetry do
               [:legion, :sandbox, :eval, :exception]
             ],
             mcp: [
-              [:legion, :mcp, :session, :started],
-              [:legion, :mcp, :session, :stopped],
               [:legion, :mcp, :call, :start],
               [:legion, :mcp, :call, :stop],
               [:legion, :mcp, :call, :exception]
@@ -311,14 +309,6 @@ defmodule Legion.Telemetry do
   def handle_event([:legion, :sandbox, :eval, :exception], measurements, meta, opts) do
     ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
     log(opts, meta, "    eval:exception #{inspect(meta.reason)} #{ms}ms", :error)
-  end
-
-  def handle_event([:legion, :mcp, :session, :started], _measurements, meta, opts) do
-    log(opts, meta, "mcp:session:started #{short(meta.agent)} #{meta.session_id}")
-  end
-
-  def handle_event([:legion, :mcp, :session, :stopped], _measurements, meta, opts) do
-    log(opts, meta, "mcp:session:stopped #{short(meta.agent)} #{meta.session_id}")
   end
 
   def handle_event([:legion, :mcp, :call, :start], _measurements, meta, opts) do
