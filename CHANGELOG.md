@@ -4,6 +4,10 @@
 
 ### Changes
 
+- MCP server - [`Legion.MCP.Plug`](https://hexdocs.pm/legion/Legion.MCP.Plug.html) serves an agent to MCP hosts over Streamable HTTP as a single `repl` tool (optional `:plug` dependency), with [`Legion.MCP`](https://hexdocs.pm/legion/Legion.MCP.html) speaking the protocol for any transport; every session is an agent process, so a `:session` function can give a user back their own conversation, [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html), rate limits and `:vault` included
+- [`Legion.eval/3`](https://hexdocs.pm/legion/Legion.html#eval/3) runs code in a live agent without its model, as one persisted, rate-limited step of the conversation
+- `:idle_timeout` stops an agent nobody calls, `:vault` seeds its process for tools to read, and `:max_bindings_bytes` bounds what an execution may leave in variables; see [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) and [`Legion.start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2)
+- Rate limiting - `:max_evals` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) limits recorded code evaluations, counted by the [Postgres adapter](https://hexdocs.pm/legion/Legion.RateLimiter.Postgres.html) from `"evals"` usage
 - Rate limiting - [`Legion.RateLimiter.resolve!/1`](https://hexdocs.pm/legion/Legion.RateLimiter.html#resolve!/1) raises when rules are given without a limiter, logs a warning when a limiter has no rules unless `rules: []` opts out explicitly, logs and ignores unknown `:rate_limit` keys instead of dropping them silently, and no longer accepts `rules:` in `config :legion, :rate_limit`
 
 ## v0.5.0 - 2026-09-01
