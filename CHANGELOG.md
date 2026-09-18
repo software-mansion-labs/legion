@@ -4,7 +4,7 @@
 
 ### Changes
 
-- MCP server - [`Legion.MCP.Plug`](https://hexdocs.pm/legion/Legion.MCP.Plug.html) serves an agent to MCP hosts over Streamable HTTP as a single `repl` tool (optional `:plug` dependency), with [`Legion.MCP`](https://hexdocs.pm/legion/Legion.MCP.html) speaking the protocol for any transport; every session is an agent process, so a `:session` function can give a user back their own conversation, [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html), rate limits and `:vault` included
+- MCP server - [`Legion.MCP.Server`](https://hexdocs.pm/legion/Legion.MCP.Server.html) exposes an agent to MCP hosts as a single `repl` tool over Anubis's transports and OAuth support (optional `:anubis_mcp` dependency); every session is an agent process, so `session/1` can give a user back their own conversation, [`Legion.Store`](https://hexdocs.pm/legion/Legion.Store.html), rate limits and `:vault` included
 - [`Legion.eval/3`](https://hexdocs.pm/legion/Legion.html#eval/3) runs code in a live agent without its model, as one persisted, rate-limited step of the conversation
 - `:idle_timeout` stops an agent nobody calls, `:vault` seeds its process for tools to read, and `:max_bindings_bytes` bounds what an execution may leave in variables; see [`Legion.Agent`](https://hexdocs.pm/legion/Legion.Agent.html) and [`Legion.start_link/2`](https://hexdocs.pm/legion/Legion.html#start_link/2)
 - Rate limiting - `:max_evals` in [`Legion.RateLimiter.Policy`](https://hexdocs.pm/legion/Legion.RateLimiter.Policy.html) limits recorded code evaluations, counted by the [Postgres adapter](https://hexdocs.pm/legion/Legion.RateLimiter.Postgres.html) from `"evals"` usage

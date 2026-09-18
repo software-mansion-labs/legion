@@ -1,10 +1,7 @@
 defmodule Legion.MCP.PostgresDbTest do
   use ExUnit.Case, async: false
 
-  import Plug.Conn
-  import Plug.Test
-
-  alias Legion.MCP
+  alias Anubis.Server.{Context, Frame, Handlers}
   alias Legion.RateLimiter.{Policy, Rule}
   alias Legion.Store.Payload
   alias Legion.Test.Support.MathAgent
@@ -18,40 +15,42 @@ defmodule Legion.MCP.PostgresDbTest do
     use Legion.RateLimiter.Postgres, repo: Legion.Test.Support.PostgresRepo
   end
 
+  defmodule UserMCP do
+    use Legion.MCP.Server, agent: MathAgent, name: "users", version: "0.1.0"
+
+    # Two evaluations a minute per user, each user in an agent of their own.
+    def session(frame) do
+      user = frame.context.auth.sub
+      policy = %Policy{window_ms: 60_000, max_evals: 2}
+
+      [
+        store: Store,
+        agent_id: "mcp:user:" <> user,
+        rate_limit: [
+          limiter: RateLimiter,
+          rules: [%Rule{identity: %{"user" => user}, policy: policy}]
+        ]
+      ]
+    end
+  end
+
   setup do
     Repo.query!("TRUNCATE legion_agents", [])
     start_supervised!({DynamicSupervisor, name: Legion.AgentSupervisor, strategy: :one_for_one})
     :ok
   end
 
-  # Two evaluations a minute per user, each user in an agent of their own.
-  defp session(conn) do
-    [user] = get_req_header(conn, "x-user")
-    policy = %Policy{window_ms: 60_000, max_evals: 2}
-
-    [
-      store: Store,
-      agent_id: "mcp:user:" <> user,
-      rate_limit: [
-        limiter: RateLimiter,
-        rules: [%Rule{identity: %{"user" => user}, policy: policy}]
-      ]
-    ]
-  end
-
   defp repl(user, code) do
-    opts = MCP.Plug.init(agent: MathAgent, session: &session/1)
-    params = %{"name" => "repl", "arguments" => %{"code" => code}}
-    message = %{"jsonrpc" => "2.0", "id" => 1, "method" => "tools/call", "params" => params}
+    context = %Context{session_id: "session-" <> user, client_info: %{}, auth: %{sub: user}}
+    {:ok, frame} = UserMCP.init(%{}, %Frame{context: context})
 
-    conn =
-      conn(:post, "/", Jason.encode!(message))
-      |> put_req_header("content-type", "application/json")
-      |> put_req_header("x-user", user)
-      |> MCP.Plug.call(opts)
+    request = %{
+      "method" => "tools/call",
+      "params" => %{"name" => "repl", "arguments" => %{"code" => code}}
+    }
 
-    %{"result" => %{"content" => [%{"text" => text}], "isError" => error?}} =
-      Jason.decode!(conn.resp_body)
+    {:reply, %{"content" => [%{"text" => text}], "isError" => error?}, %Frame{}} =
+      Handlers.handle(request, UserMCP, frame)
 
     {error?, text}
   end

@@ -161,7 +161,7 @@ defmodule Legion do
   This is the agent without its model. Nothing is sent to an LLM: the code is
   taken as the agent's own step and evaluated with its tools, sandbox limits,
   eval guard and variables, then appended to the conversation and persisted
-  like a turn. It is what `Legion.MCP` runs for a host's model, and what a
+  like a turn. It is what `Legion.MCP.Server` runs for a host's model, and what a
   console or a test can use to drive an agent by hand. Variables persist
   between calls unless `:binding_scope` is `:iteration`.
 

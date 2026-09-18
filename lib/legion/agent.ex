@@ -137,7 +137,7 @@ defmodule Legion.Agent do
   # Resolves the effective config for `agent_module`: Executor defaults, then the
   # `:legion, :config` app env, then `agent_module.config/0`, then `opts`. Warns
   # about unknown keys and validates `:max_message_length`. Shared by every
-  # driver that runs the agent (AgentServer, Legion.MCP).
+  # driver that runs the agent (AgentServer, Legion.MCP.Server).
   def resolve_config(agent_module, opts \\ []) do
     app_config = Application.get_env(:legion, :config, %{})
     call_config = Map.new(opts)

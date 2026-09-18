@@ -91,7 +91,8 @@ defmodule Legion.RateLimiter do
   A `Legion.eval/3` call is checked the same way, before the code runs, with
   the rules the agent was started with. A denied call runs nothing and records
   nothing, and returns the same `{:cancel, {:rate_limited, violations}}`;
-  `Legion.MCP` turns it into a tool error naming the limits that were reached.
+  `Legion.MCP.Server` turns it into a tool error naming the limits that were
+  reached.
 
   ## Calling it yourself
 
